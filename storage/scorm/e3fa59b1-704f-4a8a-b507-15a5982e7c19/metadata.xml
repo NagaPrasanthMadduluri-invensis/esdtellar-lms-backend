@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lom xmlns="http://ltsc.ieee.org/xsd/LOM"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:schemaLocation="http://ltsc.ieee.org/xsd/LOM
+                         https://www.imsglobal.org/xsd/imsmd_v1p2p2.xsd">
+
+  <general>
+    <identifier>
+      <catalog>URI</catalog>
+      <entry>polaris-demo-reel-scorm2004</entry>
+    </identifier>
+    <title>
+      <string language="en-GB">Polaris · Demo Reel</string>
+    </title>
+    <language>en-GB</language>
+    <description>
+      <string language="en-GB">
+        Polaris is a virtual facilitation platform for the ABL Card Series,
+        a peer-accountability game played by intact teams, accredited by Edstellar.
+        This demo reel walks through the facilitator console, live session experience,
+        data capture, and effectiveness reporting.
+      </string>
+    </description>
+    <keyword>
+      <string language="en-GB">Polaris; ABL; Team Effectiveness; Facilitation; Edstellar</string>
+    </keyword>
+  </general>
+
+  <lifecycle>
+    <version>
+      <string language="en-GB">1.0</string>
+    </version>
+    <status>
+      <source><string language="en-GB">LOMv1.0</string></source>
+      <value><string language="en-GB">Final</string></value>
+    </status>
+  </lifecycle>
+
+  <technical>
+    <format>text/html</format>
+    <requirement>
+      <orComposite>
+        <type>
+          <source><string language="en-GB">LOMv1.0</string></source>
+          <value><string language="en-GB">Browser</string></value>
+        </type>
+        <name>
+          <source><string language="en-GB">LOMv1.0</string></source>
+          <value><string language="en-GB">Any</string></value>
+        </name>
+        <minimumVersion>modern</minimumVersion>
+      </orComposite>
+    </requirement>
+  </technical>
+
+  <educational>
+    <learningResourceType>
+      <source><string language="en-GB">LOMv1.0</string></source>
+      <value><string language="en-GB">Demonstration</string></value>
+    </learningResourceType>
+    <typicalLearningTime>
+      <datetime>PT2M</datetime>
+      <description>
+        <string language="en-GB">Approximately 2 minutes</string>
+      </description>
+    </typicalLearningTime>
+  </educational>
+
+  <rights>
+    <cost>
+      <source><string language="en-GB">LOMv1.0</string></source>
+      <value><string language="en-GB">no</string></value>
+    </cost>
+    <copyrightAndOtherRestrictions>
+      <source><string language="en-GB">LOMv1.0</string></source>
+      <value><string language="en-GB">yes</string></value>
+    </copyrightAndOtherRestrictions>
+    <description>
+      <string language="en-GB">© Edstellar. All rights reserved.</string>
+    </description>
+  </rights>
+
+</lom>

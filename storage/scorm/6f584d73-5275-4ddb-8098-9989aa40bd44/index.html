@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Operating AI — A Field Course for Product Managers</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#15171C;
+  --ink-2:#1A1D24;
+  --panel:#20242D;
+  --panel-2:#262B35;
+  --panel-3:#2E3440;
+  --line:rgba(255,255,255,0.09);
+  --line-strong:rgba(255,255,255,0.16);
+  --text:#ECEEF2;
+  --text-soft:#B7BECB;
+  --text-mute:#828C9B;
+  --signal:#E8B04B;        /* amber — the lit indicator, the personality */
+  --signal-deep:#C8902F;
+  --signal-glow:rgba(232,176,75,0.18);
+  --pos:#54C7B8;           /* teal — correct / data-positive only */
+  --pos-soft:rgba(84,199,184,0.14);
+  --neg:#E2725B;           /* coral — incorrect only */
+  --neg-soft:rgba(226,114,91,0.14);
+  --display:'Space Grotesk',sans-serif;
+  --body:'IBM Plex Sans',sans-serif;
+  --mono:'IBM Plex Mono',monospace;
+  --rail:312px;
+  --maxw:760px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:
+    radial-gradient(1200px 680px at 78% -8%, rgba(232,176,75,0.06), transparent 60%),
+    radial-gradient(900px 600px at -8% 110%, rgba(84,199,184,0.05), transparent 55%),
+    var(--ink);
+  color:var(--text);
+  font-family:var(--body);
+  font-size:16px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+  overflow-x:hidden;
+}
+
+/* ---------- shell ---------- */
+.shell{display:grid;grid-template-columns:var(--rail) 1fr;min-height:100vh}
+
+/* ---------- console rail ---------- */
+.rail{
+  position:sticky;top:0;height:100vh;
+  background:linear-gradient(180deg,var(--ink-2),#13151A);
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;
+  padding:26px 22px 22px;
+}
+.brand{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+.brand .dot{
+  width:11px;height:11px;border-radius:50%;
+  background:var(--signal);box-shadow:0 0 0 4px var(--signal-glow);
+  animation:pulse 3.4s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 4px var(--signal-glow)}50%{box-shadow:0 0 0 8px rgba(232,176,75,0.05)}}
+.brand .kicker{font-family:var(--mono);font-size:10.5px;letter-spacing:0.22em;text-transform:uppercase;color:var(--text-mute)}
+.rail h1{
+  font-family:var(--display);font-weight:600;font-size:20px;line-height:1.18;
+  letter-spacing:-0.01em;margin:14px 0 3px;
+}
+.rail .sub{font-size:12.5px;color:var(--text-mute);margin-bottom:22px}
+
+.progress-readout{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;
+  color:var(--text-mute);display:flex;justify-content:space-between;margin-bottom:9px;
+}
+.progress-readout b{color:var(--signal);font-weight:600}
+.track{height:4px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;margin-bottom:26px}
+.track .fill{height:100%;width:0%;background:linear-gradient(90deg,var(--signal-deep),var(--signal));border-radius:99px;transition:width .6s cubic-bezier(.2,.7,.2,1)}
+
+.curriculum{list-style:none;flex:1;overflow-y:auto;margin:0 -8px;padding:0 8px}
+.curriculum::-webkit-scrollbar{width:6px}
+.curriculum::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:99px}
+.nav-item{
+  display:grid;grid-template-columns:30px 1fr;gap:11px;align-items:start;
+  padding:11px 10px;border-radius:9px;cursor:pointer;border:1px solid transparent;
+  transition:background .18s,border-color .18s;margin-bottom:2px;
+}
+.nav-item:hover{background:rgba(255,255,255,0.03)}
+.nav-item[aria-disabled="true"]{opacity:0.42;cursor:not-allowed}
+.nav-item.active{background:var(--panel);border-color:var(--line)}
+.nav-item .idx{
+  font-family:var(--mono);font-size:11px;font-weight:600;color:var(--text-mute);
+  border:1px solid var(--line);border-radius:7px;height:28px;display:flex;
+  align-items:center;justify-content:center;transition:all .2s;
+}
+.nav-item.active .idx{color:var(--ink);background:var(--signal);border-color:var(--signal)}
+.nav-item.done .idx{color:var(--pos);border-color:rgba(84,199,184,0.4)}
+.nav-item .nm{font-size:13.5px;font-weight:500;line-height:1.3;color:var(--text-soft)}
+.nav-item.active .nm{color:var(--text)}
+.nav-item .tag{font-family:var(--mono);font-size:9.5px;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-mute);margin-top:3px;display:block}
+.nav-item .check{font-size:11px;color:var(--pos)}
+
+.rail-foot{font-family:var(--mono);font-size:10px;letter-spacing:0.08em;color:var(--text-mute);border-top:1px solid var(--line);padding-top:14px;margin-top:8px}
+
+/* ---------- stage ---------- */
+.stage{position:relative;min-height:100vh;display:flex;flex-direction:column}
+.stage-top{
+  position:sticky;top:0;z-index:20;
+  background:rgba(21,23,28,0.82);backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line);
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 40px;
+}
+.crumbs{font-family:var(--mono);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-mute)}
+.crumbs b{color:var(--text-soft);font-weight:500}
+.score-chip{
+  font-family:var(--mono);font-size:11.5px;letter-spacing:0.06em;color:var(--text-soft);
+  background:var(--panel);border:1px solid var(--line);border-radius:99px;
+  padding:6px 13px;display:flex;align-items:center;gap:8px;
+}
+.score-chip i{font-style:normal;color:var(--signal);font-weight:600}
+
+.viewport{flex:1;display:flex;justify-content:center;padding:54px 40px 110px}
+.screen{width:100%;max-width:var(--maxw);display:none}
+.screen.live{display:block;animation:screenIn .5s cubic-bezier(.2,.7,.2,1)}
+@keyframes screenIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+/* ---------- shared content type ---------- */
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:var(--signal);margin-bottom:16px;display:flex;align-items:center;gap:10px}
+.eyebrow::before{content:"";width:22px;height:1px;background:var(--signal);opacity:.6}
+h2.title{font-family:var(--display);font-weight:600;font-size:clamp(28px,4vw,40px);line-height:1.08;letter-spacing:-0.018em;margin-bottom:18px}
+h3{font-family:var(--display);font-weight:600;font-size:21px;letter-spacing:-0.01em;margin:34px 0 12px}
+p.lead{font-size:18px;line-height:1.62;color:var(--text-soft);margin-bottom:18px}
+p{margin-bottom:14px;color:var(--text-soft)}
+strong{color:var(--text);font-weight:600}
+.k{color:var(--signal);font-weight:500}
+
+/* objective list */
+.objectives{border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--panel),var(--ink-2));padding:22px 24px;margin:24px 0 4px}
+.objectives .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--text-mute);margin-bottom:14px}
+.objectives ul{list-style:none;display:grid;gap:11px}
+.objectives li{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;font-size:14.5px;color:var(--text-soft)}
+.objectives li .verb{font-family:var(--mono);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink);background:var(--signal);border-radius:5px;padding:3px 7px;margin-top:1px;white-space:nowrap}
+
+/* recall hook */
+.recall{display:flex;gap:13px;align-items:flex-start;background:var(--pos-soft);border:1px solid rgba(84,199,184,0.25);border-left:3px solid var(--pos);border-radius:0 11px 11px 0;padding:15px 18px;margin:26px 0}
+.recall .ic{font-family:var(--mono);font-size:10px;letter-spacing:0.1em;color:var(--pos);text-transform:uppercase;white-space:nowrap;margin-top:2px}
+.recall p{margin:0;font-size:14.5px;color:var(--text-soft)}
+
+/* in-practice callout */
+.practice{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:18px 20px;margin:22px 0}
+.practice .h{font-family:var(--mono);font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:var(--signal);margin-bottom:9px;display:flex;align-items:center;gap:8px}
+.practice .h::before{content:"▸";color:var(--signal)}
+.practice p{margin:0;font-size:14.5px}
+
+/* stat strip */
+.stat-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:13px;overflow:hidden;margin:26px 0}
+.stat-strip .cell{background:var(--ink-2);padding:18px 18px}
+.stat-strip .n{font-family:var(--display);font-weight:600;font-size:26px;color:var(--signal);letter-spacing:-0.01em}
+.stat-strip .l{font-size:12.5px;color:var(--text-mute);margin-top:3px;line-height:1.35}
+
+/* figure / animation frame */
+.figure{position:relative;border:1px solid var(--line);border-radius:16px;background:radial-gradient(120% 120% at 50% 0%,var(--panel-2),var(--ink-2));padding:26px;margin:28px 0;overflow:hidden}
+.figure .cap{font-family:var(--mono);font-size:10.5px;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-mute);margin-top:16px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:14px}
+.figure .cap .live-dot{display:inline-flex;align-items:center;gap:7px;color:var(--signal)}
+.figure .cap .live-dot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--signal);animation:blink 1.6s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.figure svg{display:block;width:100%;height:auto}
+
+/* ---- SVG figure animations ---- */
+.an-fade{opacity:0;animation:anFade .7s cubic-bezier(.2,.7,.2,1) forwards;animation-delay:var(--d,0s)}
+@keyframes anFade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.an-pop{opacity:0;transform-box:fill-box;transform-origin:center;animation:anPop .55s cubic-bezier(.34,1.4,.5,1) forwards;animation-delay:var(--d,0s)}
+@keyframes anPop{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
+.an-draw{stroke-dasharray:640;stroke-dashoffset:640;animation:anDraw .7s ease forwards;animation-delay:var(--d,0s)}
+@keyframes anDraw{to{stroke-dashoffset:0}}
+.an-grow{opacity:0;animation:anGrow .9s ease forwards;animation-delay:var(--d,0s)}
+@keyframes anGrow{to{opacity:.5}}
+.an-spin{transform-box:fill-box;transform-origin:center;animation:anSpin 2.4s linear infinite}
+@keyframes anSpin{to{transform:rotate(360deg)}}
+.an-glow{animation:anGlow 2.6s ease-in-out infinite;animation-delay:var(--d,0s)}
+@keyframes anGlow{0%,100%{opacity:.35}50%{opacity:1}}
+.replay{
+  position:absolute;top:18px;right:18px;font-family:var(--mono);font-size:10px;letter-spacing:0.1em;
+  text-transform:uppercase;color:var(--text-soft);background:rgba(0,0,0,0.3);border:1px solid var(--line);
+  border-radius:7px;padding:6px 11px;cursor:pointer;transition:all .18s;z-index:4;
+}
+.replay:hover{color:var(--signal);border-color:var(--line-strong)}
+
+/* ---------- buttons ---------- */
+.btn{
+  font-family:var(--body);font-weight:600;font-size:14.5px;
+  border:none;border-radius:10px;padding:13px 22px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:10px;transition:transform .12s,box-shadow .2s,background .2s;
+}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:linear-gradient(180deg,var(--signal),var(--signal-deep));color:#1A1206;box-shadow:0 8px 22px -10px rgba(232,176,75,0.7)}
+.btn-primary:hover{box-shadow:0 12px 28px -10px rgba(232,176,75,0.85)}
+.btn-ghost{background:transparent;color:var(--text-soft);border:1px solid var(--line-strong)}
+.btn-ghost:hover{color:var(--text);border-color:var(--text-mute)}
+.btn:disabled{opacity:.4;cursor:not-allowed;box-shadow:none}
+.btn .arr{font-family:var(--mono)}
+
+.nav-row{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-top:42px;padding-top:26px;border-top:1px solid var(--line)}
+
+/* ---------- knowledge check ---------- */
+.check-block{border:1px solid var(--line-strong);border-radius:16px;background:linear-gradient(180deg,var(--panel),var(--ink-2));padding:26px;margin-top:40px}
+.check-block .badge{font-family:var(--mono);font-size:10.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--signal);margin-bottom:14px;display:flex;align-items:center;gap:9px}
+.check-block .badge::before{content:"";width:7px;height:7px;background:var(--signal);transform:rotate(45deg)}
+.q-stem{font-family:var(--display);font-weight:500;font-size:18.5px;line-height:1.4;letter-spacing:-0.01em;margin-bottom:20px;color:var(--text)}
+.opts{display:grid;gap:10px}
+.opt{
+  display:grid;grid-template-columns:26px 1fr;gap:13px;align-items:start;
+  text-align:left;width:100%;font-family:var(--body);font-size:15px;line-height:1.45;color:var(--text-soft);
+  background:var(--ink-2);border:1px solid var(--line);border-radius:11px;padding:14px 16px;cursor:pointer;
+  transition:border-color .16s,background .16s,transform .1s;
+}
+.opt:hover:not(:disabled){border-color:var(--line-strong);background:var(--panel)}
+.opt:disabled{cursor:default}
+.opt .mk{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-mute);border:1px solid var(--line);border-radius:6px;height:24px;display:flex;align-items:center;justify-content:center;transition:all .16s}
+.opt.correct{border-color:var(--pos);background:var(--pos-soft)}
+.opt.correct .mk{background:var(--pos);color:#04201C;border-color:var(--pos)}
+.opt.wrong{border-color:var(--neg);background:var(--neg-soft)}
+.opt.wrong .mk{background:var(--neg);color:#2A0A04;border-color:var(--neg)}
+.opt.dim{opacity:.5}
+.feedback{margin-top:18px;border-radius:11px;padding:15px 17px;font-size:14.5px;line-height:1.55;display:none}
+.feedback.show{display:block;animation:screenIn .4s ease}
+.feedback.ok{background:var(--pos-soft);border:1px solid rgba(84,199,184,0.35)}
+.feedback.no{background:var(--neg-soft);border:1px solid rgba(226,114,91,0.35)}
+.feedback .ft{font-family:var(--mono);font-size:10.5px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:7px;display:block}
+.feedback.ok .ft{color:var(--pos)}
+.feedback.no .ft{color:var(--neg)}
+.feedback p{margin:0;color:var(--text-soft)}
+
+/* ---------- intro screen ---------- */
+.hero{text-align:left;padding-top:10px}
+.hero .badge-row{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:26px}
+.pill{font-family:var(--mono);font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-soft);border:1px solid var(--line);border-radius:99px;padding:6px 12px}
+.hero h2{font-family:var(--display);font-weight:700;font-size:clamp(36px,6vw,62px);line-height:1.02;letter-spacing:-0.03em;margin-bottom:22px}
+.hero h2 em{font-style:normal;color:var(--signal)}
+.hero .lead{font-size:18.5px;max-width:600px}
+.method{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:38px 0}
+.method .m{border:1px solid var(--line);border-radius:13px;background:var(--ink-2);padding:18px}
+.method .m .num{font-family:var(--mono);font-size:11px;color:var(--signal);letter-spacing:0.1em;margin-bottom:9px}
+.method .m h4{font-family:var(--display);font-weight:600;font-size:15px;margin-bottom:6px}
+.method .m p{font-size:13px;margin:0;color:var(--text-mute);line-height:1.45}
+
+.id-note{border:1px dashed var(--line-strong);border-radius:13px;padding:18px 20px;margin:30px 0;background:rgba(232,176,75,0.03)}
+.id-note .h{font-family:var(--mono);font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:var(--signal);margin-bottom:10px}
+.id-note p{font-size:13.5px;margin:0;color:var(--text-mute)}
+.id-note code{font-family:var(--mono);color:var(--text-soft);font-size:12.5px;background:var(--panel);padding:1px 6px;border-radius:5px}
+
+/* ---------- assessment ---------- */
+.assess-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px}
+.q-dots{display:flex;gap:6px;margin:22px 0 30px}
+.q-dots span{height:5px;flex:1;background:rgba(255,255,255,0.09);border-radius:99px;transition:background .3s}
+.q-dots span.done{background:var(--signal)}
+.q-dots span.cur{background:var(--text-soft)}
+.q-counter{font-family:var(--mono);font-size:12px;letter-spacing:0.1em;color:var(--text-mute)}
+
+/* ---------- results ---------- */
+.result-wrap{text-align:center;padding-top:8px}
+.gauge-wrap{position:relative;width:230px;height:230px;margin:14px auto 8px}
+.gauge-num{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.gauge-num .big{font-family:var(--display);font-weight:700;font-size:56px;letter-spacing:-0.02em;line-height:1}
+.gauge-num .pct{font-family:var(--mono);font-size:13px;color:var(--text-mute);letter-spacing:0.1em;margin-top:4px}
+.verdict{font-family:var(--mono);font-size:12px;letter-spacing:0.18em;text-transform:uppercase;margin:6px 0 18px}
+.verdict.pass{color:var(--pos)}
+.verdict.fail{color:var(--neg)}
+.breakdown{text-align:left;border:1px solid var(--line);border-radius:14px;background:var(--ink-2);padding:8px 4px;margin:30px 0}
+.brow{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:13px 20px;border-bottom:1px solid var(--line)}
+.brow:last-child{border-bottom:none}
+.brow .bn{font-size:14px;color:var(--text-soft)}
+.brow .bn span{font-family:var(--mono);font-size:10px;color:var(--text-mute);display:block;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:2px}
+.brow .bbar{width:120px;height:6px;background:rgba(255,255,255,0.08);border-radius:99px;overflow:hidden}
+.brow .bbar i{display:block;height:100%;border-radius:99px;background:var(--signal)}
+.brow .bsc{font-family:var(--mono);font-size:12px;color:var(--text-soft);width:42px;text-align:right}
+.transfer{text-align:left;background:linear-gradient(135deg,var(--panel),var(--ink-2));border:1px solid var(--line);border-radius:16px;padding:24px;margin:24px 0}
+.transfer .h{font-family:var(--mono);font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:var(--signal);margin-bottom:14px}
+.transfer ul{list-style:none;display:grid;gap:12px}
+.transfer li{display:grid;grid-template-columns:auto 1fr;gap:12px;font-size:14.5px;color:var(--text-soft)}
+.transfer li::before{content:"→";color:var(--signal);font-family:var(--mono)}
+
+/* ---------- mobile ---------- */
+.mtopbar{display:none}
+@media (max-width:880px){
+  .shell{grid-template-columns:1fr}
+  .rail{display:none}
+  .mtopbar{
+    display:flex;flex-direction:column;gap:0;position:sticky;top:0;z-index:30;
+    background:var(--ink-2);border-bottom:1px solid var(--line);padding:14px 18px 0;
+  }
+  .mtopbar .row{display:flex;align-items:center;justify-content:space-between;margin-bottom:11px}
+  .mtopbar .mt-title{font-family:var(--display);font-weight:600;font-size:14px;display:flex;align-items:center;gap:9px}
+  .mtopbar .mt-title .dot{width:9px;height:9px;border-radius:50%;background:var(--signal)}
+  .mtopbar .mt-step{font-family:var(--mono);font-size:11px;color:var(--text-mute)}
+  .mtopbar .mtrack{height:3px;background:rgba(255,255,255,0.08)}
+  .mtopbar .mtrack .mfill{height:100%;width:0;background:var(--signal);transition:width .5s}
+  .stage-top{padding:12px 18px}
+  .crumbs{font-size:10px}
+  .viewport{padding:30px 18px 90px}
+  .method,.method.x{grid-template-columns:1fr}
+  .stat-strip{grid-template-columns:1fr}
+  .nav-row{flex-direction:column-reverse;align-items:stretch}
+  .nav-row .btn{justify-content:center}
+}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.05ms !important;scroll-behavior:auto !important}
+  .screen.live{animation:none}
+}
+:focus-visible{outline:2px solid var(--signal);outline-offset:2px;border-radius:6px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ============ CONSOLE RAIL ============ -->
+  <aside class="rail">
+    <div class="brand"><span class="dot"></span><span class="kicker">Edstellar · Field Course</span></div>
+    <h1>Operating AI</h1>
+    <div class="sub">For product managers shipping in an AI world</div>
+
+    <div class="progress-readout"><span>Course progress</span><span><b id="pPct">0%</b></span></div>
+    <div class="track"><div class="fill" id="pFill"></div></div>
+
+    <ul class="curriculum" id="nav"></ul>
+
+    <div class="rail-foot">RUNTIME ~35 MIN · 5 MODULES · 1 ASSESSMENT</div>
+  </aside>
+
+  <!-- ============ STAGE ============ -->
+  <main class="stage">
+    <!-- mobile bar -->
+    <div class="mtopbar">
+      <div class="row">
+        <div class="mt-title"><span class="dot"></span>Operating AI</div>
+        <div class="mt-step" id="mStep">Intro</div>
+      </div>
+      <div class="mtrack"><div class="mfill" id="mFill"></div></div>
+    </div>
+
+    <div class="stage-top">
+      <div class="crumbs" id="crumbs">START · <b>Orientation</b></div>
+      <div class="score-chip">Knowledge checks <i id="kcScore">0 / 5</i></div>
+    </div>
+
+    <div class="viewport">
+      <div id="screens"></div>
+    </div>
+  </main>
+</div>
+
+<script src="scorm-api-wrapper.js"></script>
+<script>
+/* =====================================================================
+   OPERATING AI — interactive learning module
+   Instructional spine: Gagné's Nine Events + Bloom-levelled objectives,
+   chunked microlearning, formative retrieval practice with explanatory
+   feedback, summative scored assessment, retention/transfer close.
+   State is held in memory only (no browser storage).
+===================================================================== */
+
+const COURSE = {
+  modules: [
+    {
+      id:'m1', code:'MOD 01', tag:'Foundations', title:'How AI actually behaves',
+      objectives:[
+        {verb:'Distinguish', t:'deterministic rules-based logic from probabilistic machine learning, and choose between them.'},
+        {verb:'Define', t:'the vocabulary that recurs in every AI conversation: model, training, inference, and label.'},
+        {verb:'Judge', t:'when a problem genuinely needs AI and when it is the wrong tool.'}
+      ],
+      recall:'You already ship software that does exactly what it is told. The shift here is small to state and large in consequence: AI software is taught from examples rather than instructed step by step.',
+      fig:'trainloop',
+      body:`
+        <h3>Two ways to build behaviour into a product</h3>
+        <p>Traditional software is <strong>deterministic</strong>. You write the rules, and the same input always yields the same output. A tax field that multiplies an amount by a rate will return the identical answer every time, and you can read the logic line by line.</p>
+        <p>Machine learning is <strong>probabilistic</strong>. Instead of rules, you supply <span class="k">labelled examples</span> and let a model learn the pattern. The output is a best estimate with a confidence attached, not a guarantee. Show a vision model a million photos tagged "cat" or "not cat", and it learns to score new photos. It will be wrong sometimes, and that is by design, not a defect.</p>
+        <div class="practice"><div class="h">In practice</div><p>The first question on any AI feature is not "can a model do this?" It is "can we tolerate being confidently wrong a fraction of the time?" If the answer is no, such as a legal calculation or a payment amount, reach for rules, not a model.</p></div>
+        <h3>The words you will hear in every standup</h3>
+        <p><strong>Training</strong> is the expensive, offline phase where the model learns from data. <strong>Inference</strong> is the cheap, live phase where it makes a prediction for a real user. They have completely different cost, latency, and risk profiles, and conflating them is the most common planning error PMs make.</p>
+        <div class="stat-strip">
+          <div class="cell"><div class="n">Once / periodic</div><div class="l">Training runs: slow, costly, done in batches</div></div>
+          <div class="cell"><div class="n">Every request</div><div class="l">Inference: must be fast and cheap at scale</div></div>
+          <div class="cell"><div class="n">Examples</div><div class="l">The real raw material of an AI product, not code</div></div>
+        </div>
+        <p>That last point reframes your roadmap. In an AI product, <strong>data is the supply chain</strong>. If you cannot get clean, representative, labelled examples of the thing you want predicted, no amount of engineering will rescue the feature.</p>
+      `,
+      check:{
+        stem:'A PM wants AI to compute the exact VAT owed on each order, replacing the current formula. What is the strongest objection?',
+        opts:[
+          'Training a model is slower than running a formula',
+          'VAT is an exact, rule-defined calculation, so a probabilistic model adds error where none should exist',
+          'The model would need too much labelled data to be worth it',
+          'Inference costs would be higher than the current formula'
+        ],
+        correct:1,
+        fb:{
+          ok:'Exactly. VAT is deterministic by definition, set by published rules. A model can only approximate it and will occasionally be confidently wrong, which is unacceptable for a financial figure. The cost and data points are real but secondary to the core mismatch.',
+          no:'Those are genuine concerns, but they are not the heart of it. VAT is a rule-defined, exact calculation. A probabilistic model introduces error into something that should never vary, which is the disqualifying problem regardless of cost or data.'
+        }
+      }
+    },
+    {
+      id:'m2', code:'MOD 02', tag:'Lifecycle', title:'Why AI products are built differently',
+      objectives:[
+        {verb:'Map', t:'the AI product lifecycle and how it diverges from a traditional build-and-ship cycle.'},
+        {verb:'Explain', t:'why an AI feature is never truly "done" at launch.'},
+        {verb:'Locate', t:'where model performance silently decays and what catches it.'}
+      ],
+      recall:'In Module 1 you saw that data is the supply chain. That single idea reshapes the entire delivery lifecycle, which is what we map now.',
+      fig:'pipeline',
+      body:`
+        <h3>The loop, not the line</h3>
+        <p>A traditional feature moves in one direction: spec, build, test, ship. An AI feature moves in a loop, because the model's quality depends on data and on the world, and both keep changing after launch.</p>
+        <p>The stages are <span class="k">frame the problem</span>, <span class="k">assemble data</span>, <span class="k">prototype a model</span>, <span class="k">evaluate</span>, <span class="k">deploy</span>, and <span class="k">monitor</span>, and the last stage feeds straight back into the first. Skipping evaluation or monitoring is how teams ship something that demos beautifully and fails quietly in production.</p>
+        <div class="practice"><div class="h">In practice</div><p>You cannot fully specify an AI feature up front. Write the problem and the success metric precisely, then treat feasibility as a question to be answered by a time-boxed data and prototyping spike before you commit a delivery date.</p></div>
+        <h3>The decay you cannot see from the demo</h3>
+        <p>Models degrade after launch through <strong>drift</strong>. The world the model was trained on stops matching the world it now operates in. Customer language shifts, fraud tactics evolve, a competitor changes the market. Accuracy that was excellent in the demo erodes week by week.</p>
+        <p>Nothing in the code changes, so traditional QA never flags it. Only <strong>monitoring live performance against real outcomes</strong> reveals drift, which is why an AI roadmap must budget for the post-launch life of the model, not just its delivery.</p>
+        <div class="stat-strip">
+          <div class="cell"><div class="n">Frame</div><div class="l">Define the prediction and the metric that means success</div></div>
+          <div class="cell"><div class="n">Evaluate</div><div class="l">Prove it works before users ever see it</div></div>
+          <div class="cell"><div class="n">Monitor</div><div class="l">Watch for drift, then loop back to data</div></div>
+        </div>
+      `,
+      check:{
+        stem:'A recommendation model dazzled in the launch demo, but click-through has slid every week since. The team changed no code. What was most likely under-invested?',
+        opts:[
+          'Prototyping, since the model was clearly too simple',
+          'Framing, since the success metric was wrong',
+          'Monitoring, since drift between training data and the live world goes undetected without it',
+          'Deployment, since the model was probably served incorrectly'
+        ],
+        correct:2,
+        fb:{
+          ok:'Right. A steady weekly decline with no code change is the signature of drift. Without monitoring live performance against real outcomes, the model quietly grows stale as the world moves away from its training data.',
+          no:'A steady decline with zero code changes points specifically to drift, the world moving away from the training data over time. That is invisible to normal QA and only monitoring catches it. The other stages matter, but they would not produce this particular pattern.'
+        }
+      }
+    },
+    {
+      id:'m3', code:'MOD 03', tag:'Generative AI', title:'Working with LLMs',
+      objectives:[
+        {verb:'Differentiate', t:'retrieval-augmented generation from fine-tuning and pick the right one.'},
+        {verb:'Explain', t:'why large language models hallucinate and what reduces it.'},
+        {verb:'Weigh', t:'the cost, latency, and quality trade-offs behind a model choice.'}
+      ],
+      recall:'Everything from the first two modules still holds for generative AI. An LLM is a probabilistic model whose output you must evaluate and monitor. It just speaks in fluent prose, which makes its errors easier to miss.',
+      fig:'rag',
+      body:`
+        <h3>The model knows language, not your business</h3>
+        <p>A large language model is trained to predict the next token of text. It is astonishingly good at fluent, plausible language and has no built-in knowledge of your internal documents, your customers, or this morning's policy change. Ask it about those, and it will often invent a confident, well-formed answer. This is <strong>hallucination</strong>, and it is intrinsic to how the model works, not a bug to be patched away.</p>
+        <h3>Two ways to give it your knowledge</h3>
+        <p><strong>Retrieval-augmented generation (RAG)</strong> fetches the relevant facts from your own sources at question time and hands them to the model to ground its answer. <strong>Fine-tuning</strong> retrains the model on your examples to adjust its behaviour and style. The choice is not about which is more advanced, it is about what you need.</p>
+        <div class="practice"><div class="h">In practice</div><p>If the knowledge changes often, like pricing, policies, or inventory, choose RAG so answers always reflect the current source. If you need a consistent format, tone, or skill rather than fresh facts, fine-tuning earns its cost. Many production systems use both.</p></div>
+        <h3>Quality is not the only axis</h3>
+        <p>A larger model usually answers better, but it costs more per call and responds more slowly. At scale those differences compound into real money and real user-perceived lag. Part of your job is deciding where a smaller, cheaper, faster model is good enough, and where the quality of the largest model justifies its price.</p>
+        <div class="stat-strip">
+          <div class="cell"><div class="n">RAG</div><div class="l">Grounds answers in fresh, citable sources</div></div>
+          <div class="cell"><div class="n">Fine-tune</div><div class="l">Shapes consistent behaviour and style</div></div>
+          <div class="cell"><div class="n">Evals</div><div class="l">The only honest read on whether either worked</div></div>
+        </div>
+      `,
+      check:{
+        stem:'Support agents need answers grounded in internal policy documents that are revised most weeks. Which approach fits best?',
+        opts:[
+          'Fine-tune a model monthly on the latest policies',
+          'Use retrieval-augmented generation so each answer is grounded in the current document at question time',
+          'Use the largest available model and trust its general knowledge',
+          'Write the policies into the system prompt and update it weekly'
+        ],
+        correct:1,
+        fb:{
+          ok:'Correct. Frequently changing knowledge is the textbook case for RAG. Retrieval pulls the current policy at question time, so answers stay accurate without retraining, and you can cite the source.',
+          no:'When the knowledge changes weekly, retraining or hand-maintaining prompts is slow, costly, and quickly stale. RAG retrieves the current document at question time, keeping answers fresh and grounded without a retrain. That is the fit here.'
+        }
+      }
+    },
+    {
+      id:'m4', code:'MOD 04', tag:'Evaluation', title:'Measuring what matters',
+      objectives:[
+        {verb:'Interpret', t:'precision and recall and the trade-off between them.'},
+        {verb:'Separate', t:'offline model metrics from online business impact.'},
+        {verb:'Decide', t:'when an A/B test is the only credible proof a feature works.'}
+      ],
+      recall:'Modules 2 and 3 kept returning to one word: evaluation. Here you learn to read the actual numbers so you are never sold a model on accuracy alone.',
+      fig:'matrix',
+      body:`
+        <h3>Why "accuracy" can lie to you</h3>
+        <p>If one in a thousand transactions is fraud, a model that simply says "never fraud" is 99.9% accurate and completely useless. To see past that, PMs use two sharper measures. <strong>Precision</strong> asks: of the cases the model flagged, how many were real? <strong>Recall</strong> asks: of all the real cases, how many did the model catch?</p>
+        <p>They pull against each other. Catch more real fraud and you tend to raise false alarms; cut false alarms and you tend to miss real fraud. There is no universally right balance, only the right balance <span class="k">for this decision</span>.</p>
+        <div class="practice"><div class="h">In practice</div><p>Let the cost of each error pick the metric. In cancer screening, a missed case is catastrophic, so you favour recall and accept more false positives. In a spam filter, wrongly binning a real email annoys users, so you favour precision. State which error you fear most before you tune anything.</p></div>
+        <h3>The number on the dashboard is not the number that pays</h3>
+        <p><strong>Offline metrics</strong> measure the model against a held-out dataset in the lab. <strong>Online metrics</strong> measure what real users actually do once the feature ships. A model can post a beautiful offline score and move no business metric at all, because lab data never fully matches live behaviour.</p>
+        <p>The only credible bridge is an <strong>A/B test</strong>: ship the feature to a random slice of users, hold the rest as a control, and compare real outcomes. Until you have that, an offline win is a promise, not a result.</p>
+      `,
+      check:{
+        stem:'A fraud model lets nearly all legitimate purchases through cleanly, but it misses half of the actual fraud. Which metric most directly exposes this weakness?',
+        opts:[
+          'High precision is the problem',
+          'Low recall on the fraud cases, since it catches only half of the real fraud',
+          'Low overall accuracy',
+          'High false-positive rate'
+        ],
+        correct:1,
+        fb:{
+          ok:'Spot on. Recall is the share of real fraud the model catches. Missing half the fraud means recall on that class is about 0.5, which is exactly the figure this scenario should make you ask for.',
+          no:'The tell is "misses half of the actual fraud". That is a recall failure: recall measures how much of the real fraud you catch. Precision and accuracy can both look fine here while recall is the metric quietly failing.'
+        }
+      }
+    },
+    {
+      id:'m5', code:'MOD 05', tag:'Leadership', title:'Responsible AI and leading the work',
+      objectives:[
+        {verb:'Detect', t:'where bias, privacy, and explainability risks enter an AI product.'},
+        {verb:'Plan', t:'an AI feature whose feasibility is genuinely unknown at the outset.'},
+        {verb:'Communicate', t:'model uncertainty to executives without overselling or underselling.'}
+      ],
+      recall:'You can now reason about AI behaviour, lifecycle, generative models, and evaluation. The final shift is from analysing AI to leading its delivery responsibly.',
+      fig:'uncertainty',
+      body:`
+        <h3>Bias is a data problem before it is an ethics headline</h3>
+        <p>A model learns the patterns in its training data, including the unfair ones. If historical hiring data favoured one group, a model trained on it will quietly reproduce that preference and present it as objective. Responsible AI is not a final compliance checkbox, it is a question you ask at the data stage: <strong>who is under-represented or mistreated in these examples, and what will the model learn from that?</strong></p>
+        <div class="practice"><div class="h">In practice</div><p>When a model's outputs differ across demographic groups, the first move is to investigate, not to ship and monitor. Audit the training data and the outcomes for the affected groups before release. Privacy and explainability sit alongside this: know what personal data the model uses, and be able to tell a user why it decided what it did.</p></div>
+        <h3>Roadmapping when you cannot promise the outcome</h3>
+        <p>You will be asked to commit to AI features before anyone knows whether they are feasible. Forcing a fixed date onto an unproven model is how AI projects quietly fail. The disciplined move is a <strong>time-boxed discovery spike</strong>: a short, bounded investment to test data quality and prototype feasibility, with an explicit decision point to proceed, pivot, or stop.</p>
+        <h3>Talking to leadership about uncertainty</h3>
+        <p>Executives are used to deterministic commitments. Your task is to translate probabilistic reality into honest decisions without drowning them in jargon. Speak in <span class="k">confidence and trade-offs</span>, not false certainty: what the model can do today, how often it is wrong, what each type of error costs, and what would raise confidence. That candour is what earns a PM the trust to lead AI bets.</p>
+      `,
+      check:{
+        stem:'A CV-screening model consistently scores candidates from one demographic group lower. What is the responsible first action?',
+        opts:[
+          'Ship it and monitor the gap in production',
+          'Investigate the training data and group outcomes for bias before releasing',
+          'Add a manual review only for the lower-scoring group',
+          'Remove the demographic field and assume the bias is resolved'
+        ],
+        correct:1,
+        fb:{
+          ok:'Correct. A systematic score gap is a signal to investigate before release, auditing the training data and the outcomes for affected groups. Shipping first, or simply hiding a field, risks deploying and even laundering discrimination, since bias usually persists through correlated signals.',
+          no:'Shipping first, patching one group, or deleting a field all leave the underlying bias in place, often hidden in correlated data. The responsible first action is to investigate the training data and group outcomes for bias before the model affects real candidates.'
+        }
+      }
+    }
+  ],
+  assessment:[
+    {area:'Foundations', stem:'Which task is the clearest case for deterministic rules rather than machine learning?',
+      opts:['Predicting which users will churn next month','Routing a refund based on a fixed published policy','Summarising long support tickets','Flagging unusual login behaviour'],
+      correct:1, why:'A fixed, published policy is exact and rule-defined, the deterministic case. The other three involve patterns, prediction, or judgement, which is where ML earns its place.'},
+    {area:'Foundations', stem:'Your AI feature is slow and expensive for every single user request. Which phase is the cost coming from?',
+      opts:['Training','Inference','Labelling','Framing'],
+      correct:1, why:'Per-request cost and latency are inference, the live prediction phase. Training is the periodic offline phase and is billed differently.'},
+    {area:'Lifecycle', stem:'What most distinguishes planning an AI feature from planning a traditional one?',
+      opts:['AI features need more engineers','Feasibility often cannot be known up front, so it must be proven by a spike','AI features never need monitoring','AI features are always cheaper to maintain'],
+      correct:1, why:'Because quality depends on data and on a changing world, you usually cannot fully specify or guarantee an AI feature in advance. A time-boxed spike answers feasibility before you commit.'},
+    {area:'Generative AI', stem:'Which combination most reliably reduces hallucinated answers in a customer-facing assistant?',
+      opts:['A larger model alone','Grounding answers in retrieved sources, plus evaluation and clear constraints','A longer system prompt','Lowering the price per call'],
+      correct:1, why:'Hallucination is intrinsic to LLMs. Grounding in retrieved sources (RAG), measuring with evals, and constraining scope work together. Sheer model size or prompt length does not fix it on its own.'},
+    {area:'Generative AI', stem:'A feature works well on the largest model but is too slow and costly at scale. What is the sound first move?',
+      opts:['Ship it anyway and absorb the cost','Test whether a smaller, cheaper model with caching meets the quality bar for this use case','Remove the feature','Fine-tune the largest model to make it faster'],
+      correct:1, why:'Model choice is a quality-versus-cost-and-latency trade-off. Many use cases are well served by a smaller model, often with caching, freeing the expensive model for where it is genuinely needed.'},
+    {area:'Evaluation', stem:'For a medical screening tool, a missed positive case is far more dangerous than a false alarm. Which should you favour?',
+      opts:['Precision','Recall','Raw accuracy','Inference speed'],
+      correct:1, why:'When missing a real case is the costly error, favour recall, the share of true cases caught, and accept more false positives that follow-up testing can clear.'},
+    {area:'Evaluation', stem:'A model posts an excellent offline score, yet the business metric has not moved since launch. What do you need?',
+      opts:['A bigger offline dataset','An online A/B test against a control to measure real user impact','A higher precision threshold','A second offline evaluation'],
+      correct:1, why:'Offline wins are promises, not proof. Only a controlled online A/B test shows whether real users behave differently, closing the gap between lab metrics and business impact.'},
+    {area:'Leadership', stem:'Leadership wants a firm launch date for an AI feature whose feasibility is still unknown. The disciplined response is to:',
+      opts:['Commit to the date and hope the model performs','Propose a time-boxed discovery spike with an explicit go, pivot, or stop decision','Refuse to estimate anything','Outsource the decision to the data science team'],
+      correct:1, why:'A bounded discovery spike tests data quality and feasibility before a fixed commitment, replacing false certainty with an honest, evidence-based decision point.'}
+  ]
+};
+
+const PASS_MARK = 70;
+
+/* ---------- state ---------- */
+const state = {
+  screens:[],          // ordered list of screen descriptors
+  idx:0,
+  kcAnswered:{},       // moduleId -> bool answered
+  kcCorrect:0,
+  assessAnswers:[],    // index -> chosen option
+  assessIdx:0
+};
+
+/* build ordered screen list: intro, [module]*, assessment, results */
+function buildScreens(){
+  const s=[{type:'intro', label:'Orientation', tag:'START'}];
+  COURSE.modules.forEach((m,i)=> s.push({type:'module', label:m.title, tag:m.code, mi:i}));
+  s.push({type:'assessment', label:'Final Assessment', tag:'ASSESS'});
+  s.push({type:'results', label:'Your Results', tag:'COMPLETE'});
+  state.screens=s;
+}
+
+/* ---------- SVG animated figures ---------- */
+function fig(name){
+  const A = {
+    trainloop:`
+      <svg viewBox="0 0 640 220" role="img" aria-label="Training loop: labelled examples flow into a model, which produces predictions, and feedback flows back to improve the model.">
+        <defs>
+          <marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--signal)"/></marker>
+          <marker id="ahp" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--pos)"/></marker>
+        </defs>
+        <g class="an-fade" style="--d:0s">
+          <rect x="24" y="74" width="120" height="72" rx="11" fill="var(--panel-2)" stroke="var(--line-strong)"/>
+          <text x="84" y="104" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="13" font-weight="600">Labelled</text>
+          <text x="84" y="122" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11">examples</text>
+        </g>
+        <line class="an-draw" style="--d:.3s" x1="148" y1="110" x2="244" y2="110" stroke="var(--signal)" stroke-width="2" marker-end="url(#ah)"/>
+        <g class="an-fade" style="--d:.5s">
+          <rect x="248" y="62" width="144" height="96" rx="13" fill="var(--ink)" stroke="var(--signal)" stroke-width="1.6"/>
+          <circle class="an-spin" cx="320" cy="100" r="20" fill="none" stroke="var(--signal)" stroke-width="2" stroke-dasharray="60 26"/>
+          <text x="320" y="142" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="13" font-weight="600">Model</text>
+        </g>
+        <line class="an-draw" style="--d:.8s" x1="396" y1="110" x2="492" y2="110" stroke="var(--signal)" stroke-width="2" marker-end="url(#ah)"/>
+        <g class="an-fade" style="--d:1s">
+          <rect x="496" y="74" width="120" height="72" rx="11" fill="var(--panel-2)" stroke="var(--line-strong)"/>
+          <text x="556" y="104" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="13" font-weight="600">Prediction</text>
+          <text x="556" y="122" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11">+ confidence</text>
+        </g>
+        <path class="an-fade" style="--d:1.4s" d="M556,150 L556,192 L320,192 L320,162" fill="none" stroke="var(--pos)" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#ahp)"/>
+        <text x="438" y="210" text-anchor="middle" fill="var(--pos)" font-family="var(--mono)" font-size="11" class="an-fade" style="--d:1.7s">feedback improves the model</text>
+      </svg>`,
+    pipeline:`
+      <svg viewBox="0 0 640 200" role="img" aria-label="AI product lifecycle stages light up in sequence and loop back to the start.">
+        <defs><marker id="ah2" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--line-strong)"/></marker></defs>
+        ${['Frame','Data','Prototype','Evaluate','Deploy','Monitor'].map((s,i)=>{
+          const x=20+i*102;
+          return `<g class="an-pop" style="--d:${i*0.28}s">
+            <rect x="${x}" y="60" width="84" height="60" rx="11" fill="var(--panel-2)" stroke="var(--line-strong)"/>
+            <circle cx="${x+42}" cy="80" r="4" fill="var(--signal)" class="an-glow" style="--d:${i*0.28}s"/>
+            <text x="${x+42}" y="106" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="12.5" font-weight="600">${s}</text>
+          </g>
+          ${i<5?`<line class="an-draw" style="--d:${i*0.28+0.18}s" x1="${x+84}" y1="90" x2="${x+102}" y2="90" stroke="var(--line-strong)" stroke-width="2" marker-end="url(#ah2)"/>`:''}`;
+        }).join('')}
+        <path class="an-fade" style="--d:1.9s" d="M572,124 L572,160 L62,160 L62,124" fill="none" stroke="var(--signal)" stroke-width="2" stroke-dasharray="5 5"/>
+        <text x="320" y="182" text-anchor="middle" fill="var(--signal)" font-family="var(--mono)" font-size="11" class="an-fade" style="--d:2.2s">monitoring loops back into framing — the work never ends at launch</text>
+      </svg>`,
+    rag:`
+      <svg viewBox="0 0 640 210" role="img" aria-label="Retrieval augmented generation: a question retrieves sources, which are added to the model to ground a generated answer.">
+        <defs><marker id="ah3" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--signal)"/></marker></defs>
+        <g class="an-fade" style="--d:0s"><rect x="20" y="84" width="96" height="56" rx="11" fill="var(--panel-2)" stroke="var(--line-strong)"/><text x="68" y="117" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="13" font-weight="600">Question</text></g>
+        <line class="an-draw" style="--d:.3s" x1="120" y1="112" x2="166" y2="112" stroke="var(--signal)" stroke-width="2" marker-end="url(#ah3)"/>
+        <g class="an-fade" style="--d:.5s"><rect x="170" y="40" width="120" height="48" rx="10" fill="var(--ink)" stroke="var(--pos)" stroke-width="1.4"/><text x="230" y="69" text-anchor="middle" fill="var(--pos)" font-family="var(--body)" font-size="12.5" font-weight="600">Your sources</text></g>
+        <g class="an-fade" style="--d:.6s"><rect x="170" y="136" width="120" height="48" rx="10" fill="var(--panel-2)" stroke="var(--line-strong)"/><text x="230" y="165" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="12.5" font-weight="600">Retrieve</text></g>
+        <path class="an-draw" style="--d:.8s" d="M290,64 L330,64 L330,100" fill="none" stroke="var(--pos)" stroke-width="2"/>
+        <line class="an-draw" style="--d:.9s" x1="290" y1="112" x2="346" y2="112" stroke="var(--signal)" stroke-width="2" marker-end="url(#ah3)"/>
+        <g class="an-fade" style="--d:1.1s"><rect x="350" y="78" width="130" height="68" rx="13" fill="var(--ink)" stroke="var(--signal)" stroke-width="1.6"/><circle class="an-spin" cx="415" cy="104" r="15" fill="none" stroke="var(--signal)" stroke-width="2" stroke-dasharray="48 20"/><text x="415" y="136" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="12" font-weight="600">LLM</text></g>
+        <line class="an-draw" style="--d:1.4s" x1="480" y1="112" x2="526" y2="112" stroke="var(--signal)" stroke-width="2" marker-end="url(#ah3)"/>
+        <g class="an-fade" style="--d:1.6s"><rect x="530" y="84" width="92" height="56" rx="11" fill="var(--pos-soft)" stroke="var(--pos)" stroke-width="1.4"/><text x="576" y="110" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="12.5" font-weight="600">Grounded</text><text x="576" y="127" text-anchor="middle" fill="var(--pos)" font-family="var(--mono)" font-size="10.5">answer</text></g>
+      </svg>`,
+    matrix:`
+      <svg viewBox="0 0 640 220" role="img" aria-label="A confusion matrix fills in, showing true positives, false positives, false negatives and true negatives, with precision and recall.">
+        <g class="an-fade" style="--d:0s">
+          <text x="150" y="28" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11">PREDICTED →</text>
+          <text x="40" y="120" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11" transform="rotate(-90 40 120)">ACTUAL →</text>
+        </g>
+        <g class="an-pop" style="--d:.2s"><rect x="86" y="48" width="120" height="64" rx="9" fill="var(--pos-soft)" stroke="var(--pos)"/><text x="146" y="76" text-anchor="middle" fill="var(--pos)" font-family="var(--body)" font-size="13" font-weight="600">True positive</text><text x="146" y="96" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11">caught it</text></g>
+        <g class="an-pop" style="--d:.4s"><rect x="214" y="48" width="120" height="64" rx="9" fill="var(--neg-soft)" stroke="var(--neg)"/><text x="274" y="76" text-anchor="middle" fill="var(--neg)" font-family="var(--body)" font-size="13" font-weight="600">False positive</text><text x="274" y="96" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11">false alarm</text></g>
+        <g class="an-pop" style="--d:.6s"><rect x="86" y="120" width="120" height="64" rx="9" fill="var(--neg-soft)" stroke="var(--neg)"/><text x="146" y="148" text-anchor="middle" fill="var(--neg)" font-family="var(--body)" font-size="13" font-weight="600">False negative</text><text x="146" y="168" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11">missed it</text></g>
+        <g class="an-pop" style="--d:.8s"><rect x="214" y="120" width="120" height="64" rx="9" fill="var(--panel-2)" stroke="var(--line-strong)"/><text x="274" y="148" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="13" font-weight="600">True negative</text><text x="274" y="168" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="11">correctly clear</text></g>
+        <g class="an-fade" style="--d:1.1s">
+          <rect x="372" y="60" width="244" height="44" rx="9" fill="var(--ink)" stroke="var(--signal)" stroke-width="1.3"/>
+          <text x="388" y="80" fill="var(--signal)" font-family="var(--mono)" font-size="12" font-weight="600">PRECISION</text>
+          <text x="388" y="96" fill="var(--text-soft)" font-family="var(--body)" font-size="11.5">of flagged, how many real?</text>
+        </g>
+        <g class="an-fade" style="--d:1.35s">
+          <rect x="372" y="120" width="244" height="44" rx="9" fill="var(--ink)" stroke="var(--signal)" stroke-width="1.3"/>
+          <text x="388" y="140" fill="var(--signal)" font-family="var(--mono)" font-size="12" font-weight="600">RECALL</text>
+          <text x="388" y="156" fill="var(--text-soft)" font-family="var(--body)" font-size="11.5">of real, how many caught?</text>
+        </g>
+      </svg>`,
+    uncertainty:`
+      <svg viewBox="0 0 640 210" role="img" aria-label="A discovery spike narrows an uncertainty cone toward a go, pivot or stop decision.">
+        <defs><marker id="ah5" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--signal)"/></marker></defs>
+        <path class="an-fade" style="--d:.2s" d="M70,100 L470,30" fill="none" stroke="var(--line-strong)" stroke-width="1.6" stroke-dasharray="4 5"/>
+        <path class="an-fade" style="--d:.2s" d="M70,100 L470,170" fill="none" stroke="var(--line-strong)" stroke-width="1.6" stroke-dasharray="4 5"/>
+        <path class="an-grow" style="--d:.6s" d="M70,100 L470,30 L470,170 Z" fill="var(--signal-glow)" opacity="0.5"/>
+        <g class="an-fade" style="--d:0s"><circle cx="70" cy="100" r="9" fill="var(--signal)"/><text x="70" y="134" text-anchor="middle" fill="var(--text)" font-family="var(--body)" font-size="12" font-weight="600">Unknown</text><text x="70" y="150" text-anchor="middle" fill="var(--text-mute)" font-family="var(--mono)" font-size="10.5">feasibility</text></g>
+        <g class="an-fade" style="--d:1s"><rect x="250" y="78" width="116" height="44" rx="10" fill="var(--ink)" stroke="var(--signal)" stroke-width="1.5"/><text x="308" y="105" text-anchor="middle" fill="var(--signal)" font-family="var(--body)" font-size="12.5" font-weight="600">Discovery spike</text></g>
+        <line class="an-draw" style="--d:1.3s" x1="474" y1="100" x2="520" y2="100" stroke="var(--signal)" stroke-width="2" marker-end="url(#ah5)"/>
+        <g class="an-pop" style="--d:1.6s"><rect x="524" y="48" width="96" height="30" rx="8" fill="var(--pos-soft)" stroke="var(--pos)"/><text x="572" y="68" text-anchor="middle" fill="var(--pos)" font-family="var(--mono)" font-size="11" font-weight="600">GO</text></g>
+        <g class="an-pop" style="--d:1.75s"><rect x="524" y="86" width="96" height="30" rx="8" fill="var(--panel-2)" stroke="var(--line-strong)"/><text x="572" y="106" text-anchor="middle" fill="var(--text-soft)" font-family="var(--mono)" font-size="11" font-weight="600">PIVOT</text></g>
+        <g class="an-pop" style="--d:1.9s"><rect x="524" y="124" width="96" height="30" rx="8" fill="var(--neg-soft)" stroke="var(--neg)"/><text x="572" y="144" text-anchor="middle" fill="var(--neg)" font-family="var(--mono)" font-size="11" font-weight="600">STOP</text></g>
+      </svg>`
+  };
+  return A[name]||'';
+}
+const figCap = {
+  trainloop:'Fig 1.1 — The learning loop',
+  pipeline:'Fig 2.1 — The lifecycle is a loop, not a line',
+  rag:'Fig 3.1 — Retrieval-augmented generation',
+  matrix:'Fig 4.1 — Reading a confusion matrix',
+  uncertainty:'Fig 5.1 — Narrowing the uncertainty cone'
+};
+
+/* ---------- render ---------- */
+const screensEl=document.getElementById('screens');
+const navEl=document.getElementById('nav');
+
+function renderNav(){
+  navEl.innerHTML='';
+  state.screens.forEach((sc,i)=>{
+    if(sc.type==='results') return; // results reached via assessment
+    const li=document.createElement('li');
+    const reachable = i<=furthestReachable();
+    li.className='nav-item'+(i===state.idx?' active':'')+(isDone(i)?' done':'');
+    li.setAttribute('role','button');
+    li.tabIndex = reachable?0:-1;
+    if(!reachable) li.setAttribute('aria-disabled','true');
+    const idxLabel = sc.type==='module' ? String(sc.mi+1).padStart(2,'0')
+                    : sc.type==='assessment' ? '✓' : '◆';
+    li.innerHTML=`<span class="idx">${isDone(i)&&sc.type==='module'?'<span class="check">●</span>':idxLabel}</span>
+      <span><span class="nm">${sc.label}</span><span class="tag">${sc.tag}${sc.type==='module'?' · '+COURSE.modules[sc.mi].tag:''}</span></span>`;
+    if(reachable){
+      li.addEventListener('click',()=>goTo(i));
+      li.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();goTo(i);}});
+    }
+    navEl.appendChild(li);
+  });
+}
+
+/* gating: you can revisit anything up to the furthest screen you've opened */
+let _furthest=0;
+function furthestReachable(){return _furthest;}
+function isDone(i){
+  const sc=state.screens[i];
+  if(sc.type==='module') return !!state.kcAnswered[COURSE.modules[sc.mi].id];
+  return false;
+}
+
+function updateProgress(){
+  const total=state.screens.length-1; // exclude duplicate results target counting
+  const pct=Math.round((state.idx/(state.screens.length-1))*100);
+  document.getElementById('pFill').style.width=pct+'%';
+  document.getElementById('pPct').textContent=pct+'%';
+  document.getElementById('mFill').style.width=pct+'%';
+  document.getElementById('kcScore').textContent=state.kcCorrect+' / '+COURSE.modules.length;
+  const sc=state.screens[state.idx];
+  document.getElementById('crumbs').innerHTML = sc.tag+' · <b>'+sc.label+'</b>';
+  document.getElementById('mStep').textContent = sc.type==='module' ? sc.tag : sc.label;
+}
+
+function renderScreen(){
+  const sc=state.screens[state.idx];
+  let html='';
+  if(sc.type==='intro') html=tplIntro();
+  else if(sc.type==='module') html=tplModule(COURSE.modules[sc.mi]);
+  else if(sc.type==='assessment') html=tplAssessment();
+  else if(sc.type==='results') html=tplResults();
+  screensEl.innerHTML='<section class="screen live">'+html+'</section>';
+  bindScreen(sc);
+  window.scrollTo({top:0});
+  document.querySelector('.viewport').scrollIntoView({block:'start'});
+}
+
+function tplIntro(){
+  return `<div class="hero">
+    <div class="badge-row">
+      <span class="pill">Self-paced</span><span class="pill">~35 minutes</span><span class="pill">No code required</span><span class="pill">British English</span>
+    </div>
+    <h2>Lead AI products<br>without <em>pretending</em> to be a data scientist.</h2>
+    <p class="lead">A field course for product managers whose roadmaps now include AI, and who would rather understand the machine than nod along in the standup. Five short modules, a knowledge check after each, and a scored assessment at the end.</p>
+    <div class="method">
+      <div class="m"><div class="num">01</div><h4>Watch it move</h4><p>Each concept is taught through an animated diagram, not a wall of text.</p></div>
+      <div class="m"><div class="num">02</div><h4>Prove it stuck</h4><p>A knowledge check after every module, with feedback that explains the why.</p></div>
+      <div class="m"><div class="num">03</div><h4>Get scored</h4><p>A final eight-question assessment with a ${PASS_MARK}% pass mark and a breakdown.</p></div>
+    </div>
+    <div class="id-note">
+      <div class="h">How this course is built</div>
+      <p>The flow follows <code>Gagné's Nine Events of Instruction</code>: each module gains attention with a scenario, states <code>Bloom-levelled objectives</code>, recalls prior learning, presents chunked content, guides with worked PM examples, then elicits performance through retrieval practice with explanatory feedback. The assessment is summative; the close is built for transfer back to your team.</p>
+    </div>
+    <div class="nav-row"><span></span><button class="btn btn-primary" data-next>Begin Module 01 <span class="arr">→</span></button></div>
+  </div>`;
+}
+
+function tplModule(m){
+  return `
+    <div class="eyebrow">${m.code} · ${m.tag}</div>
+    <h2 class="title">${m.title}</h2>
+    <div class="objectives">
+      <div class="lab">By the end of this module you will be able to</div>
+      <ul>${m.objectives.map(o=>`<li><span class="verb">${o.verb}</span><span>${o.t}</span></li>`).join('')}</ul>
+    </div>
+    <div class="recall"><span class="ic">Recall</span><p>${m.recall}</p></div>
+    <div class="figure" data-fig="${m.fig}">
+      <button class="replay" data-replay>↻ Replay</button>
+      <div class="fig-host">${fig(m.fig)}</div>
+      <div class="cap"><span>${figCap[m.fig]}</span><span class="live-dot">animated</span></div>
+    </div>
+    ${m.body}
+    <div class="check-block" data-check>
+      <div class="badge">Knowledge check · retrieval practice</div>
+      <div class="q-stem">${m.check.stem}</div>
+      <div class="opts">${m.check.opts.map((o,i)=>`<button class="opt" data-opt="${i}"><span class="mk">${String.fromCharCode(65+i)}</span><span>${o}</span></button>`).join('')}</div>
+      <div class="feedback" data-fb></div>
+    </div>
+    <div class="nav-row">
+      <button class="btn btn-ghost" data-prev>← Back</button>
+      <button class="btn btn-primary" data-next disabled>Continue <span class="arr">→</span></button>
+    </div>`;
+}
+
+function tplAssessment(){
+  const total=COURSE.assessment.length;
+  const q=COURSE.assessment[state.assessIdx];
+  const chosen=state.assessAnswers[state.assessIdx];
+  const answered = chosen!==undefined;
+  return `
+    <div class="eyebrow">Final assessment · Summative</div>
+    <div class="assess-head">
+      <h2 class="title" style="margin-bottom:0">Show what you know</h2>
+      <span class="q-counter">Q${String(state.assessIdx+1).padStart(2,'0')} / ${String(total).padStart(2,'0')}</span>
+    </div>
+    <div class="q-dots">${COURSE.assessment.map((_,i)=>`<span class="${i<state.assessIdx?'done':''}${i===state.assessIdx?' cur':''}"></span>`).join('')}</div>
+    <div class="check-block" data-assess style="margin-top:6px">
+      <div class="badge">${q.area}</div>
+      <div class="q-stem">${q.stem}</div>
+      <div class="opts">${q.opts.map((o,i)=>`<button class="opt" data-aopt="${i}"><span class="mk">${String.fromCharCode(65+i)}</span><span>${o}</span></button>`).join('')}</div>
+      <div class="feedback" data-fb></div>
+    </div>
+    <div class="nav-row">
+      <button class="btn btn-ghost" data-aprev ${state.assessIdx===0?'disabled':''}>← Previous</button>
+      <button class="btn btn-primary" data-anext disabled>${state.assessIdx===total-1?'See results':'Next question'} <span class="arr">→</span></button>
+    </div>`;
+}
+
+function scoreAssessment(){
+  let correct=0; const byArea={};
+  COURSE.assessment.forEach((q,i)=>{
+    byArea[q.area]=byArea[q.area]||{c:0,t:0};
+    byArea[q.area].t++;
+    if(state.assessAnswers[i]===q.correct){correct++;byArea[q.area].c++;}
+  });
+  return {correct, total:COURSE.assessment.length, pct:Math.round(correct/COURSE.assessment.length*100), byArea};
+}
+
+function tplResults(){
+  const r=scoreAssessment();
+  const pass=r.pct>=PASS_MARK;
+  const circ=2*Math.PI*92;
+  const areas=Object.entries(r.byArea);
+  return `<div class="result-wrap">
+    <div class="eyebrow" style="justify-content:center">Course complete · ${pass?'Certified':'Review and retry'}</div>
+    <h2 class="title">${pass?'You can hold your own on AI.':'Close. A little more and it sticks.'}</h2>
+    <div class="gauge-wrap">
+      <svg viewBox="0 0 200 200" width="230" height="230">
+        <circle cx="100" cy="100" r="92" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="11"/>
+        <circle id="gaugeArc" cx="100" cy="100" r="92" fill="none" stroke="${pass?'var(--pos)':'var(--signal)'}" stroke-width="11" stroke-linecap="round"
+          stroke-dasharray="${circ}" stroke-dashoffset="${circ}" transform="rotate(-90 100 100)"/>
+      </svg>
+      <div class="gauge-num"><div class="big" id="gaugeNum" style="color:${pass?'var(--pos)':'var(--signal)'}">0</div><div class="pct">${r.correct} of ${r.total} correct</div></div>
+    </div>
+    <div class="verdict ${pass?'pass':'fail'}">${pass?'● Passed — '+PASS_MARK+'% required':'● '+PASS_MARK+'% needed to pass'}</div>
+    <div class="breakdown">
+      ${areas.map(([a,v])=>{const p=Math.round(v.c/v.t*100);return `<div class="brow"><div class="bn"><span>${a}</span>${v.c} of ${v.t} correct</div><div style="display:flex;align-items:center;gap:12px"><div class="bbar"><i style="width:${p}%;background:${p>=70?'var(--pos)':p>=40?'var(--signal)':'var(--neg)'}"></i></div><div class="bsc">${p}%</div></div></div>`;}).join('')}
+    </div>
+    <div class="transfer">
+      <div class="h">Take it back to your team — this week</div>
+      <ul>
+        <li>For your next AI idea, write the success metric and the single error you fear most before any build starts.</li>
+        <li>Ask whether the knowledge changes often. If it does, push for retrieval over retraining.</li>
+        <li>Replace one fixed AI deadline with a time-boxed discovery spike and a go, pivot, or stop decision.</li>
+        <li>Add live monitoring to the definition of done for any model you ship, not just launch testing.</li>
+      </ul>
+    </div>
+    <div class="nav-row" style="justify-content:center;border-top:none;padding-top:8px">
+      <button class="btn btn-ghost" data-retry>↻ Retake assessment</button>
+      <button class="btn btn-primary" data-restart>Restart course</button>
+    </div>
+  </div>`;
+}
+
+/* ---------- bindings ---------- */
+function bindScreen(sc){
+  const next=screensEl.querySelector('[data-next]');
+  const prev=screensEl.querySelector('[data-prev]');
+  if(next) next.addEventListener('click',()=>goNext());
+  if(prev) prev.addEventListener('click',()=>goTo(state.idx-1));
+
+  // replay animation
+  const rep=screensEl.querySelector('[data-replay]');
+  if(rep) rep.addEventListener('click',()=>{
+    const host=screensEl.querySelector('.fig-host');
+    const figName=screensEl.querySelector('.figure').dataset.fig;
+    host.innerHTML=fig(figName);
+  });
+
+  if(sc.type==='module') bindModuleCheck(COURSE.modules[sc.mi], next);
+  if(sc.type==='assessment') bindAssessment();
+  if(sc.type==='results'){
+    animateGauge();
+    const retry=screensEl.querySelector('[data-retry]');
+    const restart=screensEl.querySelector('[data-restart]');
+    if(retry) retry.addEventListener('click',()=>{
+      state.assessAnswers=[]; state.assessIdx=0;
+      goTo(state.screens.findIndex(s=>s.type==='assessment'));
+    });
+    if(restart) restart.addEventListener('click',()=>{
+      state.assessAnswers=[]; state.assessIdx=0;
+      state.kcAnswered={}; state.kcCorrect=0; _furthest=0;
+      goTo(0);
+    });
+  }
+}
+
+function bindModuleCheck(m, nextBtn){
+  const block=screensEl.querySelector('[data-check]');
+  const opts=block.querySelectorAll('.opt');
+  const fb=block.querySelector('[data-fb]');
+  const already = state.kcAnswered[m.id];
+
+  function lock(chosen){
+    opts.forEach((o,i)=>{
+      o.disabled=true;
+      if(i===m.check.correct) o.classList.add('correct');
+      else if(i===chosen) o.classList.add('wrong');
+      else o.classList.add('dim');
+    });
+    const ok = chosen===m.check.correct;
+    fb.className='feedback show '+(ok?'ok':'no');
+    fb.innerHTML=`<span class="ft">${ok?'Correct':'Not quite'}</span><p>${ok?m.check.fb.ok:m.check.fb.no}</p>`;
+    nextBtn.disabled=false;
+  }
+
+  if(already){ lock(state.kcAnswered[m.id+'_chosen']); }
+
+  opts.forEach((o,i)=>o.addEventListener('click',()=>{
+    if(state.kcAnswered[m.id]) return;
+    state.kcAnswered[m.id]=true;
+    state.kcAnswered[m.id+'_chosen']=i;
+    if(i===m.check.correct) state.kcCorrect++;
+    lock(i);
+    updateProgress(); renderNav();
+  }));
+}
+
+function bindAssessment(){
+  const block=screensEl.querySelector('[data-assess]');
+  const opts=block.querySelectorAll('.opt');
+  const fb=block.querySelector('[data-fb]');
+  const nextBtn=screensEl.querySelector('[data-anext]');
+  const prevBtn=screensEl.querySelector('[data-aprev]');
+  const q=COURSE.assessment[state.assessIdx];
+  const chosen=state.assessAnswers[state.assessIdx];
+
+  function lock(sel){
+    opts.forEach((o,i)=>{
+      o.disabled=true;
+      if(i===q.correct)o.classList.add('correct');
+      else if(i===sel)o.classList.add('wrong');
+      else o.classList.add('dim');
+    });
+    const ok=sel===q.correct;
+    fb.className='feedback show '+(ok?'ok':'no');
+    fb.innerHTML=`<span class="ft">${ok?'Correct':'Review this'}</span><p>${q.why}</p>`;
+    nextBtn.disabled=false;
+  }
+
+  if(chosen!==undefined) lock(chosen);
+
+  opts.forEach((o,i)=>o.addEventListener('click',()=>{
+    if(state.assessAnswers[state.assessIdx]!==undefined) return;
+    state.assessAnswers[state.assessIdx]=i;
+    lock(i);
+  }));
+
+  if(prevBtn) prevBtn.addEventListener('click',()=>{
+    if(state.assessIdx>0){state.assessIdx--;renderScreen();}
+  });
+  nextBtn.addEventListener('click',()=>{
+    if(state.assessIdx < COURSE.assessment.length-1){
+      state.assessIdx++; renderScreen();
+    } else {
+      goTo(state.screens.findIndex(s=>s.type==='results'));
+    }
+  });
+}
+
+function animateGauge(){
+  const r=scoreAssessment();
+  const arc=document.getElementById('gaugeArc');
+  const num=document.getElementById('gaugeNum');
+  const circ=2*Math.PI*92;
+  requestAnimationFrame(()=>{
+    arc.style.transition='stroke-dashoffset 1.3s cubic-bezier(.2,.7,.2,1)';
+    arc.style.strokeDashoffset = circ*(1-r.pct/100);
+  });
+  let cur=0; const dur=1200, t0=performance.now();
+  function tick(t){
+    const k=Math.min(1,(t-t0)/dur);
+    num.textContent=Math.round(k*r.pct);
+    if(k<1) requestAnimationFrame(tick); else num.textContent=r.pct;
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ---------- navigation ---------- */
+function goTo(i){
+  if(i<0||i>=state.screens.length) return;
+  state.idx=i;
+  _furthest=Math.max(_furthest,i);
+  renderScreen(); renderNav(); updateProgress();
+}
+function goNext(){ goTo(state.idx+1); }
+
+/* ---------- SCORM glue ----------
+   Bridges this in-memory course to the LMS via the dual-standard wrapper.
+   All calls are safe no-ops when the course is opened outside an LMS. */
+const SCORMGlue = {
+  ready:false,
+
+  start(){
+    if(!window.SCORM) return;
+    SCORM.init();
+    this.ready = SCORM.available;
+    if(this.ready) this.resume();
+  },
+
+  // Restore progress, knowledge-check state and assessment answers on resume.
+  resume(){
+    if(SCORM.entry()!=='resume') return;
+    try{
+      const d = JSON.parse(SCORM.getSuspendData()||'{}');
+      if(typeof d.idx==='number')        state.idx = d.idx;
+      if(typeof d.furthest==='number')   _furthest = d.furthest;
+      if(d.kcAnswered)                   state.kcAnswered = d.kcAnswered;
+      if(typeof d.kcCorrect==='number')  state.kcCorrect = d.kcCorrect;
+      if(Array.isArray(d.assessAnswers)) state.assessAnswers = d.assessAnswers;
+      if(typeof d.assessIdx==='number')  state.assessIdx = d.assessIdx;
+    }catch(e){/* corrupt or empty suspend data — start fresh */}
+  },
+
+  // Persist a compact snapshot + course-progress bar (called on every move).
+  persist(){
+    if(!this.ready) return;
+    const last = state.screens.length-1;
+    SCORM.setProgress(last>0 ? state.idx/last : 0);
+    SCORM.setLocation(String(state.idx));
+    SCORM.setSuspendData(JSON.stringify({
+      idx: state.idx,
+      furthest: _furthest,
+      kcAnswered: state.kcAnswered,
+      kcCorrect: state.kcCorrect,
+      assessAnswers: state.assessAnswers,
+      assessIdx: state.assessIdx
+    }));
+    SCORM.commit();
+  },
+
+  // Report the summative outcome when the results screen is shown.
+  reportResults(){
+    if(!this.ready) return;
+    const r = scoreAssessment();
+    SCORM.setScore(r.pct, 0, 100);
+    SCORM.setProgress(1);
+    SCORM.setPassed(r.pct >= PASS_MARK);
+    SCORM.commit();
+  }
+};
+
+/* hook persistence into existing navigation/progress without rewriting it */
+const _updateProgress = updateProgress;
+updateProgress = function(){ _updateProgress(); SCORMGlue.persist(); };
+
+const _renderScreen = renderScreen;
+renderScreen = function(){
+  _renderScreen();
+  if(state.screens[state.idx] && state.screens[state.idx].type==='results')
+    SCORMGlue.reportResults();
+};
+
+/* ---------- init ---------- */
+SCORMGlue.start();   // initialise + resume BEFORE first render
+buildScreens();
+if(typeof state.idx!=='number' || state.idx<0 || state.idx>=state.screens.length) state.idx = 0;
+_furthest = Math.max(_furthest, state.idx);
+renderNav();
+updateProgress();
+renderScreen();
+</script>
+</body>
+</html>

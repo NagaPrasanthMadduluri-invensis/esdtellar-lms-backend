@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polaris · Demo Reel</title>
+<style>
+  :root{
+    --navy:#0D2137;
+    --navy-deep:#081726;
+    --panel:#10243B;
+    --panel-2:#132B45;
+    --line:#25394F;
+    --line-soft:#1C2E44;
+    --gold:#B8902A;
+    --gold-soft:#C2A86A;
+    --ink:#EAF1F8;
+    --ink-2:#A9BED2;
+    --ink-3:#6F8499;
+    --amber:#C2A86A;
+    --good:#5FA98C;
+    --stage-w:1280px;
+    --stage-h:720px;
+    --ease:cubic-bezier(.16,.84,.44,1);
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:#04101B;
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- Stage ---------- */
+  #frame{
+    width:min(96vw, calc(96vh * 16 / 9));
+    aspect-ratio:16/9;
+    position:relative;
+  }
+  #stage{
+    position:absolute;inset:0;
+    background:
+      radial-gradient(120% 90% at 18% 0%, #133453 0%, var(--navy) 42%, var(--navy-deep) 100%);
+    border-radius:14px;
+    overflow:hidden;
+    box-shadow:0 40px 120px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.03) inset;
+  }
+  /* faint star field for the "Polaris" idea, very subtle */
+  #stage::before{
+    content:"";position:absolute;inset:0;opacity:.5;
+    background-image:
+      radial-gradient(1px 1px at 12% 22%, rgba(194,168,106,.55), transparent),
+      radial-gradient(1px 1px at 78% 14%, rgba(255,255,255,.35), transparent),
+      radial-gradient(1px 1px at 64% 70%, rgba(255,255,255,.25), transparent),
+      radial-gradient(1px 1px at 30% 82%, rgba(194,168,106,.35), transparent),
+      radial-gradient(1px 1px at 90% 56%, rgba(255,255,255,.3), transparent),
+      radial-gradient(1px 1px at 46% 38%, rgba(255,255,255,.18), transparent);
+    pointer-events:none;
+  }
+
+  .scene{
+    position:absolute;inset:0;
+    padding:64px 72px;
+    display:flex;flex-direction:column;justify-content:center;
+    opacity:0;visibility:hidden;
+    transition:opacity .6s var(--ease);
+  }
+  .scene.is-active{opacity:1;visibility:visible;transition:opacity .7s var(--ease)}
+
+  /* shared type */
+  .kick{
+    font-size:13px;letter-spacing:.28em;text-transform:uppercase;
+    color:var(--gold);font-weight:600;
+  }
+  .kick .dim{color:var(--ink-3)}
+  .h1{font-size:64px;font-weight:300;letter-spacing:-.01em;line-height:1.04;color:#fff}
+  .h2{font-size:40px;font-weight:300;letter-spacing:-.01em;line-height:1.08;color:#fff}
+  .lead{font-size:21px;font-weight:300;color:var(--ink-2);line-height:1.5;max-width:42ch}
+  .meta{font-size:14px;color:var(--ink-3);letter-spacing:.02em}
+  .caption{
+    position:absolute;left:72px;right:72px;bottom:54px;
+    font-size:17px;color:var(--ink-2);font-weight:300;letter-spacing:.01em;
+  }
+  .caption b{color:var(--ink);font-weight:500}
+  .tag-illus{
+    display:inline-flex;align-items:center;gap:7px;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--gold-soft);border:.5px solid #3a3115;background:#15130A;
+    padding:4px 9px;border-radius:6px;
+  }
+  .tag-illus::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--gold-soft)}
+
+  /* entrance helpers (only run while active) */
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  @keyframes pop{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}
+  @keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  @keyframes growY{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+  @keyframes ring{from{stroke-dashoffset:var(--circ)}to{stroke-dashoffset:var(--dash)}}
+  @keyframes drawpoly{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
+  @keyframes blink{0%,100%{opacity:.25}50%{opacity:1}}
+
+  .scene.is-active .anim{opacity:0;animation:rise .7s var(--ease) forwards}
+  .scene.is-active .animf{opacity:0;animation:fade .8s var(--ease) forwards}
+  .scene.is-active .animp{opacity:0;animation:pop .6s var(--ease) forwards}
+
+  /* ===================================================== */
+  /* Scene 1 - brand                                        */
+  /* ===================================================== */
+  #s1{justify-content:center}
+  #s1 .word{
+    font-size:128px;font-weight:200;letter-spacing:.02em;color:#fff;line-height:1;
+    margin:18px 0 22px;
+  }
+  #s1 .word .star{color:var(--gold)}
+  #s1 .rule{height:1px;width:0;background:linear-gradient(90deg,var(--gold),transparent);margin:6px 0 26px}
+  .scene.is-active #s1rule{animation:growline 1s .5s var(--ease) forwards}
+  @keyframes growline{to{width:280px}}
+
+  /* ===================================================== */
+  /* Scene 2 - premise tiles                                */
+  /* ===================================================== */
+  .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:40px}
+  .tile{
+    background:linear-gradient(180deg,var(--panel) 0%, var(--panel-2) 100%);
+    border:.5px solid var(--line);border-radius:14px;padding:26px 24px;
+    position:relative;overflow:hidden;
+  }
+  .tile .num{font-size:13px;color:var(--gold);letter-spacing:.2em;font-weight:600}
+  .tile p{margin-top:14px;font-size:17px;line-height:1.55;color:var(--ink-2);font-weight:300}
+  .tile p b{color:#fff;font-weight:500}
+
+  /* ===================================================== */
+  /* Scene 3 - facilitator dashboard mock                   */
+  /* ===================================================== */
+  .ui{
+    margin-top:30px;background:var(--navy-deep);border:.5px solid var(--line);
+    border-radius:14px;overflow:hidden;box-shadow:0 24px 60px -28px rgba(0,0,0,.7);
+  }
+  .ui-top{
+    display:flex;align-items:center;gap:14px;padding:16px 20px;
+    border-bottom:.5px solid var(--line-soft);background:rgba(255,255,255,.012);
+  }
+  .dot{width:11px;height:11px;border-radius:50%}
+  .ui-brand{margin-left:6px;font-size:13px;letter-spacing:.16em;color:var(--gold);font-weight:600;text-transform:uppercase}
+  .ui-brand span{color:var(--ink-3)}
+  .ui-body{display:grid;grid-template-columns:1.4fr 1fr;gap:0}
+  .ui-main{padding:24px;border-right:.5px solid var(--line-soft)}
+  .ui-side{padding:24px;background:rgba(255,255,255,.008)}
+  .panel-label{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:14px}
+  .session-card{
+    background:linear-gradient(180deg,#143150,#0F2740);
+    border:.5px solid #2b4663;border-radius:12px;padding:20px;position:relative;
+  }
+  .session-card .sc-deck{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--gold-soft)}
+  .session-card .sc-name{font-size:24px;font-weight:300;color:#fff;margin-top:8px}
+  .session-card .sc-sub{font-size:14px;color:var(--ink-2);margin-top:6px}
+  .sc-meta{display:flex;gap:26px;margin-top:18px}
+  .sc-meta .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+  .sc-meta .v{font-size:20px;color:#fff;font-weight:300;margin-top:3px}
+  .go{
+    margin-top:20px;display:inline-flex;align-items:center;gap:9px;
+    background:var(--gold);color:#1a1303;font-weight:600;font-size:14px;
+    padding:11px 20px;border-radius:9px;letter-spacing:.01em;
+  }
+  .arr{width:15px;height:15px}
+  .row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:.5px solid var(--line-soft)}
+  .row:last-child{border-bottom:none}
+  .row .rl{font-size:14px;color:var(--ink-2)}
+  .row .rv{font-size:14px;color:#fff}
+  .pill{font-size:11px;color:var(--good);border:.5px solid #2c4d44;background:#0e1f1b;padding:3px 9px;border-radius:20px}
+
+  /* ===================================================== */
+  /* Scene 4 - lobby fills                                  */
+  /* ===================================================== */
+  .lobby{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:36px}
+  .seat{
+    background:var(--panel);border:.5px solid var(--line);border-radius:13px;
+    padding:20px 18px;display:flex;align-items:center;gap:14px;
+  }
+  .ava{
+    width:46px;height:46px;border-radius:50%;flex:none;
+    display:flex;align-items:center;justify-content:center;
+    font-size:16px;font-weight:500;color:#0c1c2e;
+    background:linear-gradient(150deg,var(--gold-soft),var(--gold));
+  }
+  .seat .nm{font-size:16px;color:#fff;font-weight:400}
+  .seat .st{font-size:12px;color:var(--good);margin-top:3px;display:flex;align-items:center;gap:6px}
+  .seat .st::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}
+  .scene.is-active .seat{opacity:0;animation:pop .55s var(--ease) forwards}
+
+  /* ===================================================== */
+  /* Scene 5 - live card + timing                           */
+  /* ===================================================== */
+  #s5 .layout{display:grid;grid-template-columns:1fr 320px;gap:26px;margin-top:24px;align-items:start}
+  .card-stage{position:relative}
+  .phasebar{display:flex;gap:6px;margin-bottom:18px}
+  .seg{height:6px;flex:1;border-radius:4px;background:var(--line)}
+  .seg.done{background:var(--gold-soft)}
+  .seg.now{background:var(--gold);box-shadow:0 0 14px -2px var(--gold)}
+  .qcard{
+    background:linear-gradient(165deg,#16365A 0%, #0F2740 100%);
+    border:.5px solid #2f4d6c;border-radius:18px;padding:40px 40px 34px;
+    position:relative;box-shadow:0 30px 70px -34px rgba(0,0,0,.8);
+  }
+  .qcard .deck{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--gold-soft)}
+  .qcard .qno{position:absolute;top:30px;right:34px;font-size:13px;color:var(--ink-3);letter-spacing:.1em}
+  .qcard .q{font-size:34px;font-weight:300;color:#fff;line-height:1.22;margin-top:18px;max-width:20ch}
+  .responses{display:flex;flex-wrap:wrap;gap:9px;margin-top:26px}
+  .chip{
+    font-size:13.5px;color:var(--ink);background:rgba(255,255,255,.05);
+    border:.5px solid var(--line);border-radius:20px;padding:8px 14px;display:flex;gap:8px;align-items:center;
+  }
+  .chip .who{color:var(--gold-soft);font-weight:600}
+  .typing{display:flex;gap:4px;align-items:center;padding:8px 14px}
+  .typing i{width:6px;height:6px;border-radius:50%;background:var(--ink-3);animation:blink 1.2s infinite}
+  .typing i:nth-child(2){animation-delay:.2s}
+  .typing i:nth-child(3){animation-delay:.4s}
+  .scene.is-active .chip{opacity:0;animation:pop .5s var(--ease) forwards}
+
+  .timers{background:var(--navy-deep);border:.5px solid var(--line);border-radius:14px;padding:20px 18px}
+  .timers .th{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:4px}
+  .timers .th .fo{float:right;color:var(--gold-soft);letter-spacing:.08em}
+  .tmr{padding:14px 0;border-bottom:.5px solid var(--line-soft)}
+  .tmr:last-child{border-bottom:none;padding-bottom:0}
+  .tmr .lab{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+  .tmr .big{font-size:26px;font-weight:300;color:#fff;margin-top:5px;font-variant-numeric:tabular-nums}
+  .tmr .big.amber{color:var(--amber)}
+  .tbar{height:5px;border-radius:4px;background:var(--line);margin-top:9px;overflow:hidden}
+  .tbar i{display:block;height:100%;border-radius:4px;background:var(--gold-soft);transform-origin:left;width:100%}
+  .tbar i.amber{background:var(--amber)}
+  .scene.is-active .tbar i{transform:scaleX(0);animation:grow 6s linear forwards}
+
+  /* ===================================================== */
+  /* Scene 6 - capture trio                                 */
+  /* ===================================================== */
+  .trio{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:26px}
+  .cap{background:var(--panel);border:.5px solid var(--line);border-radius:14px;padding:22px 22px 24px;min-height:300px}
+  .cap .ch{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin-bottom:16px}
+  /* word map */
+  .wmap{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:baseline;line-height:1.1}
+  .wmap span{color:var(--ink-2);font-weight:300}
+  .w1{font-size:34px;color:#fff!important;font-weight:400}
+  .w2{font-size:26px;color:var(--gold-soft)!important}
+  .w3{font-size:22px}
+  .w4{font-size:17px}
+  .w5{font-size:15px;color:var(--ink-3)!important}
+  .scene.is-active .wmap span{opacity:0;animation:pop .5s var(--ease) forwards}
+  /* commitments */
+  .commit{display:flex;gap:12px;padding:12px 0;border-bottom:.5px solid var(--line-soft)}
+  .commit:last-child{border-bottom:none}
+  .commit .ck{width:18px;height:18px;border-radius:5px;border:1.5px solid var(--gold-soft);flex:none;margin-top:2px;position:relative}
+  .commit .ck::after{content:"";position:absolute;left:4px;top:1px;width:5px;height:9px;border:solid var(--gold-soft);border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .commit p{font-size:14px;color:var(--ink-2);line-height:1.45}
+  .commit p b{color:#fff;font-weight:500}
+  .scene.is-active .commit{opacity:0;animation:rise .55s var(--ease) forwards}
+
+  /* ===================================================== */
+  /* Scene 7 - controls                                     */
+  /* ===================================================== */
+  .ctrls{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:34px}
+  .ctrl{background:var(--panel);border:.5px solid var(--line);border-radius:14px;padding:26px 24px;text-align:left}
+  .ctrl .ic{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;border:.5px solid var(--line);background:var(--navy-deep);margin-bottom:18px}
+  .ctrl .nm{font-size:22px;font-weight:300;color:#fff}
+  .ctrl .ds{font-size:14.5px;color:var(--ink-2);margin-top:8px;line-height:1.5;font-weight:300}
+  .ctrl.go-ctrl{border-color:#3a3115;background:linear-gradient(180deg,#1a1708,#141a2a)}
+  .ctrl.go-ctrl .nm{color:var(--gold-soft)}
+
+  /* ===================================================== */
+  /* Scene 8 - report cuts                                  */
+  /* ===================================================== */
+  #s8 .layout{display:grid;grid-template-columns:1.1fr 1fr;gap:30px;margin-top:24px;align-items:center}
+  .cuts{display:flex;gap:9px;margin-bottom:22px;flex-wrap:wrap}
+  .cut{font-size:13px;padding:8px 16px;border-radius:9px;border:.5px solid var(--line);color:var(--ink-2)}
+  .cut.on{background:var(--gold);color:#1a1303;border-color:var(--gold);font-weight:600}
+  .move{margin-bottom:18px}
+  .move .ml{display:flex;justify-content:space-between;font-size:14px;color:var(--ink-2);margin-bottom:9px}
+  .move .ml b{color:#fff;font-weight:400}
+  .move .delta{color:var(--good);font-weight:600}
+  .track{height:9px;border-radius:6px;background:var(--line);position:relative;overflow:hidden}
+  .track .base{position:absolute;left:0;top:0;height:100%;background:#3a536e;border-radius:6px}
+  .track .nowfill{position:absolute;left:0;top:0;height:100%;background:linear-gradient(90deg,var(--gold-soft),var(--gold));border-radius:6px;transform-origin:left}
+  .scene.is-active .nowfill{transform:scaleX(0);animation:grow 1.1s var(--ease) forwards}
+  .scene.is-active .base{transform:scaleX(0);transform-origin:left;animation:grow .8s var(--ease) forwards}
+
+  /* ===================================================== */
+  /* Scene 9 - close                                        */
+  /* ===================================================== */
+  #s9{justify-content:center;text-align:center;align-items:center}
+  #s9 .word{font-size:96px;font-weight:200;letter-spacing:.02em;color:#fff;margin-bottom:18px}
+  #s9 .word .star{color:var(--gold)}
+
+  /* ---------- chrome / controls ---------- */
+  #chrome{
+    position:absolute;left:0;right:0;bottom:-58px;
+    display:flex;align-items:center;gap:16px;
+    padding:14px 6px 0;
+    transition:opacity .3s;
+  }
+  #chrome.hidden{opacity:0;pointer-events:none}
+  .btn{
+    width:38px;height:38px;border-radius:10px;border:1px solid var(--line);
+    background:var(--panel);color:var(--ink);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;flex:none;
+    transition:background .2s,border-color .2s;
+  }
+  .btn:hover{background:var(--panel-2);border-color:#3a536e}
+  .btn svg{width:16px;height:16px;fill:currentColor}
+  #track-outer{flex:1;height:6px;border-radius:4px;background:#16283b;overflow:hidden;cursor:pointer;position:relative}
+  #track-fill{height:100%;width:0;background:linear-gradient(90deg,var(--gold-soft),var(--gold))}
+  .dots{display:flex;gap:7px}
+  .pdot{width:7px;height:7px;border-radius:50%;background:#2a4055;cursor:pointer;transition:background .2s,transform .2s}
+  .pdot.on{background:var(--gold);transform:scale(1.3)}
+  #time{font-size:12px;color:var(--ink-3);font-variant-numeric:tabular-nums;min-width:74px;text-align:right;letter-spacing:.04em}
+  #hint{
+    position:absolute;top:-34px;right:6px;font-size:11px;color:var(--ink-3);letter-spacing:.04em;
+  }
+  #hint b{color:var(--ink-2)}
+
+  @media (prefers-reduced-motion: reduce){
+    .scene,.scene.is-active *{animation-duration:.01ms!important;transition-duration:.15s!important}
+  }
+</style>
+<!-- SCORM bridge: must load before course JS -->
+<script src="scorm-api.js"></script>
+</head>
+<body>
+<div id="frame">
+  <div id="stage">
+
+    <!-- ============ SCENE 1 ============ -->
+    <section class="scene" id="s1" data-dur="10">
+      <div class="kick anim" style="animation-delay:.1s">Edstellar</div>
+      <div class="word anim" style="animation-delay:.35s">Polaris<span class="star">.</span></div>
+      <div class="rule" id="s1rule"></div>
+      <div class="lead anim" style="animation-delay:.7s">Virtual facilitation for the ABL Card Series.</div>
+      <div class="meta anim" style="margin-top:22px;animation-delay:1s">A peer-accountability game for intact teams · Accreditation by Edstellar</div>
+    </section>
+
+    <!-- ============ SCENE 2 ============ -->
+    <section class="scene" id="s2" data-dur="11">
+      <div class="kick anim">What it does</div>
+      <h2 class="h2 anim" style="margin-top:16px;animation-delay:.15s">Honest questions,<br>put on the table.</h2>
+      <div class="tiles">
+        <div class="tile anim" style="animation-delay:.5s">
+          <div class="num">01</div>
+          <p>Cards surface what teams usually avoid: <b>trust, alignment, performance.</b></p>
+        </div>
+        <div class="tile anim" style="animation-delay:.75s">
+          <div class="num">02</div>
+          <p>Players respond in the moment and <b>make commitments to each other.</b></p>
+        </div>
+        <div class="tile anim" style="animation-delay:1s">
+          <div class="num">03</div>
+          <p>Those commitments are <b>held to account</b> over the weeks that follow.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SCENE 3 ============ -->
+    <section class="scene" id="s3" data-dur="15">
+      <div class="kick anim">The facilitator</div>
+      <div class="ui animf" style="animation-delay:.3s">
+        <div class="ui-top">
+          <span class="dot" style="background:#E05B49"></span>
+          <span class="dot" style="background:#E0A93B"></span>
+          <span class="dot" style="background:#54A07A"></span>
+          <span class="ui-brand">Polaris <span>· Facilitator console</span></span>
+        </div>
+        <div class="ui-body">
+          <div class="ui-main">
+            <div class="panel-label">Next session</div>
+            <div class="session-card">
+              <div class="sc-deck">Team Effectiveness · Trust</div>
+              <div class="sc-name">Vantage Mobility</div>
+              <div class="sc-sub">Product &amp; Engineering pod · post-merger</div>
+              <div class="sc-meta">
+                <div><div class="k">Participants</div><div class="v">8</div></div>
+                <div><div class="k">Format</div><div class="v">Live · remote</div></div>
+                <div><div class="k">Cards</div><div class="v">12</div></div>
+              </div>
+              <div class="go">Open the room
+                <svg class="arr" viewBox="0 0 24 24" fill="none" stroke="#1a1303" stroke-width="2.4"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+              </div>
+            </div>
+          </div>
+          <div class="ui-side">
+            <div class="panel-label">Account</div>
+            <div class="row"><span class="rl">Clients</span><span class="rv">6 active</span></div>
+            <div class="row"><span class="rl">Session credits</span><span class="rv">14</span></div>
+            <div class="row"><span class="rl">Accreditation</span><span class="pill">Certified</span></div>
+            <div class="row"><span class="rl">Series</span><span class="rv">6 decks</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="caption animf" style="animation-delay:1.1s">A certified facilitator opens the room for an <b>eight-person product pod.</b></div>
+    </section>
+
+    <!-- ============ SCENE 4 ============ -->
+    <section class="scene" id="s4" data-dur="13">
+      <div class="kick anim">The room fills</div>
+      <div class="lobby" id="lobby"></div>
+      <div class="caption animf" style="animation-delay:1.6s">Participants join from anywhere. <b>No installs, just a link.</b></div>
+    </section>
+
+    <!-- ============ SCENE 5 ============ -->
+    <section class="scene" id="s5" data-dur="20">
+      <div class="kick anim">Live session · Trust</div>
+      <div class="layout">
+        <div class="card-stage">
+          <div class="phasebar animf" style="animation-delay:.2s">
+            <div class="seg done"></div><div class="seg done"></div>
+            <div class="seg now"></div><div class="seg"></div>
+            <div class="seg"></div><div class="seg"></div>
+          </div>
+          <div class="qcard animp" style="animation-delay:.35s">
+            <div class="deck">Trust · Card 04</div>
+            <div class="qno">Phase 3 of 6</div>
+            <div class="q">What does this team avoid saying out loud?</div>
+            <div class="responses">
+              <span class="chip" style="animation-delay:1.1s"><span class="who">Priya</span> We talk around bad news.</span>
+              <span class="chip" style="animation-delay:1.7s"><span class="who">Daniel</span> Whose call it really is.</span>
+              <span class="chip" style="animation-delay:2.4s"><span class="who">Aisha</span> When we are over capacity.</span>
+              <span class="chip" style="animation-delay:3.1s"><span class="who">Tomás</span> Disagreement with Raj.</span>
+              <span class="chip typing" style="animation-delay:3.7s"><i></i><i></i><i></i></span>
+            </div>
+          </div>
+        </div>
+        <div class="timers animf" style="animation-delay:.6s">
+          <div class="th">Pacing <span class="fo">facilitator only</span></div>
+          <div class="tmr">
+            <div class="lab">This card</div>
+            <div class="big">01:48</div>
+            <div class="tbar"><i style="animation-delay:.6s"></i></div>
+          </div>
+          <div class="tmr">
+            <div class="lab">This phase</div>
+            <div class="big amber">07:12</div>
+            <div class="tbar"><i class="amber" style="animation-delay:.6s"></i></div>
+          </div>
+          <div class="tmr">
+            <div class="lab">Session</div>
+            <div class="big">24:05</div>
+          </div>
+        </div>
+      </div>
+      <div class="caption animf" style="animation-delay:.9s">Three timers guide pace. They <b>suggest, never enforce, and never show red.</b></div>
+    </section>
+
+    <!-- ============ SCENE 6 ============ -->
+    <section class="scene" id="s6" data-dur="16">
+      <div class="kick anim" style="display:flex;justify-content:space-between;align-items:center">
+        <span>What gets captured</span>
+        <span class="tag-illus animf" style="animation-delay:.2s">Illustrative data</span>
+      </div>
+      <div class="trio">
+        <div class="cap animf" style="animation-delay:.3s">
+          <div class="ch">Word map · "Trust here means…"</div>
+          <div class="wmap">
+            <span class="w1">honesty</span>
+            <span class="w2">follow-through</span>
+            <span class="w3">candour</span>
+            <span class="w2">reliability</span>
+            <span class="w4">safety</span>
+            <span class="w3">consistency</span>
+            <span class="w4">respect</span>
+            <span class="w5">patience</span>
+            <span class="w4">clarity</span>
+          </div>
+        </div>
+        <div class="cap animf" style="animation-delay:.5s">
+          <div class="ch">Team audit · six dimensions</div>
+          <svg viewBox="0 0 220 200" width="100%" style="margin-top:6px">
+            <g fill="none" stroke="#26405a" stroke-width="1">
+              <polygon points="110,20 188,65 188,135 110,180 32,135 32,65"/>
+              <polygon points="110,52 159,80 159,123 110,150 61,123 61,80"/>
+            </g>
+            <polygon class="radarpoly" points="110,38 172,72 165,128 110,162 48,120 55,78"
+              fill="rgba(184,144,42,.22)" stroke="var(--gold)" stroke-width="2"
+              style="transform-origin:110px 100px"/>
+            <g fill="var(--ink-3)" font-size="9" font-family="sans-serif" text-anchor="middle">
+              <text x="110" y="13">Trust</text>
+              <text x="200" y="63">Align</text>
+              <text x="200" y="145">Comm</text>
+              <text x="110" y="195">Perform</text>
+              <text x="20" y="145">Lead</text>
+              <text x="20" y="63">Decide</text>
+            </g>
+          </svg>
+        </div>
+        <div class="cap animf" style="animation-delay:.7s">
+          <div class="ch">Commitments made</div>
+          <div class="commit" style="animation-delay:1.1s"><span class="ck"></span><p><b>Daniel</b> will name the decision owner on every brief.</p></div>
+          <div class="commit" style="animation-delay:1.5s"><span class="ck"></span><p><b>Priya</b> will flag capacity before saying yes.</p></div>
+          <div class="commit" style="animation-delay:1.9s"><span class="ck"></span><p><b>Raj &amp; Tomás</b> to debrief openly after each sprint.</p></div>
+        </div>
+      </div>
+      <div class="caption animf" style="animation-delay:.9s">Reflections, audit scores and <b>commitments</b> are captured live, ready for the report.</div>
+    </section>
+
+    <!-- ============ SCENE 7 ============ -->
+    <section class="scene" id="s7" data-dur="11">
+      <div class="kick anim">In the facilitator's hands</div>
+      <div class="ctrls">
+        <div class="ctrl animp" style="animation-delay:.3s">
+          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="var(--ink-2)"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg></div>
+          <div class="nm">Pause</div>
+          <div class="ds">A short, same-day stop. Everyone is told, the timers hold.</div>
+        </div>
+        <div class="ctrl animp" style="animation-delay:.5s">
+          <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink-2)" stroke-width="2"><path d="M4 12a8 8 0 1 1 2.3 5.6"/><path d="M4 20v-5h5"/></svg></div>
+          <div class="nm">Reconvene</div>
+          <div class="ds">Continue on a planned future day, with full context kept.</div>
+        </div>
+        <div class="ctrl go-ctrl animp" style="animation-delay:.7s">
+          <div class="ic" style="border-color:#3a3115"><svg width="18" height="18" viewBox="0 0 24 24" fill="var(--gold-soft)"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></div>
+          <div class="nm">Stop</div>
+          <div class="ds">A permanent end when the work is done, and the report is generated.</div>
+        </div>
+      </div>
+      <div class="caption animf" style="animation-delay:.95s">Built for senior rooms: <b>pause, reconvene, or stop</b> without losing a thing.</div>
+    </section>
+
+    <!-- ============ SCENE 8 ============ -->
+    <section class="scene" id="s8" data-dur="16">
+      <div class="kick anim" style="display:flex;justify-content:space-between;align-items:center">
+        <span>The Suite Effectiveness Report</span>
+        <span class="tag-illus animf" style="animation-delay:.2s">Illustrative data</span>
+      </div>
+      <div class="layout">
+        <div>
+          <div class="cuts animf" style="animation-delay:.3s">
+            <span class="cut on">Leadership</span>
+            <span class="cut">Organisation</span>
+            <span class="cut">Facilitator</span>
+            <span class="cut">Team</span>
+          </div>
+          <div class="move">
+            <div class="ml"><span>Psychological safety</span><span><b>3.1 → 4.0</b> <span class="delta">+0.9</span></span></div>
+            <div class="track"><span class="base" style="width:62%"></span><span class="nowfill" style="width:80%"></span></div>
+          </div>
+          <div class="move">
+            <div class="ml"><span>Decision clarity</span><span><b>2.8 → 3.7</b> <span class="delta">+0.9</span></span></div>
+            <div class="track"><span class="base" style="width:56%"></span><span class="nowfill" style="width:74%"></span></div>
+          </div>
+          <div class="move">
+            <div class="ml"><span>Follow-through</span><span><b>3.0 → 3.6</b> <span class="delta">+0.6</span></span></div>
+            <div class="track"><span class="base" style="width:60%"></span><span class="nowfill" style="width:72%"></span></div>
+          </div>
+        </div>
+        <div class="cap animf" style="animation-delay:.6s;min-height:auto">
+          <div class="ch">Where it moved most</div>
+          <svg viewBox="0 0 220 200" width="100%" style="margin-top:6px">
+            <g fill="none" stroke="#26405a" stroke-width="1">
+              <polygon points="110,20 188,65 188,135 110,180 32,135 32,65"/>
+              <polygon points="110,52 159,80 159,123 110,150 61,123 61,80"/>
+            </g>
+            <polygon points="110,46 165,76 158,126 110,156 56,122 62,80"
+              fill="none" stroke="#3a536e" stroke-width="1.5" stroke-dasharray="4 4"/>
+            <polygon class="radarpoly" points="110,30 178,70 170,132 110,170 44,124 50,74"
+              fill="rgba(184,144,42,.20)" stroke="var(--gold)" stroke-width="2"
+              style="transform-origin:110px 100px;animation-delay:.8s"/>
+            <g fill="var(--ink-3)" font-size="9" text-anchor="middle">
+              <text x="110" y="13">Trust</text><text x="200" y="63">Align</text>
+              <text x="200" y="145">Comm</text><text x="110" y="195">Perform</text>
+              <text x="20" y="145">Lead</text><text x="20" y="63">Decide</text>
+            </g>
+          </svg>
+          <div class="meta" style="margin-top:8px;font-size:11.5px">Dashed: baseline · Gold: after session</div>
+        </div>
+      </div>
+      <div class="caption animf" style="animation-delay:.9s">One session, <b>read four ways</b> for four audiences.</div>
+    </section>
+
+    <!-- ============ SCENE 9 ============ -->
+    <section class="scene" id="s9" data-dur="8">
+      <div class="word anim">Polaris<span class="star">.</span></div>
+      <h2 class="h2 anim" style="font-size:30px;animation-delay:.25s">Get accredited to run it.</h2>
+      <div class="go anim" style="margin-top:26px;animation-delay:.5s">Contact Edstellar
+        <svg class="arr" viewBox="0 0 24 24" fill="none" stroke="#1a1303" stroke-width="2.4"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+      </div>
+      <div class="meta anim" style="margin-top:30px;animation-delay:.7s">Edstellar · ABL Card Series · Team Effectiveness</div>
+    </section>
+
+  </div><!-- /stage -->
+
+  <!-- ---------- chrome ---------- -->
+  <div id="chrome">
+    <div id="hint"><b>Space</b> play/pause · <b>R</b> hide controls · <b>M</b> mute · <b>F</b> fullscreen</div>
+    <button class="btn" id="playBtn" title="Play / pause"></button>
+    <button class="btn" id="restartBtn" title="Restart">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12a8 8 0 1 1 2.3 5.6"/><path d="M4 20v-5h5"/></svg>
+    </button>
+    <div class="dots" id="dots"></div>
+    <div id="track-outer"><div id="track-fill"></div></div>
+    <div id="time">0:00 / 2:00</div>
+    <button class="btn" id="muteBtn" title="Mute / unmute narration"></button>
+    <button class="btn" id="fsBtn" title="Fullscreen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
+  </div>
+</div>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs></defs>
+</svg>
+
+<script>
+(function(){
+  "use strict";
+  var PLAY='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></svg>';
+  var PAUSE='<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+
+  var scenes = Array.prototype.slice.call(document.querySelectorAll('.scene[data-dur]'));
+  var durs = scenes.map(function(s){return parseFloat(s.dataset.dur)*1000;});
+  var total = durs.reduce(function(a,b){return a+b;},0);
+  // cumulative start times
+  var starts=[]; var acc=0;
+  for(var i=0;i<durs.length;i++){starts.push(acc); acc+=durs[i];}
+
+  // build lobby seats (scene 4) with staggered delays
+  var people=[
+    ["Aisha","AK"],["Priya","PR"],["Daniel","DN"],["Lena","LE"],
+    ["Tomás","TM"],["Hannah","HA"],["Raj","RJ"],["Sofia","SF"]
+  ];
+  var lobby=document.getElementById('lobby');
+  people.forEach(function(p,idx){
+    var d=document.createElement('div');
+    d.className='seat';
+    d.style.animationDelay=(0.25+idx*0.18)+'s';
+    d.innerHTML='<div class="ava">'+p[1]+'</div><div><div class="nm">'+p[0]+'</div><div class="st">Joined</div></div>';
+    lobby.appendChild(d);
+  });
+
+  // radar polygon entrance
+  var styleEl=document.createElement('style');
+  styleEl.textContent='.scene.is-active .radarpoly{opacity:0;animation:drawpoly .9s var(--ease) .5s forwards}';
+  document.head.appendChild(styleEl);
+
+  // dots
+  var dotsWrap=document.getElementById('dots');
+  scenes.forEach(function(s,idx){
+    var dot=document.createElement('div');
+    dot.className='pdot';
+    dot.addEventListener('click',function(){ seek(starts[idx]+10); });
+    dotsWrap.appendChild(dot);
+  });
+  var dots=Array.prototype.slice.call(dotsWrap.children);
+
+  var playBtn=document.getElementById('playBtn');
+  var restartBtn=document.getElementById('restartBtn');
+  var fsBtn=document.getElementById('fsBtn');
+  var muteBtn=document.getElementById('muteBtn');
+
+  /* ---------- narration ---------- */
+  var VOICE_ON='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 9v6h4l5 5V4L8 9H4z"/><path d="M16 8a5 5 0 0 1 0 8" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+  var VOICE_OFF='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 9v6h4l5 5V4L8 9H4z"/><path d="M22 9l-6 6M16 9l6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+  var vo=[
+    "This is Polaris. Virtual facilitation for the A B L Card Series, a peer-accountability game played by intact teams, accredited by Edstellar.",
+    "The idea is simple. Cards put the questions a team usually avoids onto the table. People respond, make commitments to each other, and hold to them afterwards.",
+    "A certified facilitator opens the console. Here, an eight-person product and engineering pod at Vantage Mobility, post-merger, ready for the Trust deck. One click opens the room.",
+    "Participants join from anywhere, with no installs, just a link. As each person arrives the room fills, and the facilitator can see everyone is present before the first card is turned.",
+    "Now the session is live. A Trust card asks what the team avoids saying out loud, and honest responses come in. Three timers guide the facilitator: one for the card, one for the phase, one for the session. They suggest the pace. They never enforce it, and never turn red.",
+    "Everything said is captured as it happens. Reflections build a shared word map. The team's own scores form a six-dimension audit. And the commitments people make to one another are recorded, ready to carry into the report.",
+    "Senior rooms need room to breathe. The facilitator can pause briefly, reconvene another day with full context kept, or stop for good when the work is done.",
+    "When the session closes, the Suite Effectiveness report is generated, and read four ways: for leadership, the organisation, the facilitator, and the team. Each cut shows what moved, and where it moved most.",
+    "Polaris. Get accredited to run it. Talk to Edstellar about bringing it to your teams."
+  ];
+  var synth = window.speechSynthesis || null;
+  var chosenVoice=null, narrationOn=true;
+  function pickVoice(){
+    if(!synth) return;
+    var vs=synth.getVoices()||[];
+    var pref=vs.filter(function(v){return /en[-_]GB/i.test(v.lang);});
+    if(!pref.length) pref=vs.filter(function(v){return /^en/i.test(v.lang);});
+    var nice=null;
+    for(var i=0;i<pref.length;i++){
+      if(/Google|Natural|Daniel|Serena|Libby|Sonia|Ryan|Arthur/i.test(pref[i].name)){nice=pref[i];break;}
+    }
+    chosenVoice = nice || pref[0] || vs[0] || null;
+  }
+  if(synth){ pickVoice(); synth.onvoiceschanged=pickVoice; }
+  function speakScene(idx){
+    if(!narrationOn || !synth || !vo[idx] || !playing) return;
+    try{ synth.cancel(); }catch(e){}
+    var u=new SpeechSynthesisUtterance(vo[idx]);
+    if(chosenVoice) u.voice=chosenVoice;
+    u.rate=0.98; u.pitch=1.0; u.volume=1.0;
+    try{ synth.speak(u); }catch(e){}
+  }
+  function setMute(on){
+    narrationOn=!on;
+    muteBtn.innerHTML=narrationOn?VOICE_ON:VOICE_OFF;
+    if(!narrationOn && synth){ try{synth.cancel();}catch(e){} }
+    else if(narrationOn && playing){ speakScene(curScene); }
+  }
+
+  var fill=document.getElementById('track-fill');
+  var trackOuter=document.getElementById('track-outer');
+  var timeEl=document.getElementById('time');
+  var chrome=document.getElementById('chrome');
+
+  var elapsed=0, last=null, playing=false, curScene=-1, raf=null;
+
+  function fmt(ms){
+    var t=Math.max(0,Math.floor(ms/1000));
+    return Math.floor(t/60)+':'+('0'+(t%60)).slice(-2);
+  }
+  function sceneAt(ms){
+    for(var i=durs.length-1;i>=0;i--){ if(ms>=starts[i]) return i; }
+    return 0;
+  }
+  function setScene(idx){
+    if(idx===curScene) return;
+    curScene=idx;
+    scenes.forEach(function(s,i){ s.classList.toggle('is-active', i===idx); });
+    dots.forEach(function(d,i){ d.classList.toggle('on', i===idx); });
+    speakScene(idx);
+  }
+  function render(){
+    fill.style.width=(elapsed/total*100)+'%';
+    timeEl.textContent=fmt(elapsed)+' / '+fmt(total);
+    setScene(sceneAt(elapsed));
+  }
+  function tick(ts){
+    if(!playing) return;
+    if(last==null) last=ts;
+    elapsed+=ts-last; last=ts;
+    if(elapsed>=total){ elapsed=total; render(); pause(); if(window.SCORMBridge) SCORMBridge.markComplete(); return; }
+    render();
+    raf=requestAnimationFrame(tick);
+  }
+  function play(){
+    if(playing) return;
+    if(elapsed>=total){ elapsed=0; }
+    playing=true; last=null; playBtn.innerHTML=PAUSE;
+    if(narrationOn && synth){
+      if(synth.paused){ try{synth.resume();}catch(e){} }
+      else if(!synth.speaking){ speakScene(curScene); }
+    }
+    raf=requestAnimationFrame(tick);
+  }
+  function pause(){
+    playing=false; playBtn.innerHTML=PLAY;
+    if(narrationOn && synth && synth.speaking){ try{synth.pause();}catch(e){} }
+    if(raf) cancelAnimationFrame(raf);
+  }
+  function toggle(){ playing?pause():play(); }
+  function restart(){ if(synth){try{synth.cancel();}catch(e){}} elapsed=0; curScene=-1; render(); pause(); setTimeout(play,60); }
+  function seek(ms){
+    if(synth){try{synth.cancel();}catch(e){}}
+    elapsed=Math.min(total,Math.max(0,ms));
+    curScene=-1; // force scene re-trigger
+    render();
+  }
+
+  playBtn.addEventListener('click',toggle);
+  restartBtn.addEventListener('click',restart);
+  muteBtn.addEventListener('click',function(){ setMute(narrationOn); });
+  trackOuter.addEventListener('click',function(e){
+    var r=trackOuter.getBoundingClientRect();
+    seek((e.clientX-r.left)/r.width*total);
+  });
+  fsBtn.addEventListener('click',function(){
+    var f=document.getElementById('frame');
+    if(!document.fullscreenElement){ (f.requestFullscreen||f.webkitRequestFullscreen).call(f); }
+    else{ document.exitFullscreen(); }
+  });
+
+  document.addEventListener('keydown',function(e){
+    if(e.code==='Space'){ e.preventDefault(); toggle(); }
+    else if(e.key==='r'||e.key==='R'){ chrome.classList.toggle('hidden'); }
+    else if(e.key==='m'||e.key==='M'){ setMute(narrationOn); }
+    else if(e.key==='f'||e.key==='F'){ fsBtn.click(); }
+    else if(e.key==='ArrowRight'){ seek(elapsed+5000); }
+    else if(e.key==='ArrowLeft'){ seek(elapsed-5000); }
+  });
+
+  // init
+  playBtn.innerHTML=PLAY;
+  muteBtn.innerHTML=VOICE_ON;
+  render();
+  // gentle autostart shortly after load
+  setTimeout(play, 700);
+})();
+</script>
+</body>
+</html>

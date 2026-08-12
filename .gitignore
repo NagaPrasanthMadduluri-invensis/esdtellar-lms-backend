@@ -1,0 +1,50 @@
+# ── Edstellar LMS — backend ──
+# Self-contained: this file must stand alone when server/ becomes its own repo.
+
+# dependencies
+node_modules
+/.pnp
+.pnp.*
+
+# build output
+/dist
+/build
+
+# testing
+/coverage
+
+# env — holds TURSO_AUTH_TOKEN and JWT_SECRET. Never commit.
+.env
+.env.*
+!.env.example
+
+# ── SCORM storage ──
+# storage/scorm/ is written at runtime by the upload handler, so uploaded
+# packages are ignored. The three packages below are the exception: the seeded
+# database has scorm_packages rows pointing at these exact directories, so a
+# fresh clone needs them or the player 404s. They are ~264 KB in total.
+storage/scorm/*
+!storage/scorm/.gitkeep
+!storage/scorm/6f584d73-5275-4ddb-8098-9989aa40bd44/
+!storage/scorm/92c662e0-b292-408b-9f9f-0aa7d0fa9c26/
+!storage/scorm/e3fa59b1-704f-4a8a-b507-15a5982e7c19/
+
+# typescript
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+logs
+*.log
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.pem
+*.swp

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest identifier="polaris-demo-reel-scorm2004"
+          version="1.0"
+          xmlns="http://www.imsglobal.org/xsd/imscp_v1p1"
+          xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_v1p3p2"
+          xmlns:adlseq="http://www.adlnet.org/xsd/adlseq_v1p3p2"
+          xmlns:adlnav="http://www.adlnet.org/xsd/adlnav_v1p3p2"
+          xmlns:imsss="http://www.imsglobal.org/xsd/imssequencing_v1p0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="
+            http://www.imsglobal.org/xsd/imscp_v1p1
+            https://www.imsglobal.org/xsd/imscp_v1p1.xsd
+            http://www.adlnet.org/xsd/adlcp_v1p3p2
+            https://www.adlnet.org/xsd/adlcp_v1p3p2.xsd">
+
+  <metadata>
+    <schema>ADL SCORM</schema>
+    <schemaversion>2004 4th Edition</schemaversion>
+    <adlcp:location>metadata.xml</adlcp:location>
+  </metadata>
+
+  <organizations default="polaris-org">
+    <organization identifier="polaris-org"
+                  adlseq:objectivesGlobalToSystem="false">
+      <title>Polaris · Demo Reel</title>
+
+      <item identifier="item-1" identifierref="resource-1">
+        <title>Polaris Demo Reel — Team Effectiveness</title>
+        <adlcp:dataFromLMS/>
+        <adlcp:timeLimitAction>continue,no message</adlcp:timeLimitAction>
+        <adlcp:completionThreshold>1.0</adlcp:completionThreshold>
+
+        <imsss:sequencing>
+          <imsss:deliveryControls completionSetByContent="true"
+                                  objectiveSetByContent="true"/>
+          <imsss:objectives>
+            <imsss:primaryObjective objectiveID="primary-obj"
+                                    satisfiedByMeasure="true">
+              <imsss:minNormalizedMeasure>0.8</imsss:minNormalizedMeasure>
+            </imsss:primaryObjective>
+          </imsss:objectives>
+        </imsss:sequencing>
+      </item>
+
+    </organization>
+  </organizations>
+
+  <resources>
+    <resource identifier="resource-1"
+              type="webcontent"
+              adlcp:scormType="sco"
+              href="content/course.html">
+      <file href="content/course.html"/>
+      <file href="content/scorm-api.js"/>
+    </resource>
+  </resources>
+
+</manifest>
