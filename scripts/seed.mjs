@@ -14,9 +14,26 @@
  *   npm run db:seed
  */
 
-import { createClient } from "@libsql/client";
+import pg from "pg";
 import { readFileSync } from "node:fs";
 import { scryptSync, randomBytes } from "node:crypto";
+
+/**
+ * Thin adapter so every existing `db.execute(...)` call site below keeps its
+ * current call shape (a string, or `{ sql, args }`) against a `pg.Pool`
+ * instead of a libsql `Client`. Only each SQL string's placeholder syntax,
+ * `RETURNING id` clauses, and `ON CONFLICT` clauses change (see steps below) —
+ * the JS call sites themselves do not.
+ */
+function makeDb(pool) {
+  return {
+    async execute(query) {
+      const { sql, args } =
+        typeof query === "string" ? { sql: query, args: [] } : query;
+      return pool.query(sql, args);
+    },
+  };
+}
 
 /* ─────────────────────────────────────────────
    PASSWORD HASHING (Node.js built-in crypto)
@@ -38,219 +55,219 @@ export async function seedIfEmpty(db) {
 
   // ── Users ──
   const adminResult = await db.execute({
-    sql: `INSERT INTO users (first_name, last_name, email, password, role, department) VALUES (?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO users (first_name, last_name, email, password, role, department) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
     args: ["Admin", "User", "admin@edstellar.com", hashPassword("Admin@123"), "admin", null],
   });
-  const adminId = adminResult.lastInsertRowid;
+  const adminId = adminResult.rows[0].id;
 
   // ── Course 1 ──
   const c1Result = await db.execute({
-    sql: `INSERT INTO courses (name, description) VALUES (?, ?)`,
+    sql: `INSERT INTO courses (name, description) VALUES ($1, $2) RETURNING id`,
     args: [
       "Project Management Fundamentals",
       "Master the core concepts of project management including planning, execution, and control. Perfect for aspiring project managers and team leads.",
     ],
   });
-  const c1 = c1Result.lastInsertRowid;
+  const c1 = c1Result.rows[0].id;
 
   const c1m1Result = await db.execute({
-    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [c1, "Introduction to Project Management", "Foundations of PM concepts and lifecycle", 1],
   });
-  const c1m1 = c1m1Result.lastInsertRowid;
+  const c1m1 = c1m1Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c1m1, "What is Project Management?", "An overview of project management and why it matters.", "video", "https://www.youtube.com/embed/GC7xs-tjNW4", 12, 1],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c1m1, "Key PM Concepts & Terminology", "Essential terms every project manager must know.", "video", "https://www.youtube.com/embed/DdvSCPCGpoU", 15, 2],
   });
 
   const c1m2Result = await db.execute({
-    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [c1, "Planning & Scheduling", "How to plan and schedule projects effectively", 2],
   });
-  const c1m2 = c1m2Result.lastInsertRowid;
+  const c1m2 = c1m2Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c1m2, "Work Breakdown Structure (WBS)", "Breaking down project scope into manageable work packages.", "video", "https://www.youtube.com/embed/J8p7H7ipToE", 18, 1],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c1m2, "Creating a Project Schedule", "Gantt charts, dependencies, and milestone planning.", "video", "https://www.youtube.com/embed/SCtThLSX28g", 20, 2],
   });
 
   const c1m3Result = await db.execute({
-    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [c1, "Risk & Quality Management", "Identifying risks and maintaining quality standards", 3],
   });
-  const c1m3 = c1m3Result.lastInsertRowid;
+  const c1m3 = c1m3Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c1m3, "Risk Identification & Assessment", "How to identify, analyze, and respond to project risks.", "video", "https://www.youtube.com/embed/OU2zexbOEVs", 16, 1],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c1m3, "Quality Management Basics", "Quality planning, assurance, and control in projects.", "video", "https://www.youtube.com/embed/D_XiGF4uSNs", 14, 2],
   });
 
   // Assessment for Course 1
   const a1Result = await db.execute({
-    sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [c1, "PM Fundamentals Quiz", "Test your knowledge of project management fundamentals.", 60],
   });
-  const a1 = a1Result.lastInsertRowid;
+  const a1 = a1Result.rows[0].id;
 
   const q1Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a1, "What is the primary purpose of a Work Breakdown Structure (WBS)?", 1, 1],
   });
-  const q1 = q1Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q1, "To break down the project scope into manageable sections", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q1, "To estimate project costs", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q1, "To identify project risks", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q1, "To assign team members to tasks", 0] });
+  const q1 = q1Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q1, "To break down the project scope into manageable sections", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q1, "To estimate project costs", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q1, "To identify project risks", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q1, "To assign team members to tasks", 0] });
 
   const q2Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a1, "Which is NOT a phase of the Project Management lifecycle?", 1, 2],
   });
-  const q2 = q2Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q2, "Initiating", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q2, "Planning", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q2, "Designing", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q2, "Closing", 0] });
+  const q2 = q2Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q2, "Initiating", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q2, "Planning", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q2, "Designing", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q2, "Closing", 0] });
 
   const q3Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a1, "What does the acronym SMART stand for in goal setting?", 1, 3],
   });
-  const q3 = q3Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q3, "Systematic, Measurable, Accurate, Realistic, Time-bound", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q3, "Specific, Measurable, Achievable, Relevant, Time-bound", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q3, "Simple, Manageable, Achievable, Realistic, Trackable", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q3, "Specific, Monitored, Accurate, Resourced, Timed", 0] });
+  const q3 = q3Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q3, "Systematic, Measurable, Accurate, Realistic, Time-bound", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q3, "Specific, Measurable, Achievable, Relevant, Time-bound", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q3, "Simple, Manageable, Achievable, Realistic, Trackable", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q3, "Specific, Monitored, Accurate, Resourced, Timed", 0] });
 
   const q4Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a1, "A Gantt chart is primarily used to:", 1, 4],
   });
-  const q4 = q4Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q4, "Identify project stakeholders", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q4, "Visualize project schedule and timeline", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q4, "Track project budget", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q4, "Manage team communications", 0] });
+  const q4 = q4Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q4, "Identify project stakeholders", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q4, "Visualize project schedule and timeline", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q4, "Track project budget", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q4, "Manage team communications", 0] });
 
   const q5Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a1, "Which document formally authorizes a project?", 1, 5],
   });
-  const q5 = q5Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q5, "Project Plan", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q5, "Statement of Work", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q5, "Project Charter", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q5, "Risk Register", 0] });
+  const q5 = q5Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q5, "Project Plan", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q5, "Statement of Work", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q5, "Project Charter", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q5, "Risk Register", 0] });
 
   // ── Course 2 ──
   const c2Result = await db.execute({
-    sql: `INSERT INTO courses (name, description) VALUES (?, ?)`,
+    sql: `INSERT INTO courses (name, description) VALUES ($1, $2) RETURNING id`,
     args: [
       "Agile & Scrum Essentials",
       "Learn the Agile methodology and Scrum framework from scratch. Build a strong foundation for agile project delivery and iterative development.",
     ],
   });
-  const c2 = c2Result.lastInsertRowid;
+  const c2 = c2Result.rows[0].id;
 
   const c2m1Result = await db.execute({
-    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [c2, "Agile Foundations", "The Agile manifesto, values, and principles", 1],
   });
-  const c2m1 = c2m1Result.lastInsertRowid;
+  const c2m1 = c2m1Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c2m1, "Agile Manifesto & Principles", "Understanding the 4 values and 12 principles of the Agile Manifesto.", "video", "https://www.youtube.com/embed/Z9QbYZh1YXY", 10, 1],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c2m1, "Agile vs Traditional Methods", "Comparing Agile and Waterfall approaches to project delivery.", "video", "https://www.youtube.com/embed/WjwEh15M5Rw", 12, 2],
   });
 
   const c2m2Result = await db.execute({
-    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [c2, "Scrum Framework", "Roles, events, and artifacts of Scrum", 2],
   });
-  const c2m2 = c2m2Result.lastInsertRowid;
+  const c2m2 = c2m2Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c2m2, "Scrum Roles & Responsibilities", "Product Owner, Scrum Master, and Development Team explained.", "video", "https://www.youtube.com/embed/m5u0P1WPfvs", 14, 1],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [c2m2, "Scrum Events & Ceremonies", "Sprint Planning, Daily Scrum, Sprint Review, and Retrospective.", "video", "https://www.youtube.com/embed/evOhJeOF9mk", 16, 2],
   });
 
   // Assessment for Course 2
   const a2Result = await db.execute({
-    sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [c2, "Agile & Scrum Quiz", "Validate your understanding of Agile and Scrum concepts.", 60],
   });
-  const a2 = a2Result.lastInsertRowid;
+  const a2 = a2Result.rows[0].id;
 
   const q6Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a2, "The Agile Manifesto values 'Working software over' what?", 1, 1],
   });
-  const q6 = q6Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q6, "Customer collaboration", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q6, "Responding to change", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q6, "Comprehensive documentation", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q6, "Individuals and interactions", 0] });
+  const q6 = q6Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q6, "Customer collaboration", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q6, "Responding to change", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q6, "Comprehensive documentation", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q6, "Individuals and interactions", 0] });
 
   const q7Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a2, "In Scrum, who is responsible for maximizing the value of the product?", 1, 2],
   });
-  const q7 = q7Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q7, "Scrum Master", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q7, "Development Team", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q7, "Product Owner", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q7, "Stakeholders", 0] });
+  const q7 = q7Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q7, "Scrum Master", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q7, "Development Team", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q7, "Product Owner", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q7, "Stakeholders", 0] });
 
   const q8Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a2, "What is the typical duration of a Sprint?", 1, 3],
   });
-  const q8 = q8Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q8, "1 day", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q8, "1 to 4 weeks", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q8, "3 months", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q8, "6 months", 0] });
+  const q8 = q8Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q8, "1 day", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q8, "1 to 4 weeks", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q8, "3 months", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q8, "6 months", 0] });
 
   const q9Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a2, "Which Scrum event is used to inspect and adapt the process?", 1, 4],
   });
-  const q9 = q9Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q9, "Sprint Planning", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q9, "Daily Scrum", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q9, "Sprint Review", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q9, "Sprint Retrospective", 1] });
+  const q9 = q9Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q9, "Sprint Planning", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q9, "Daily Scrum", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q9, "Sprint Review", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q9, "Sprint Retrospective", 1] });
 
   const q10Result = await db.execute({
-    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [a2, "What artifact represents the work to be done in a Sprint?", 1, 5],
   });
-  const q10 = q10Result.lastInsertRowid;
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q10, "Product Backlog", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q10, "Sprint Backlog", 1] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q10, "Increment", 0] });
-  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [q10, "Sprint Goal", 0] });
+  const q10 = q10Result.rows[0].id;
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q10, "Product Backlog", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q10, "Sprint Backlog", 1] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q10, "Increment", 0] });
+  await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [q10, "Sprint Goal", 0] });
 }
 
 /* ─────────────────────────────────────────────
@@ -260,26 +277,26 @@ export async function seedIfEmpty(db) {
 
 export async function seedBankingCourse(db) {
   // Migrate old name if present
-  const oldExists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["AI Banking Course"] })).rows[0];
+  const oldExists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["AI Banking Course"] })).rows[0];
   if (oldExists) {
-    await db.execute({ sql: "UPDATE courses SET name = ? WHERE name = ?", args: ["AI for Banking", "AI Banking Course"] });
+    await db.execute({ sql: "UPDATE courses SET name = $1 WHERE name = $2", args: ["AI for Banking", "AI Banking Course"] });
     return;
   }
 
-  const exists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["AI for Banking"] })).rows[0];
+  const exists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["AI for Banking"] })).rows[0];
   if (exists) return;
 
   const courseResult = await db.execute({
-    sql: `INSERT INTO courses (name, description) VALUES (?, ?)`,
+    sql: `INSERT INTO courses (name, description) VALUES ($1, $2) RETURNING id`,
     args: [
       "AI for Banking",
       "Understand how Artificial Intelligence is transforming modern banking — from legacy pipeline failures to AI-driven fraud detection, credit decisions, and personalised customer engagement.",
     ],
   });
-  const courseId = courseResult.lastInsertRowid;
+  const courseId = courseResult.rows[0].id;
 
   const moduleResult = await db.execute({
-    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)",
+    sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [
       courseId,
       "AI in Modern Banking Operations",
@@ -287,10 +304,10 @@ export async function seedBankingCourse(db) {
       1,
     ],
   });
-  const moduleId = moduleResult.lastInsertRowid;
+  const moduleId = moduleResult.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES (?,?,?,?,?,?,?)",
+    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     args: [
       moduleId,
       "Introduction to AI in Banking",
@@ -303,7 +320,7 @@ export async function seedBankingCourse(db) {
   });
 
   const assessmentResult = await db.execute({
-    sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES (?,?,?,?)",
+    sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES ($1,$2,$3,$4) RETURNING id",
     args: [
       courseId,
       "AI in Modern Banking Operations — Quiz",
@@ -311,7 +328,7 @@ export async function seedBankingCourse(db) {
       60,
     ],
   });
-  const assessmentId = assessmentResult.lastInsertRowid;
+  const assessmentId = assessmentResult.rows[0].id;
 
   const qs = [
     { q: "What operational paradox do financial institutions face in modern banking?", opts: [["Customer expectations are declining while data volumes shrink", 0], ["Data volume is expanding exponentially while required response time is shrinking to zero", 1], ["Digital infrastructure is improving but customer trust is declining", 0], ["Manual processing is faster than digital systems", 0]] },
@@ -334,13 +351,13 @@ export async function seedBankingCourse(db) {
   for (let idx = 0; idx < qs.length; idx++) {
     const item = qs[idx];
     const qResult = await db.execute({
-      sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)",
+      sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id",
       args: [assessmentId, item.q, 1, idx + 1],
     });
-    const qId = qResult.lastInsertRowid;
+    const qId = qResult.rows[0].id;
     for (const [text, correct] of item.opts) {
       await db.execute({
-        sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)",
+        sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)",
         args: [qId, text, correct],
       });
     }
@@ -354,105 +371,105 @@ export async function seedBankingCourse(db) {
 
 export async function seedExtraContent(db) {
   // Only run if Course 4 doesn't exist yet
-  const c4Exists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["Leadership & Communication"] })).rows[0];
+  const c4Exists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["Leadership & Communication"] })).rows[0];
   if (c4Exists) return;
 
   // ── Add modules/lessons to Course 1 ──
-  const c1 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["Project Management Fundamentals"] })).rows[0]?.id;
+  const c1 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["Project Management Fundamentals"] })).rows[0]?.id;
   if (c1) {
-    const m4 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c1, "Stakeholder Management", "Identifying and managing project stakeholders", 4] })).lastInsertRowid;
+    const m4 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c1, "Stakeholder Management", "Identifying and managing project stakeholders", 4] })).rows[0].id;
     for (const [t, d, min, ord] of [
       ["Identifying Project Stakeholders", "Tools to find and analyse everyone with a stake in your project.", 18, 1],
       ["Stakeholder Communication Planning", "How to plan what, when and how to communicate.", 20, 2],
       ["Managing Stakeholder Expectations", "Techniques to align expectations and resolve conflicts.", 17, 3],
-    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m4, t, d, "video", min, ord] });
+    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m4, t, d, "video", min, ord] });
 
-    const m5 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c1, "Budget & Resource Management", "Estimating costs and managing project resources", 5] })).lastInsertRowid;
+    const m5 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c1, "Budget & Resource Management", "Estimating costs and managing project resources", 5] })).rows[0].id;
     for (const [t, d, min, ord] of [
       ["Project Cost Estimation Techniques", "Analogous, parametric and bottom-up estimating methods.", 22, 1],
       ["Resource Planning & Allocation", "Matching people and materials to project tasks.", 20, 2],
       ["Earned Value Management (EVM)", "Track cost and schedule performance with EVM metrics.", 18, 3],
-    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m5, t, d, "video", min, ord] });
+    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m5, t, d, "video", min, ord] });
 
-    const m6 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c1, "Monitoring, Change & Closure", "Keeping projects on track and closing them properly", 6] })).lastInsertRowid;
+    const m6 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c1, "Monitoring, Change & Closure", "Keeping projects on track and closing them properly", 6] })).rows[0].id;
     for (const [t, d, min, ord] of [
       ["Project Performance Metrics & KPIs", "Key indicators to monitor project health.", 16, 1],
       ["Change Management in Projects", "How to handle scope changes without derailing delivery.", 18, 2],
       ["Project Closure & Lessons Learned", "Formal closure steps and capturing what worked.", 15, 3],
-    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m6, t, d, "video", min, ord] });
+    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m6, t, d, "video", min, ord] });
   }
 
   // ── Add modules/lessons to Course 2 ──
-  const c2 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["Agile & Scrum Essentials"] })).rows[0]?.id;
+  const c2 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["Agile & Scrum Essentials"] })).rows[0]?.id;
   if (c2) {
-    const m3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c2, "Kanban & Lean", "Visualising flow and eliminating waste", 3] })).lastInsertRowid;
+    const m3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c2, "Kanban & Lean", "Visualising flow and eliminating waste", 3] })).rows[0].id;
     for (const [t, d, min, ord] of [
       ["Kanban Principles & Visualisation", "WIP limits, pull systems and flow metrics.", 16, 1],
       ["Lean Methodology Basics", "Value stream mapping and the seven types of waste.", 18, 2],
       ["Building & Running a Kanban Board", "Practical walkthrough of setting up and using Kanban.", 15, 3],
-    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m3, t, d, "video", min, ord] });
+    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m3, t, d, "video", min, ord] });
 
-    const m4 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c2, "Scaling Agile", "Frameworks for scaling Agile across large organisations", 4] })).lastInsertRowid;
+    const m4 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c2, "Scaling Agile", "Frameworks for scaling Agile across large organisations", 4] })).rows[0].id;
     for (const [t, d, min, ord] of [
       ["SAFe Framework Introduction", "Scaled Agile Framework: trains, PI planning and ARTs.", 20, 1],
       ["Large-Scale Scrum (LeSS) Basics", "Applying Scrum principles to multi-team programmes.", 18, 2],
       ["Agile Release Trains & PI Planning", "Synchronising multiple teams around a shared programme increment.", 16, 3],
-    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m4, t, d, "video", min, ord] });
+    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m4, t, d, "video", min, ord] });
   }
 
   // ── Add modules/lessons to Course 3 ──
-  const c3 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["AI for Banking"] })).rows[0]?.id;
+  const c3 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["AI for Banking"] })).rows[0]?.id;
   if (c3) {
-    const m2 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c3, "AI in Risk & Compliance", "Using AI for risk modelling, fraud detection and compliance", 2] })).lastInsertRowid;
+    const m2 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c3, "AI in Risk & Compliance", "Using AI for risk modelling, fraud detection and compliance", 2] })).rows[0].id;
     for (const [t, d, min, ord] of [
       ["Credit Risk Modelling with AI", "How machine learning improves credit-scoring accuracy.", 18, 1],
       ["AI-Powered Fraud Detection", "Real-time anomaly detection and adaptive fraud prevention.", 20, 2],
       ["Regulatory Compliance & Explainable AI", "Meeting GDPR, Basel III and explainability requirements.", 15, 3],
-    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m2, t, d, "video", min, ord] });
+    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m2, t, d, "video", min, ord] });
 
-    const m3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c3, "Future of AI in Finance", "Emerging AI use-cases transforming financial services", 3] })).lastInsertRowid;
+    const m3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c3, "Future of AI in Finance", "Emerging AI use-cases transforming financial services", 3] })).rows[0].id;
     for (const [t, d, min, ord] of [
       ["Conversational AI & Banking Chatbots", "Virtual assistants, NLP and omnichannel service delivery.", 16, 1],
       ["Robo-Advisory & Wealth Management AI", "Algorithm-driven portfolio management and client onboarding.", 17, 2],
       ["AI Ethics & Responsible Innovation in Finance", "Bias, fairness, accountability and governance in financial AI.", 14, 3],
-    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m3, t, d, "video", min, ord] });
+    ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m3, t, d, "video", min, ord] });
   }
 
   // ── Course 4: Leadership & Communication ──
-  const c4Res = await db.execute({ sql: "INSERT INTO courses (name, description) VALUES (?,?)", args: ["Leadership & Communication", "Develop the leadership mindset and communication skills needed to inspire teams, manage conflict, and drive organisational performance."] });
-  const c4 = c4Res.lastInsertRowid;
+  const c4Res = await db.execute({ sql: "INSERT INTO courses (name, description) VALUES ($1,$2) RETURNING id", args: ["Leadership & Communication", "Develop the leadership mindset and communication skills needed to inspire teams, manage conflict, and drive organisational performance."] });
+  const c4 = c4Res.rows[0].id;
 
-  const lc1 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c4, "Foundations of Leadership", "Core leadership principles and styles", 1] })).lastInsertRowid;
+  const lc1 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c4, "Foundations of Leadership", "Core leadership principles and styles", 1] })).rows[0].id;
   for (const [t, d, min, ord] of [
     ["What Makes a Great Leader?", "Traits, mindsets and behaviours that define effective leaders.", 20, 1],
     ["Leadership Styles & When to Use Them", "Situational, transformational and servant leadership models.", 18, 2],
     ["Building Trust & Credibility", "How leaders build psychological safety and long-term trust.", 17, 3],
-  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [lc1, t, d, "video", min, ord] });
+  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [lc1, t, d, "video", min, ord] });
 
-  const lc2 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c4, "Effective Communication", "Communication frameworks for leaders", 2] })).lastInsertRowid;
+  const lc2 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c4, "Effective Communication", "Communication frameworks for leaders", 2] })).rows[0].id;
   for (const [t, d, min, ord] of [
     ["Communication Models & Frameworks", "Shannon-Weaver, assertive vs passive vs aggressive styles.", 16, 1],
     ["Active Listening Skills", "Techniques to listen with intent and demonstrate understanding.", 18, 2],
     ["Giving & Receiving Feedback", "SBI model, radical candour and growth-focused feedback cultures.", 20, 3],
-  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [lc2, t, d, "video", min, ord] });
+  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [lc2, t, d, "video", min, ord] });
 
-  const lc3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c4, "Team Dynamics & Conflict", "Building high-performing teams and navigating conflict", 3] })).lastInsertRowid;
+  const lc3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c4, "Team Dynamics & Conflict", "Building high-performing teams and navigating conflict", 3] })).rows[0].id;
   for (const [t, d, min, ord] of [
     ["High-Performance Teams", "Tuckman's stages, team charters and psychological safety.", 17, 1],
     ["Managing Conflict at Work", "Thomas-Kilmann model and mediation techniques.", 19, 2],
     ["Motivation & Employee Engagement", "Maslow, Herzberg and intrinsic motivation in the workplace.", 18, 3],
-  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [lc3, t, d, "video", min, ord] });
+  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [lc3, t, d, "video", min, ord] });
 
-  const lc4 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [c4, "Emotional Intelligence", "Self-awareness, empathy and resilience for leaders", 4] })).lastInsertRowid;
+  const lc4 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [c4, "Emotional Intelligence", "Self-awareness, empathy and resilience for leaders", 4] })).rows[0].id;
   for (const [t, d, min, ord] of [
     ["Understanding Emotional Intelligence (EQ)", "Goleman's five dimensions of EQ and why they matter for leaders.", 16, 1],
     ["Self-Awareness & Self-Regulation", "Identifying triggers, managing reactions and staying composed.", 18, 2],
     ["Empathy & Social Awareness at Work", "Reading the room, perspective-taking and inclusive leadership.", 15, 3],
-  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [lc4, t, d, "video", min, ord] });
+  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [lc4, t, d, "video", min, ord] });
 
   // Assessment for Course 4
-  const a4Res = await db.execute({ sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES (?,?,?,?)", args: [c4, "Leadership & Communication Quiz", "Test your understanding of leadership styles, communication frameworks and team dynamics.", 60] });
-  const a4 = a4Res.lastInsertRowid;
+  const a4Res = await db.execute({ sql: "INSERT INTO assessments (course_id, title, description, passing_score) VALUES ($1,$2,$3,$4) RETURNING id", args: [c4, "Leadership & Communication Quiz", "Test your understanding of leadership styles, communication frameworks and team dynamics.", 60] });
+  const a4 = a4Res.rows[0].id;
 
   for (const [idx, q, opts] of [
     [1, "Which leadership style adjusts approach based on the follower's readiness?", [["Transformational", 0], ["Situational Leadership", 1], ["Autocratic", 0], ["Laissez-faire", 0]]],
@@ -461,9 +478,9 @@ export async function seedExtraContent(db) {
     [4, "Which of Goleman's EQ dimensions involves recognising emotions in others?", [["Self-awareness", 0], ["Self-regulation", 0], ["Empathy", 1], ["Motivation", 0]]],
     [5, "Herzberg's two-factor theory distinguishes between:", [["Leadership styles and follower maturity", 0], ["Hygiene factors and motivators", 1], ["Intrinsic and extrinsic goals", 0], ["Formal and informal communication channels", 0]]],
   ]) {
-    const qRes = await db.execute({ sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES (?,?,?,?)", args: [a4, q, 1, idx] });
+    const qRes = await db.execute({ sql: "INSERT INTO assessment_questions (assessment_id, question_text, marks, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [a4, q, 1, idx] });
     for (const [text, correct] of opts)
-      await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES (?,?,?)", args: [qRes.lastInsertRowid, text, correct] });
+      await db.execute({ sql: "INSERT INTO assessment_options (question_id, option_text, is_correct) VALUES ($1,$2,$3)", args: [qRes.rows[0].id, text, correct] });
   }
 }
 
@@ -518,16 +535,16 @@ export async function seedLearners(db) {
 
     // Insert user
     const uRes = await db.execute({
-      sql: "INSERT OR IGNORE INTO users (first_name, last_name, email, password, role, department, location, job_role) VALUES (?,?,?,?,?,?,?,?)",
+      sql: "INSERT INTO users (first_name, last_name, email, password, role, department, location, job_role) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (email) DO NOTHING RETURNING id",
       args: [l.first, l.last, l.email, hashPassword("Learner@123"), "learner", l.dept, l.location, l.job_role],
     });
-    const userId = uRes.lastInsertRowid;
+    const userId = uRes.rows[0]?.id;
     if (!userId) continue; // already exists (IGNORE)
 
     // Assign to all courses
     for (const courseId of allCourseIds) {
       await db.execute({
-        sql: "INSERT OR IGNORE INTO user_course_assignments (user_id, course_id, assigned_by) VALUES (?,?,?)",
+        sql: "INSERT INTO user_course_assignments (user_id, course_id, assigned_by) VALUES ($1,$2,$3) ON CONFLICT (user_id, course_id) DO NOTHING",
         args: [userId, courseId, adminId],
       });
     }
@@ -537,7 +554,7 @@ export async function seedLearners(db) {
     for (let i = 0; i < juneCount; i++) {
       const day = String((i % 28) + 1).padStart(2, "0");
       await db.execute({
-        sql: "INSERT OR IGNORE INTO user_lesson_completions (user_id, lesson_id, completed_at) VALUES (?,?,?)",
+        sql: "INSERT INTO user_lesson_completions (user_id, lesson_id, completed_at) VALUES ($1,$2,$3) ON CONFLICT (user_id, lesson_id) DO NOTHING",
         args: [userId, allLessons[i].id, `2026-06-${day} 09:00:00`],
       });
     }
@@ -548,7 +565,7 @@ export async function seedLearners(db) {
     for (let i = 0; i < mayCount; i++) {
       const day = String((i % 20) + 8).padStart(2, "0");
       await db.execute({
-        sql: "INSERT OR IGNORE INTO user_lesson_completions (user_id, lesson_id, completed_at) VALUES (?,?,?)",
+        sql: "INSERT INTO user_lesson_completions (user_id, lesson_id, completed_at) VALUES ($1,$2,$3) ON CONFLICT (user_id, lesson_id) DO NOTHING",
         args: [userId, allLessons[mayStart + i].id, `2026-05-${day} 09:00:00`],
       });
     }
@@ -562,7 +579,7 @@ export async function seedLearners(db) {
         const numCorrect = Math.round(pct * totalQ / 100);
         const isPassed = pct >= Number(asmt.passing_score) ? 1 : 0;
         await db.execute({
-          sql: "INSERT INTO user_assessment_attempts (user_id, assessment_id, score, total_questions, percentage, is_passed, submitted_at) VALUES (?,?,?,?,?,?,?)",
+          sql: "INSERT INTO user_assessment_attempts (user_id, assessment_id, score, total_questions, percentage, is_passed, submitted_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
           args: [userId, asmt.id, numCorrect, totalQ, pct, isPassed, `2026-06-${submittedDay} 14:00:00`],
         });
       }
@@ -577,14 +594,14 @@ export async function seedLearners(db) {
 
 export async function seedDemoLearner(db) {
   // 1. Get or create the demo user
-  let demoUser = (await db.execute({ sql: "SELECT id FROM users WHERE email = ?", args: ["demolearner@gmail.com"] })).rows[0];
+  let demoUser = (await db.execute({ sql: "SELECT id FROM users WHERE email = $1", args: ["demolearner@gmail.com"] })).rows[0];
 
   if (!demoUser) {
     const res = await db.execute({
-      sql: "INSERT INTO users (first_name, last_name, email, password, role, department, location, job_role) VALUES (?,?,?,?,?,?,?,?)",
+      sql: "INSERT INTO users (first_name, last_name, email, password, role, department, location, job_role) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
       args: ["Priya", "Sharma", "demolearner@gmail.com", hashPassword("Demo@123"), "learner", "Sales", "Mumbai", "Senior Sales Executive"],
     });
-    demoUser = { id: res.lastInsertRowid };
+    demoUser = { id: res.rows[0].id };
   }
 
   const userId = demoUser.id;
@@ -595,13 +612,13 @@ export async function seedDemoLearner(db) {
 
   for (const course of courses) {
     await db.execute({
-      sql: "INSERT OR IGNORE INTO user_course_assignments (user_id, course_id, assigned_by, assigned_at) VALUES (?,?,?,?)",
+      sql: "INSERT INTO user_course_assignments (user_id, course_id, assigned_by, assigned_at) VALUES ($1,$2,$3,$4) ON CONFLICT (user_id, course_id) DO NOTHING",
       args: [userId, course.id, admin?.id ?? 1, "2026-06-01 08:00:00"],
     });
   }
 
   // 3. Skip if completions already seeded
-  const existingCnt = (await db.execute({ sql: "SELECT COUNT(*) AS c FROM user_lesson_completions WHERE user_id = ?", args: [userId] })).rows[0].c;
+  const existingCnt = (await db.execute({ sql: "SELECT COUNT(*) AS c FROM user_lesson_completions WHERE user_id = $1", args: [userId] })).rows[0].c;
   if (existingCnt >= 15) return;
 
   // 4. Seed partial lesson completions per course
@@ -630,7 +647,7 @@ export async function seedDemoLearner(db) {
       const day = String((dayIdx % 13) + 1).padStart(2, "0");
       dayIdx++;
       await db.execute({
-        sql: "INSERT OR IGNORE INTO user_lesson_completions (user_id, lesson_id, completed_at) VALUES (?,?,?)",
+        sql: "INSERT INTO user_lesson_completions (user_id, lesson_id, completed_at) VALUES ($1,$2,$3) ON CONFLICT (user_id, lesson_id) DO NOTHING",
         args: [userId, lessons[i].id, `2026-06-${day} 10:${String((i * 7) % 60).padStart(2, "0")}:00`],
       });
     }
@@ -638,24 +655,24 @@ export async function seedDemoLearner(db) {
 
   // Update location/job_role for demolearner if missing (idempotent)
   await db.execute({
-    sql: "UPDATE users SET location = ?, job_role = ? WHERE email = ? AND (location IS NULL OR location = '')",
+    sql: "UPDATE users SET location = $1, job_role = $2 WHERE email = $3 AND (location IS NULL OR location = '')",
     args: ["Mumbai", "Senior Sales Executive", "demolearner@gmail.com"],
   });
 
   // 5. Seed assessment attempt for course 1 (passed, 78%)
-  const existingAttempts = (await db.execute({ sql: "SELECT COUNT(*) AS c FROM user_assessment_attempts WHERE user_id = ?", args: [userId] })).rows[0].c;
-  if (existingAttempts === 0) {
+  const existingAttempts = (await db.execute({ sql: "SELECT COUNT(*) AS c FROM user_assessment_attempts WHERE user_id = $1", args: [userId] })).rows[0].c;
+  if (Number(existingAttempts) === 0) {
     const a1 = (await db.execute({
       sql: `SELECT a.id, a.passing_score, COUNT(aq.id) AS total_q
             FROM assessments a
             JOIN assessment_questions aq ON aq.assessment_id = a.id
-            WHERE a.course_id = ? GROUP BY a.id LIMIT 1`,
+            WHERE a.course_id = $1 GROUP BY a.id LIMIT 1`,
       args: [courseIds[0]],
     })).rows[0];
     if (a1) {
       const pct = 78;
       await db.execute({
-        sql: "INSERT INTO user_assessment_attempts (user_id, assessment_id, score, total_questions, percentage, is_passed, submitted_at) VALUES (?,?,?,?,?,?,?)",
+        sql: "INSERT INTO user_assessment_attempts (user_id, assessment_id, score, total_questions, percentage, is_passed, submitted_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
         args: [userId, a1.id, Math.round(pct * Number(a1.total_q) / 100), Number(a1.total_q), pct, 1, "2026-06-10 14:00:00"],
       });
     }
@@ -674,41 +691,41 @@ export async function seedDemoLearner(db) {
 ───────────────────────────────────────────── */
 
 export async function seedDraftCourse(db) {
-  const exists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["Data Analytics Fundamentals"] })).rows[0];
+  const exists = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["Data Analytics Fundamentals"] })).rows[0];
   if (exists) return;
 
   const cRes = await db.execute({
-    sql: `INSERT INTO courses (name, description, is_active) VALUES (?,?,0)`,
+    sql: `INSERT INTO courses (name, description, is_active) VALUES ($1,$2,0) RETURNING id`,
     args: [
       "Data Analytics Fundamentals",
       "A comprehensive introduction to data analytics — from raw data collection and cleaning through to visualisation and storytelling. This course is currently in draft and not yet available to learners.",
     ],
   });
-  const cId = cRes.lastInsertRowid;
+  const cId = cRes.rows[0].id;
 
   // ── Module 1: Data Collection & Cleaning ──
-  const m1 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [cId, "Data Collection & Cleaning", "How to gather, assess and prepare data for analysis", 1] })).lastInsertRowid;
+  const m1 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [cId, "Data Collection & Cleaning", "How to gather, assess and prepare data for analysis", 1] })).rows[0].id;
   for (const [t, d, min, ord] of [
     ["Introduction to Data Sources",           "Structured vs unstructured data, APIs, databases and flat files.",   15, 1],
     ["Data Cleaning Techniques",               "Handling missing values, outliers and duplicate records.",           18, 2],
     ["Data Transformation & Normalisation",    "Reshaping, encoding and scaling data for downstream analysis.",      16, 3],
-  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m1, t, d, "video", min, ord] });
+  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m1, t, d, "video", min, ord] });
 
   // ── Module 2: Exploratory Data Analysis ──
-  const m2 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [cId, "Exploratory Data Analysis", "Statistical methods and visualisations to understand your data", 2] })).lastInsertRowid;
+  const m2 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [cId, "Exploratory Data Analysis", "Statistical methods and visualisations to understand your data", 2] })).rows[0].id;
   for (const [t, d, min, ord] of [
     ["Descriptive Statistics",                 "Mean, median, variance, skewness and percentile analysis.",          17, 1],
     ["Correlation & Distribution Analysis",    "Scatter plots, histograms and identifying relationships in data.",   19, 2],
     ["Identifying Patterns & Anomalies",       "Trend detection, seasonality and spotting outliers at scale.",       16, 3],
-  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m2, t, d, "video", min, ord] });
+  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m2, t, d, "video", min, ord] });
 
   // ── Module 3: Data Visualisation & Storytelling ──
-  const m3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES (?,?,?,?)", args: [cId, "Data Visualisation & Storytelling", "Turning insights into compelling, audience-ready visuals", 3] })).lastInsertRowid;
+  const m3 = (await db.execute({ sql: "INSERT INTO course_modules (course_id, title, description, sort_order) VALUES ($1,$2,$3,$4) RETURNING id", args: [cId, "Data Visualisation & Storytelling", "Turning insights into compelling, audience-ready visuals", 3] })).rows[0].id;
   for (const [t, d, min, ord] of [
     ["Choosing the Right Chart Type",          "Bar, line, pie, heatmap — when to use which and why.",               14, 1],
     ["Dashboard Design Principles",            "Layout, hierarchy and clarity in data dashboards.",                   18, 2],
     ["Storytelling with Data",                 "Crafting a narrative around insights to drive decisions.",            20, 3],
-  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES (?,?,?,?,?,?)", args: [m3, t, d, "video", min, ord] });
+  ]) await db.execute({ sql: "INSERT INTO lessons (module_id, title, description, content_type, duration_minutes, sort_order) VALUES ($1,$2,$3,$4,$5,$6)", args: [m3, t, d, "video", min, ord] });
 }
 
 export async function seedProfileMigration(db) {
@@ -733,7 +750,7 @@ export async function seedProfileMigration(db) {
 
   for (const u of updates) {
     await db.execute({
-      sql: "UPDATE users SET location = ?, job_role = ? WHERE email = ? AND (location IS NULL OR location = '')",
+      sql: "UPDATE users SET location = $1, job_role = $2 WHERE email = $3 AND (location IS NULL OR location = '')",
       args: [u.location, u.job_role, u.email],
     });
   }
@@ -748,9 +765,9 @@ export async function seedSessions(db) {
   const count = (await db.execute("SELECT COUNT(*) as c FROM sessions")).rows[0];
   if (Number(count.c) > 0) return;
 
-  const c1 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["Project Management Fundamentals"] })).rows[0]?.id ?? null;
-  const c2 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["Agile & Scrum Essentials"] })).rows[0]?.id ?? null;
-  const c3 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = ?", args: ["Leadership & Communication"] })).rows[0]?.id ?? null;
+  const c1 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["Project Management Fundamentals"] })).rows[0]?.id ?? null;
+  const c2 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["Agile & Scrum Essentials"] })).rows[0]?.id ?? null;
+  const c3 = (await db.execute({ sql: "SELECT id FROM courses WHERE name = $1", args: ["Leadership & Communication"] })).rows[0]?.id ?? null;
 
   const sessions = [
     {
@@ -828,7 +845,7 @@ export async function seedSessions(db) {
   for (const s of sessions) {
     await db.execute({
       sql: `INSERT INTO sessions (title, session_type, department, course_id, capacity, trainer, venue_url, date, start_time, end_time, description, status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
       args: [s.title, s.session_type, s.department, s.course_id, s.capacity, s.trainer, s.venue_url, s.date, s.start_time, s.end_time, s.description, s.status],
     });
   }
@@ -845,8 +862,8 @@ export async function seedSessions(db) {
     const statuses = ["present", "present", "present", "absent"];
     for (const sess of completedSessions) {
       for (let i = 0; i < 4; i++) {
-        await db.execute({ sql: "INSERT OR IGNORE INTO session_roster (session_id, user_id) VALUES (?,?)", args: [sess.id, allLearners[i].id] });
-        await db.execute({ sql: "INSERT OR IGNORE INTO session_attendance (session_id, user_id, status, is_locked) VALUES (?,?,?,1)", args: [sess.id, allLearners[i].id, statuses[i]] });
+        await db.execute({ sql: "INSERT INTO session_roster (session_id, user_id) VALUES ($1,$2) ON CONFLICT (session_id, user_id) DO NOTHING", args: [sess.id, allLearners[i].id] });
+        await db.execute({ sql: "INSERT INTO session_attendance (session_id, user_id, status, is_locked) VALUES ($1,$2,$3,1) ON CONFLICT (session_id, user_id) DO NOTHING", args: [sess.id, allLearners[i].id, statuses[i]] });
       }
     }
   }
@@ -854,7 +871,7 @@ export async function seedSessions(db) {
   const rosterLearners = allLearners.slice(0, 3);
   for (const sess of upcomingSessions) {
     for (const u of rosterLearners) {
-      await db.execute({ sql: "INSERT OR IGNORE INTO session_roster (session_id, user_id) VALUES (?,?)", args: [sess.id, u.id] });
+      await db.execute({ sql: "INSERT INTO session_roster (session_id, user_id) VALUES ($1,$2) ON CONFLICT (session_id, user_id) DO NOTHING", args: [sess.id, u.id] });
     }
   }
 }
@@ -877,10 +894,13 @@ function loadEnv() {
 }
 
 const env = loadEnv();
-const db = createClient({
-  url: process.env.TURSO_DB_URL || env.TURSO_DB_URL,
-  authToken: process.env.TURSO_AUTH_TOKEN || env.TURSO_AUTH_TOKEN,
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL || env.DATABASE_URL,
+  ssl: (process.env.DATABASE_SSL || env.DATABASE_SSL) === "true"
+    ? { rejectUnauthorized: false }
+    : undefined,
 });
+const db = makeDb(pool);
 
 /* Order matters: users and courses exist before anything references them. */
 const steps = [
@@ -899,5 +919,5 @@ for (const [label, fn] of steps) {
   console.log(`  seeded: ${label}`);
 }
 
-db.close();
+await pool.end();
 console.log("Seeding complete.");
