@@ -115,7 +115,7 @@ export class CertificatesService {
         finalScore: verdict.finalScore,
       });
     } catch (error) {
-      // A race on UNIQUE(user_id, course_id) or a transient Turso error must
+      // A race on UNIQUE(user_id, course_id) or a transient database error must
       // not fail the lesson/assessment flow that triggered this.
       this.logger.warn(
         `Auto-issue skipped for user=${userId} course=${courseId}: ${

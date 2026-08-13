@@ -3,7 +3,7 @@
 > **Scope:** everything under `server/`. The frontend has its own standards doc at
 > `client/TASTE.md`; the two never cross-reference each other's internals.
 >
-> **Status:** NestJS 11 · TypeScript 5.9 · Drizzle ORM 0.38 · Turso (libsql).
+> **Status:** NestJS 11 · TypeScript 5.9 · Drizzle ORM 0.38 · PostgreSQL.
 > Migration from Next.js route handlers is COMPLETE — all 85 handlers live here.
 > `client/` is a pure frontend with no database access. See §10.
 >
@@ -74,7 +74,7 @@ server/
 │   │
 │   ├── database/
 │   │   ├── database.module.ts   @Global — the only global feature module
-│   │   ├── database.service.ts  Owns the libsql connection + Drizzle handle
+│   │   ├── database.service.ts  Owns the Postgres connection pool + Drizzle handle
 │   │   ├── migration.runner.ts  Applies additive .sql on boot
 │   │   ├── migrations/
 │   │   │   ├── 0000_baseline_schema.sql   18 tables (authoritative DDL)
@@ -158,7 +158,7 @@ the class level, rather than by an `if (role === ...)` that someone can forget.
 Data flows in exactly one direction. **Never skip a layer, never reverse one.**
 
 ```
-Controller  →  Service  →  Repository  →  Drizzle/Turso
+Controller  →  Service  →  Repository  →  Drizzle/Postgres
   HTTP          business      queries
 ```
 
@@ -216,7 +216,7 @@ RolesGuard       (global)       @Roles? require request.user.role ∈ roles
   ▼
 ValidationPipe   (global)       DTO validation + transform, whitelist:true
   ▼
-Controller  →  Service  →  Repository  →  Turso
+Controller  →  Service  →  Repository  →  Postgres
   ▼
 HttpExceptionFilter (global)    normalises errors to { message, errors? }
 ```
@@ -278,7 +278,7 @@ call and a forgotten call meant a silently public endpoint.
 
 ### 6.1 The tables already exist
 
-All 18 tables hold production data in Turso. The Drizzle schema in
+All 18 tables hold production data in Postgres. The Drizzle schema in
 `database/schema/` **mirrors** them; it does not define them. Column names,
 types, defaults, and constraints must match the live database exactly.
 
@@ -326,8 +326,9 @@ implementation, so the wire format must stay identical until §10 is complete.
 
 ## 7. Query performance rules
 
-Turso is a **remote** database. Every query is a network round trip, so the
-count of round trips matters more than the cost of any single one.
+Depending on deployment, Postgres may be colocated or remote — either way, the
+count of round trips matters more than the cost of any single one, so the rules
+below still apply.
 
 ### 7.1 No N+1. Ever.
 
@@ -450,8 +451,8 @@ lesson complete. Log the reason; do not propagate.
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `TURSO_DB_URL` | yes | libsql connection URL |
-| `TURSO_AUTH_TOKEN` | yes | Turso auth token |
+| `DATABASE_URL` | yes | PostgreSQL connection string |
+| `DATABASE_SSL` | no (`false`) | Set `true` if the Postgres server requires/terminates TLS |
 | `JWT_SECRET` | yes | HMAC key, ≥32 chars; must match `client/.env.local` during migration |
 | `PORT` | no (3001) | HTTP port |
 | `CLIENT_ORIGIN` | no | Exact frontend origin for CORS — no wildcard |
@@ -481,7 +482,7 @@ Update this table with every module you move.
 **Migration complete — 85 handlers, all on the server.**
 
 `client/app/api/` no longer exists. The frontend has no database driver, no
-schema, no JWT secret and no Turso credentials; its only configuration is
+schema, no JWT secret and no database credentials; its only configuration is
 `NEXT_PUBLIC_SERVER_URL`. Identity comes from `GET /api/auth/me` via
 `client/lib/session.js`, so the server is the single authority on who a caller
 is.
