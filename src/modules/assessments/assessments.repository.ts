@@ -27,7 +27,7 @@ export class AssessmentsRepository {
       FROM assessments a
       JOIN courses c ON c.id = a.course_id
       LEFT JOIN assessment_questions aq ON aq.assessment_id = a.id
-      GROUP BY a.id
+      GROUP BY a.id, c.name
       ORDER BY a.created_at DESC
     `);
   }

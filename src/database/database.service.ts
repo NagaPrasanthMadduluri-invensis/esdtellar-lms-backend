@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
 import {
   Injectable,
   Logger,
@@ -11,6 +11,15 @@ import type { SQL } from 'drizzle-orm';
 
 import * as schema from './schema';
 import { runMigrations } from './migration.runner';
+
+// pg returns bigint (COUNT(*)) and numeric (AVG, ROUND(...)) as strings by
+// default, to avoid precision loss outside Number.MAX_SAFE_INTEGER. Every
+// aggregate in this codebase is a row count or a duration sum — safely within
+// that range — and every consumer expects a JS number, matching the original
+// libsql behavior. This is a global registration on the `pg` module, so it
+// must run once before any query executes; module load time is early enough.
+types.setTypeParser(20, Number); // int8 / bigint
+types.setTypeParser(1700, Number); // numeric
 
 /**
  * `NodePgDatabase` has no `.all()`/`.run()` — those are SQLite-only terminal
@@ -60,8 +69,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.pool = new Pool({
       connectionString: this.config.getOrThrow<string>('database.url'),
       ssl: this.config.get<boolean>('database.ssl')
-        ? { rejectUnauthorized: false }
+        ? { rejectUnauthorized: this.config.get<boolean>('database.sslRejectUnauthorized') }
         : undefined,
+      options: '-c TimeZone=UTC',
     });
     this.db = withSqliteCompat(drizzle(this.pool, { schema }));
   }

@@ -5,6 +5,7 @@ export interface AppConfig {
   database: {
     url: string;
     ssl: boolean;
+    sslRejectUnauthorized: boolean;
   };
   auth: {
     jwtSecret: string;
@@ -25,6 +26,7 @@ export default (): AppConfig => ({
   database: {
     url: process.env.DATABASE_URL ?? '',
     ssl: process.env.DATABASE_SSL === 'true',
+    sslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
   },
   auth: {
     jwtSecret: process.env.JWT_SECRET ?? '',

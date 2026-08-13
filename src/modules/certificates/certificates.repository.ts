@@ -35,7 +35,7 @@ export class CertificatesRepository {
    * The legacy `evaluateCourseCompletion()` issued three sequential queries per
    * course (lesson counts, best score, "does an assessment exist"). Because the
    * course list called it per row, a learner with 8 courses cost 24 round trips
-   * to Turso. Correlated scalar subqueries collapse that to one.
+   * to Postgres. Correlated scalar subqueries collapse that to one.
    */
   async getCompletionSnapshot(
     userId: number,

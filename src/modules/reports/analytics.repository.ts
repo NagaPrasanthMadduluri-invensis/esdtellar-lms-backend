@@ -255,7 +255,7 @@ export class AnalyticsRepository {
         JOIN user_lesson_completions ulc
           ON ulc.lesson_id = l.id AND ulc.user_id = uca.user_id
         GROUP BY uca.user_id, uca.course_id
-        HAVING done_count = (
+        HAVING COUNT(ulc.id) = (
           SELECT COUNT(*) FROM lessons l2
           JOIN course_modules cm2 ON cm2.id = l2.module_id
           WHERE cm2.course_id = uca.course_id

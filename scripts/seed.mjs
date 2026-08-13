@@ -15,6 +15,8 @@
  */
 
 import pg from "pg";
+pg.types.setTypeParser(20, Number); // int8 / bigint
+pg.types.setTypeParser(1700, Number); // numeric
 import { readFileSync } from "node:fs";
 import { scryptSync, randomBytes } from "node:crypto";
 
@@ -894,11 +896,14 @@ function loadEnv() {
 }
 
 const env = loadEnv();
+const sslRejectUnauthorized =
+  (process.env.DATABASE_SSL_REJECT_UNAUTHORIZED || env.DATABASE_SSL_REJECT_UNAUTHORIZED) !== "false";
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL || env.DATABASE_URL,
   ssl: (process.env.DATABASE_SSL || env.DATABASE_SSL) === "true"
-    ? { rejectUnauthorized: false }
+    ? { rejectUnauthorized: sslRejectUnauthorized }
     : undefined,
+  options: '-c TimeZone=UTC',
 });
 const db = makeDb(pool);
 
