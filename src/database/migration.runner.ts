@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { Client } from '@libsql/client';
+import type { Pool } from 'pg';
 import type { Logger } from '@nestjs/common';
 
 const MIGRATIONS_DIR = join(__dirname, 'migrations');
@@ -11,14 +11,14 @@ const MIGRATIONS_DIR = join(__dirname, 'migrations');
  *
  * Deliberately NOT drizzle-kit push: push diffs the live database against the
  * Drizzle schema and will happily drop or rewrite a table when the two disagree
- * on something cosmetic. These tables hold production data, so migrations here
- * are hand-written, additive, and idempotent (`IF NOT EXISTS`), which makes
- * re-running them on every boot a no-op.
+ * on something cosmetic. Migrations here are hand-written, additive, and
+ * idempotent (`IF NOT EXISTS`), which makes re-running them on every boot a
+ * no-op.
  *
  * Use `npm run db:push` only against a scratch database.
  */
 export async function runMigrations(
-  client: Client,
+  pool: Pool,
   logger: Logger,
 ): Promise<void> {
   let files: string[];
@@ -39,7 +39,7 @@ export async function runMigrations(
       .filter((statement) => statement.length > 0);
 
     for (const statement of statements) {
-      await client.execute(statement);
+      await pool.query(statement);
     }
     logger.log(`Applied migration ${file} (${statements.length} statements)`);
   }

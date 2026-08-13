@@ -1,4 +1,4 @@
-import { createClient, type Client } from '@libsql/client';
+import { Pool } from 'pg';
 import {
   Injectable,
   Logger,
@@ -6,15 +6,15 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from './schema';
 import { runMigrations } from './migration.runner';
 
-export type Database = LibSQLDatabase<typeof schema>;
+export type Database = NodePgDatabase<typeof schema>;
 
 /**
- * Owns the single libsql connection for the process.
+ * Owns the single Postgres connection pool for the process.
  *
  * This replaces the legacy `globalThis._lmsDb` cache, which existed only to
  * survive Next.js hot-reloads and had the side effect that schema changes were
@@ -24,26 +24,28 @@ export type Database = LibSQLDatabase<typeof schema>;
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DatabaseService.name);
-  private readonly client: Client;
+  private readonly pool: Pool;
 
   /** Drizzle handle. Inject DatabaseService and use `.db` for all queries. */
   readonly db: Database;
 
   constructor(private readonly config: ConfigService) {
-    this.client = createClient({
-      url: this.config.getOrThrow<string>('database.url'),
-      authToken: this.config.getOrThrow<string>('database.authToken'),
+    this.pool = new Pool({
+      connectionString: this.config.getOrThrow<string>('database.url'),
+      ssl: this.config.get<boolean>('database.ssl')
+        ? { rejectUnauthorized: false }
+        : undefined,
     });
-    this.db = drizzle(this.client, { schema });
+    this.db = drizzle(this.pool, { schema });
   }
 
   async onModuleInit(): Promise<void> {
     // Additive-only: CREATE INDEX IF NOT EXISTS. Never creates or alters a
-    // table — the 18 tables already exist in Turso with production data.
-    await runMigrations(this.client, this.logger);
+    // table beyond CREATE TABLE IF NOT EXISTS on a fresh database.
+    await runMigrations(this.pool, this.logger);
   }
 
-  onModuleDestroy(): void {
-    this.client.close();
+  async onModuleDestroy(): Promise<void> {
+    await this.pool.end();
   }
 }

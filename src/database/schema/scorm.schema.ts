@@ -1,12 +1,4 @@
-import { sql } from 'drizzle-orm';
-import {
-  index,
-  integer,
-  real,
-  sqliteTable,
-  text,
-  unique,
-} from 'drizzle-orm/sqlite-core';
+import { boolean, index, integer, pgTable, real, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { users } from './users.schema';
 
@@ -15,10 +7,10 @@ import { users } from './users.schema';
  * storage root itself is owned by the StorageService, so swapping local disk
  * for S3/R2 later never touches this table.
  */
-export const scormPackages = sqliteTable(
+export const scormPackages = pgTable(
   'scorm_packages',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     title: text('title').notNull(),
     version: text('version', { enum: ['1.2', '2004'] })
       .notNull()
@@ -29,23 +21,23 @@ export const scormPackages = sqliteTable(
      * FK to courses(id) ON DELETE SET NULL in the live database. It is declared
      * here without `.references()` on purpose: `courses.lessons` already points
      * at `scormPackages`, and closing the loop would make courses.schema and
-     * scorm.schema import each other. The constraint exists in Turso; only the
-     * Drizzle metadata omits it.
+     * scorm.schema import each other. The constraint exists in the database;
+     * only the Drizzle metadata omits it.
      */
     courseId: integer('course_id'),
     createdBy: integer('created_by').references(() => users.id),
-    isActive: integer('is_active').notNull().default(1),
-    createdAt: text('created_at')
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [index('idx_scorm_packages_active').on(table.isActive)],
 );
 
-export const userScormAssignments = sqliteTable(
+export const userScormAssignments = pgTable(
   'user_scorm_assignments',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -53,9 +45,9 @@ export const userScormAssignments = sqliteTable(
       .notNull()
       .references(() => scormPackages.id, { onDelete: 'cascade' }),
     assignedBy: integer('assigned_by').references(() => users.id),
-    assignedAt: text('assigned_at')
+    assignedAt: timestamp('assigned_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     unique('user_scorm_assignments_user_package_unique').on(
@@ -67,10 +59,10 @@ export const userScormAssignments = sqliteTable(
 );
 
 /** One row per (user, package). `cmiData` holds the full CMI object as JSON. */
-export const scormTracking = sqliteTable(
+export const scormTracking = pgTable(
   'scorm_tracking',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -89,9 +81,9 @@ export const scormTracking = sqliteTable(
     suspendData: text('suspend_data'),
     location: text('location'),
     cmiData: text('cmi_data').notNull().default('{}'),
-    updatedAt: text('updated_at')
+    updatedAt: timestamp('updated_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     unique('scorm_tracking_user_package_unique').on(

@@ -1,33 +1,32 @@
-import { sql } from 'drizzle-orm';
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { boolean, index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
 
-export const assessments = sqliteTable(
+export const assessments = pgTable(
   'assessments',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     courseId: integer('course_id')
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
     description: text('description'),
     passingScore: integer('passing_score').notNull().default(60),
-    isActive: integer('is_active').notNull().default(1),
-    createdAt: text('created_at')
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     index('idx_assessments_course').on(table.courseId, table.isActive),
   ],
 );
 
-export const assessmentQuestions = sqliteTable(
+export const assessmentQuestions = pgTable(
   'assessment_questions',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     assessmentId: integer('assessment_id')
       .notNull()
       .references(() => assessments.id, { onDelete: 'cascade' }),
@@ -40,23 +39,23 @@ export const assessmentQuestions = sqliteTable(
   ],
 );
 
-export const assessmentOptions = sqliteTable(
+export const assessmentOptions = pgTable(
   'assessment_options',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     questionId: integer('question_id')
       .notNull()
       .references(() => assessmentQuestions.id, { onDelete: 'cascade' }),
     optionText: text('option_text').notNull(),
-    isCorrect: integer('is_correct').notNull().default(0),
+    isCorrect: boolean('is_correct').notNull().default(false),
   },
   (table) => [index('idx_options_question').on(table.questionId)],
 );
 
-export const userAssessmentAttempts = sqliteTable(
+export const userAssessmentAttempts = pgTable(
   'user_assessment_attempts',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -66,10 +65,10 @@ export const userAssessmentAttempts = sqliteTable(
     score: integer('score').notNull().default(0),
     totalQuestions: integer('total_questions').notNull().default(0),
     percentage: integer('percentage').notNull().default(0),
-    isPassed: integer('is_passed').notNull().default(0),
-    submittedAt: text('submitted_at')
+    isPassed: boolean('is_passed').notNull().default(false),
+    submittedAt: timestamp('submitted_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     // Best-score / has-passed lookups are per (user, assessment) and run on
@@ -78,10 +77,10 @@ export const userAssessmentAttempts = sqliteTable(
   ],
 );
 
-export const userAssessmentAnswers = sqliteTable(
+export const userAssessmentAnswers = pgTable(
   'user_assessment_answers',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     attemptId: integer('attempt_id')
       .notNull()
       .references(() => userAssessmentAttempts.id, { onDelete: 'cascade' }),
@@ -91,7 +90,7 @@ export const userAssessmentAnswers = sqliteTable(
     selectedOptionId: integer('selected_option_id').references(
       () => assessmentOptions.id,
     ),
-    isCorrect: integer('is_correct').notNull().default(0),
+    isCorrect: boolean('is_correct').notNull().default(false),
   },
   (table) => [index('idx_answers_attempt').on(table.attemptId)],
 );

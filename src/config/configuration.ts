@@ -1,18 +1,13 @@
-/**
- * Single typed view of process.env. Nothing outside this file reads env vars
- * directly — inject ConfigService and read a namespaced key instead.
- */
 export interface AppConfig {
   nodeEnv: 'development' | 'production' | 'test';
   port: number;
   clientOrigin: string;
   database: {
     url: string;
-    authToken: string;
+    ssl: boolean;
   };
   auth: {
     jwtSecret: string;
-    /** Access-token lifetime in days. Matches the legacy 7-day token. */
     tokenDays: number;
     cookieName: string;
     cookieDomain: string;
@@ -28,8 +23,8 @@ export default (): AppConfig => ({
   port: Number(process.env.PORT ?? 3001),
   clientOrigin: process.env.CLIENT_ORIGIN ?? 'http://localhost:3000',
   database: {
-    url: process.env.TURSO_DB_URL ?? '',
-    authToken: process.env.TURSO_AUTH_TOKEN ?? '',
+    url: process.env.DATABASE_URL ?? '',
+    ssl: process.env.DATABASE_SSL === 'true',
   },
   auth: {
     jwtSecret: process.env.JWT_SECRET ?? '',

@@ -1,22 +1,16 @@
-import {
-  index,
-  integer,
-  sqliteTable,
-  text,
-  unique,
-} from 'drizzle-orm/sqlite-core';
+import { boolean, index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
 
 /**
  * One certificate per learner per course. Revocation is a soft delete
- * (`isRevoked = 1`) so the audit trail survives — rows are never deleted.
+ * (`isRevoked = true`) so the audit trail survives — rows are never deleted.
  */
-export const certificates = sqliteTable(
+export const certificates = pgTable(
   'certificates',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -25,11 +19,14 @@ export const certificates = sqliteTable(
       .references(() => courses.id, { onDelete: 'cascade' }),
     /** Server-generated only: EDS-<courseId>-<userId>-<shorthash>. */
     certificateCode: text('certificate_code').notNull().unique(),
-    issuedAt: text('issued_at').notNull(),
+    issuedAt: timestamp('issued_at', {
+      mode: 'string',
+      withTimezone: true,
+    }).notNull(),
     /** Best assessment % at issuance, or NULL when the course has no assessment. */
     finalScore: integer('final_score'),
-    isRevoked: integer('is_revoked').notNull().default(0),
-    revokedAt: text('revoked_at'),
+    isRevoked: boolean('is_revoked').notNull().default(false),
+    revokedAt: timestamp('revoked_at', { mode: 'string', withTimezone: true }),
     revokedBy: integer('revoked_by').references(() => users.id),
   },
   (table) => [

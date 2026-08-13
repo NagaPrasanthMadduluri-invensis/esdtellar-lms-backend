@@ -1,52 +1,50 @@
-import { sql } from 'drizzle-orm';
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { boolean, index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
 import { scormPackages } from './scorm.schema';
 
-/** `is_active`: 0 = draft (admin-only), 1 = published (visible to learners). */
-export const courses = sqliteTable(
+/** `is_active`: false = draft (admin-only), true = published (visible to learners). */
+export const courses = pgTable(
   'courses',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     name: text('name').notNull(),
     description: text('description'),
     thumbnailUrl: text('thumbnail_url'),
-    isActive: integer('is_active').notNull().default(1),
-    createdAt: text('created_at')
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
-    updatedAt: text('updated_at')
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [index('idx_courses_active').on(table.isActive)],
 );
 
-export const courseModules = sqliteTable(
+export const courseModules = pgTable(
   'course_modules',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     courseId: integer('course_id')
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
-    isActive: integer('is_active').notNull().default(1),
-    createdAt: text('created_at')
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
-    // Every progress query walks course -> modules -> lessons.
     index('idx_course_modules_course').on(table.courseId, table.isActive),
   ],
 );
 
-export const lessons = sqliteTable(
+export const lessons = pgTable(
   'lessons',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     moduleId: integer('module_id')
       .notNull()
       .references(() => courseModules.id, { onDelete: 'cascade' }),
@@ -56,15 +54,15 @@ export const lessons = sqliteTable(
     contentUrl: text('content_url'),
     durationMinutes: integer('duration_minutes'),
     sortOrder: integer('sort_order').notNull().default(0),
-    isPreview: integer('is_preview').notNull().default(0),
-    isActive: integer('is_active').notNull().default(1),
+    isPreview: boolean('is_preview').notNull().default(false),
+    isActive: boolean('is_active').notNull().default(true),
     scormPackageId: integer('scorm_package_id').references(
       () => scormPackages.id,
       { onDelete: 'set null' },
     ),
-    createdAt: text('created_at')
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [index('idx_lessons_module').on(table.moduleId, table.isActive)],
 );

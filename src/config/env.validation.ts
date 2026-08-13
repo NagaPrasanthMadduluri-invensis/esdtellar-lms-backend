@@ -4,7 +4,7 @@
  * unset, which silently produced forgeable tokens in any environment that
  * forgot the variable. There is no fallback here by design.
  */
-const REQUIRED = ['TURSO_DB_URL', 'TURSO_AUTH_TOKEN', 'JWT_SECRET'] as const;
+const REQUIRED = ['DATABASE_URL', 'JWT_SECRET'] as const;
 
 export function validateEnv(config: Record<string, unknown>) {
   const missing = REQUIRED.filter((key) => {

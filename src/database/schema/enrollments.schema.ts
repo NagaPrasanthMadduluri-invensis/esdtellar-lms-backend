@@ -1,20 +1,13 @@
-import { sql } from 'drizzle-orm';
-import {
-  index,
-  integer,
-  sqliteTable,
-  text,
-  unique,
-} from 'drizzle-orm/sqlite-core';
+import { index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { courses, lessons } from './courses.schema';
 import { users } from './users.schema';
 
 /** Admin -> learner course assignment. One row per learner per course. */
-export const userCourseAssignments = sqliteTable(
+export const userCourseAssignments = pgTable(
   'user_course_assignments',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -22,9 +15,9 @@ export const userCourseAssignments = sqliteTable(
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
     assignedBy: integer('assigned_by').references(() => users.id),
-    assignedAt: text('assigned_at')
+    assignedAt: timestamp('assigned_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
     dueDate: text('due_date'),
   },
   (table) => [
@@ -32,33 +25,30 @@ export const userCourseAssignments = sqliteTable(
       table.userId,
       table.courseId,
     ),
-    // The UNIQUE above already serves (user_id) lookups; admin-side "who is
-    // enrolled in this course" needs the reverse direction.
     index('idx_assignments_course').on(table.courseId),
   ],
 );
 
 /** Idempotent lesson completion. Progress % is derived from this table. */
-export const userLessonCompletions = sqliteTable(
+export const userLessonCompletions = pgTable(
   'user_lesson_completions',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     lessonId: integer('lesson_id')
       .notNull()
       .references(() => lessons.id, { onDelete: 'cascade' }),
-    completedAt: text('completed_at')
+    completedAt: timestamp('completed_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     unique('user_lesson_completions_user_lesson_unique').on(
       table.userId,
       table.lessonId,
     ),
-    // Progress joins go lessons -> completions, so lesson_id needs its own index.
     index('idx_completions_lesson').on(table.lessonId),
   ],
 );

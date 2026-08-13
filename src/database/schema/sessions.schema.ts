@@ -1,20 +1,13 @@
-import { sql } from 'drizzle-orm';
-import {
-  index,
-  integer,
-  sqliteTable,
-  text,
-  unique,
-} from 'drizzle-orm/sqlite-core';
+import { boolean, index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
 
 /** Instructor-led (ILT) or Virtual training events. */
-export const sessions = sqliteTable(
+export const sessions = pgTable(
   'sessions',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     title: text('title').notNull(),
     sessionType: text('session_type', { enum: ['ILT', 'Virtual'] })
       .notNull()
@@ -34,9 +27,9 @@ export const sessions = sqliteTable(
     status: text('status', { enum: ['upcoming', 'completed', 'cancelled'] })
       .notNull()
       .default('upcoming'),
-    createdAt: text('created_at')
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     // Calendar views scan by date; the sessions list filters by status.
@@ -45,36 +38,34 @@ export const sessions = sqliteTable(
   ],
 );
 
-export const sessionRoster = sqliteTable(
+export const sessionRoster = pgTable(
   'session_roster',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     sessionId: integer('session_id')
       .notNull()
       .references(() => sessions.id, { onDelete: 'cascade' }),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    enrolledAt: text('enrolled_at')
+    enrolledAt: timestamp('enrolled_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     unique('session_roster_session_user_unique').on(
       table.sessionId,
       table.userId,
     ),
-    // The learner calendar looks up "my sessions" by user_id, which the
-    // (session_id, user_id) UNIQUE cannot serve.
     index('idx_roster_user').on(table.userId),
   ],
 );
 
-/** `isLocked = 1` finalises the record — the UI refuses further edits. */
-export const sessionAttendance = sqliteTable(
+/** `isLocked = true` finalises the record — the UI refuses further edits. */
+export const sessionAttendance = pgTable(
   'session_attendance',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     sessionId: integer('session_id')
       .notNull()
       .references(() => sessions.id, { onDelete: 'cascade' }),
@@ -87,10 +78,10 @@ export const sessionAttendance = sqliteTable(
     joinTime: text('join_time'),
     notes: text('notes'),
     markedBy: integer('marked_by').references(() => users.id),
-    isLocked: integer('is_locked').notNull().default(0),
-    markedAt: text('marked_at')
+    isLocked: boolean('is_locked').notNull().default(false),
+    markedAt: timestamp('marked_at', { mode: 'string', withTimezone: true })
       .notNull()
-      .default(sql`(datetime('now'))`),
+      .defaultNow(),
   },
   (table) => [
     unique('session_attendance_session_user_unique').on(
