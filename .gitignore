@@ -32,6 +32,9 @@ storage/scorm/*
 # typescript
 *.tsbuildinfo
 
+# ephemeral scratch space for agentic dev workflows (briefs, reports, review packages)
+.superpowers/
+
 # logs
 npm-debug.log*
 yarn-debug.log*
