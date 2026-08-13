@@ -65,12 +65,12 @@ export class AnalyticsRepository {
               FROM user_lesson_completions c
               JOIN lessons l ON l.id = c.lesson_id
               WHERE c.user_id = u.id
-                AND strftime('%Y-%m', c.completed_at) = ${thisMonth}) AS this_month_minutes,
+                AND to_char(c.completed_at, 'YYYY-MM') = ${thisMonth}) AS this_month_minutes,
              (SELECT COALESCE(SUM(l.duration_minutes), 0)
               FROM user_lesson_completions c
               JOIN lessons l ON l.id = c.lesson_id
               WHERE c.user_id = u.id
-                AND strftime('%Y-%m', c.completed_at) = ${lastMonth}) AS last_month_minutes
+                AND to_char(c.completed_at, 'YYYY-MM') = ${lastMonth}) AS last_month_minutes
       FROM users u
       WHERE u.role = 'learner'
       ORDER BY u.first_name, u.last_name
@@ -193,7 +193,7 @@ export class AnalyticsRepository {
     const rows = await this.db.all<{ n: number }>(sql`
       SELECT COUNT(*) AS n FROM user_course_assignments uca
       WHERE uca.due_date IS NOT NULL
-        AND date(uca.due_date) <= date('now', '+2 days')
+        AND uca.due_date::date <= CURRENT_DATE + 2
         AND (SELECT COUNT(*) FROM user_lesson_completions ulc
              JOIN lessons l ON l.id = ulc.lesson_id
              JOIN course_modules cm ON cm.id = l.module_id
@@ -209,9 +209,9 @@ export class AnalyticsRepository {
   /* ── Learning hours: weekly rollups (already set-based in the legacy code) ── */
 
   private readonly weekCase = (column: string) => sql.raw(`CASE
-    WHEN CAST(strftime('%d', ${column}) AS INTEGER) <= 7  THEN 'W1'
-    WHEN CAST(strftime('%d', ${column}) AS INTEGER) <= 14 THEN 'W2'
-    WHEN CAST(strftime('%d', ${column}) AS INTEGER) <= 21 THEN 'W3'
+    WHEN CAST(to_char(${column}, 'DD') AS INTEGER) <= 7  THEN 'W1'
+    WHEN CAST(to_char(${column}, 'DD') AS INTEGER) <= 14 THEN 'W2'
+    WHEN CAST(to_char(${column}, 'DD') AS INTEGER) <= 21 THEN 'W3'
     ELSE 'W4'
   END`);
 
@@ -224,7 +224,7 @@ export class AnalyticsRepository {
       JOIN users u ON u.id = ulc.user_id
       JOIN lessons l ON l.id = ulc.lesson_id
       WHERE u.role = 'learner'
-        AND strftime('%Y-%m', ulc.completed_at) = ${month}
+        AND to_char(ulc.completed_at, 'YYYY-MM') = ${month}
         AND u.department IS NOT NULL
       GROUP BY week, u.department
       ORDER BY week, u.department
@@ -236,7 +236,7 @@ export class AnalyticsRepository {
       SELECT ${this.weekCase('uca.assigned_at')} AS week,
              COUNT(DISTINCT uca.user_id) AS cnt
       FROM user_course_assignments uca
-      WHERE strftime('%Y-%m', uca.assigned_at) = ${month}
+      WHERE to_char(uca.assigned_at, 'YYYY-MM') = ${month}
       GROUP BY week
     `);
   }
@@ -262,7 +262,7 @@ export class AnalyticsRepository {
             AND l2.is_active = 1 AND cm2.is_active = 1
         )
       ) sub
-      WHERE strftime('%Y-%m', sub.last_completion) = ${month}
+      WHERE to_char(sub.last_completion, 'YYYY-MM') = ${month}
       GROUP BY week
     `);
   }

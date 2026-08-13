@@ -7,11 +7,38 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type { SQL } from 'drizzle-orm';
 
 import * as schema from './schema';
 import { runMigrations } from './migration.runner';
 
-export type Database = NodePgDatabase<typeof schema>;
+/**
+ * `NodePgDatabase` has no `.all()`/`.run()` — those are SQLite-only terminal
+ * methods for raw `sql` templates. 8 repository files use them for
+ * hand-written aggregate queries (`this.db.all(sql\`...\`)`,
+ * `this.db.run(sql\`...\`)`), relying on Drizzle's SQLite query-builder shape.
+ * Rather than rewrite ~70 call sites (and their `.all<SomeRowType>(...)`
+ * generic type arguments) across those files, this thin compatibility layer
+ * keeps every existing call site working unchanged: `.all()` delegates to
+ * `.execute()` and returns `.rows`; `.run()` delegates to `.execute()` and
+ * discards the result.
+ */
+export type Database = NodePgDatabase<typeof schema> & {
+  all<T = unknown>(query: SQL): Promise<T[]>;
+  run(query: SQL): Promise<void>;
+};
+
+function withSqliteCompat(db: NodePgDatabase<typeof schema>): Database {
+  return Object.assign(db, {
+    async all<T = unknown>(query: SQL): Promise<T[]> {
+      const result = await db.execute(query);
+      return result.rows as T[];
+    },
+    async run(query: SQL): Promise<void> {
+      await db.execute(query);
+    },
+  });
+}
 
 /**
  * Owns the single Postgres connection pool for the process.
@@ -36,7 +63,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         ? { rejectUnauthorized: false }
         : undefined,
     });
-    this.db = drizzle(this.pool, { schema });
+    this.db = withSqliteCompat(drizzle(this.pool, { schema }));
   }
 
   async onModuleInit(): Promise<void> {

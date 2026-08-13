@@ -113,7 +113,7 @@ export class CoursesRepository {
         description: input.description,
         thumbnailUrl: input.thumbnailUrl,
         isActive: input.isActive ? 1 : 0,
-        updatedAt: sql`(datetime('now'))`,
+        updatedAt: sql`now()`,
       })
       .where(eq(courses.id, id))
       .returning();

@@ -1,4 +1,4 @@
-import { boolean, index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
@@ -61,7 +61,7 @@ export const sessionRoster = pgTable(
   ],
 );
 
-/** `isLocked = true` finalises the record — the UI refuses further edits. */
+/** `isLocked = 1` finalises the record — the UI refuses further edits. */
 export const sessionAttendance = pgTable(
   'session_attendance',
   {
@@ -78,7 +78,7 @@ export const sessionAttendance = pgTable(
     joinTime: text('join_time'),
     notes: text('notes'),
     markedBy: integer('marked_by').references(() => users.id),
-    isLocked: boolean('is_locked').notNull().default(false),
+    isLocked: integer('is_locked').notNull().default(0),
     markedAt: timestamp('marked_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

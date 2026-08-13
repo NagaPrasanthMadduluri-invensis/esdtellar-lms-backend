@@ -1,4 +1,4 @@
-import { boolean, index, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
 /**
  * Mirrors the `users` table, including the four columns that were added by
@@ -22,7 +22,7 @@ export const users = pgTable(
     employeeId: text('employee_id'),
     location: text('location'),
     jobRole: text('job_role'),
-    isActive: boolean('is_active').notNull().default(true),
+    isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

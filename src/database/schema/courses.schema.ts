@@ -1,8 +1,8 @@
-import { boolean, index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
 import { scormPackages } from './scorm.schema';
 
-/** `is_active`: false = draft (admin-only), true = published (visible to learners). */
+/** `is_active`: 0 = draft (admin-only), 1 = published (visible to learners). */
 export const courses = pgTable(
   'courses',
   {
@@ -10,7 +10,7 @@ export const courses = pgTable(
     name: text('name').notNull(),
     description: text('description'),
     thumbnailUrl: text('thumbnail_url'),
-    isActive: boolean('is_active').notNull().default(true),
+    isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -31,7 +31,7 @@ export const courseModules = pgTable(
     title: text('title').notNull(),
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
-    isActive: boolean('is_active').notNull().default(true),
+    isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -54,8 +54,8 @@ export const lessons = pgTable(
     contentUrl: text('content_url'),
     durationMinutes: integer('duration_minutes'),
     sortOrder: integer('sort_order').notNull().default(0),
-    isPreview: boolean('is_preview').notNull().default(false),
-    isActive: boolean('is_active').notNull().default(true),
+    isPreview: integer('is_preview').notNull().default(0),
+    isActive: integer('is_active').notNull().default(1),
     scormPackageId: integer('scorm_package_id').references(
       () => scormPackages.id,
       { onDelete: 'set null' },

@@ -14,9 +14,9 @@ node_modules
 /coverage
 
 # env — holds TURSO_AUTH_TOKEN and JWT_SECRET. Never commit.
+# .env.example is ignored too, to avoid ambiguity with the real .env at deploy time.
 .env
 .env.*
-!.env.example
 
 # ── SCORM storage ──
 # storage/scorm/ is written at runtime by the upload handler, so uploaded

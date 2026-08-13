@@ -1,4 +1,4 @@
-import { boolean, index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
@@ -13,7 +13,7 @@ export const assessments = pgTable(
     title: text('title').notNull(),
     description: text('description'),
     passingScore: integer('passing_score').notNull().default(60),
-    isActive: boolean('is_active').notNull().default(true),
+    isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -47,7 +47,7 @@ export const assessmentOptions = pgTable(
       .notNull()
       .references(() => assessmentQuestions.id, { onDelete: 'cascade' }),
     optionText: text('option_text').notNull(),
-    isCorrect: boolean('is_correct').notNull().default(false),
+    isCorrect: integer('is_correct').notNull().default(0),
   },
   (table) => [index('idx_options_question').on(table.questionId)],
 );
@@ -65,7 +65,7 @@ export const userAssessmentAttempts = pgTable(
     score: integer('score').notNull().default(0),
     totalQuestions: integer('total_questions').notNull().default(0),
     percentage: integer('percentage').notNull().default(0),
-    isPassed: boolean('is_passed').notNull().default(false),
+    isPassed: integer('is_passed').notNull().default(0),
     submittedAt: timestamp('submitted_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -90,7 +90,7 @@ export const userAssessmentAnswers = pgTable(
     selectedOptionId: integer('selected_option_id').references(
       () => assessmentOptions.id,
     ),
-    isCorrect: boolean('is_correct').notNull().default(false),
+    isCorrect: integer('is_correct').notNull().default(0),
   },
   (table) => [index('idx_answers_attempt').on(table.attemptId)],
 );

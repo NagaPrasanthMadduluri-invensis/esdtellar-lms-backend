@@ -1,11 +1,11 @@
-import { boolean, index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
 
 /**
  * One certificate per learner per course. Revocation is a soft delete
- * (`isRevoked = true`) so the audit trail survives — rows are never deleted.
+ * (`isRevoked = 1`) so the audit trail survives — rows are never deleted.
  */
 export const certificates = pgTable(
   'certificates',
@@ -25,7 +25,7 @@ export const certificates = pgTable(
     }).notNull(),
     /** Best assessment % at issuance, or NULL when the course has no assessment. */
     finalScore: integer('final_score'),
-    isRevoked: boolean('is_revoked').notNull().default(false),
+    isRevoked: integer('is_revoked').notNull().default(0),
     revokedAt: timestamp('revoked_at', { mode: 'string', withTimezone: true }),
     revokedBy: integer('revoked_by').references(() => users.id),
   },

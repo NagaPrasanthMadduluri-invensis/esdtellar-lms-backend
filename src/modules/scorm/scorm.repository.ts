@@ -98,14 +98,14 @@ export class ScormRepository {
   ): Promise<number> {
     if (userIds.length === 0) return 0;
 
-    const result = await this.db
+    await this.db
       .insert(userScormAssignments)
       .values(
         userIds.map((userId) => ({ userId, packageId, assignedBy: adminId })),
       )
       .onConflictDoNothing();
 
-    return result.rowsAffected ?? 0;
+    return userIds.length;
   }
 
   async unassignLearner(packageId: number, userId: number): Promise<void> {
@@ -207,7 +207,7 @@ export class ScormRepository {
               ${values.completionStatus}, ${values.successStatus},
               ${values.scoreRaw}, ${values.scoreMax}, ${values.totalTime},
               ${values.suspendData}, ${values.location}, ${values.cmiData},
-              datetime('now'))
+              now())
       ON CONFLICT(user_id, package_id) DO UPDATE SET
         lesson_status     = excluded.lesson_status,
         completion_status = excluded.completion_status,

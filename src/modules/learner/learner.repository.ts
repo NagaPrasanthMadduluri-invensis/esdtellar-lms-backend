@@ -60,12 +60,12 @@ export class LearnerRepository {
          WHERE c.user_id = u.id) AS lessons,
         (SELECT COUNT(*) FROM user_lesson_completions c
          WHERE c.user_id = u.id
-           AND strftime('%Y-%m', c.completed_at) = ${THIS_MONTH}) AS lessons_month,
+           AND to_char(c.completed_at, 'YYYY-MM') = ${THIS_MONTH}) AS lessons_month,
         (SELECT COUNT(*) FROM user_assessment_attempts t
          WHERE t.user_id = u.id AND t.is_passed = 1) AS passed,
         (SELECT COUNT(*) FROM user_assessment_attempts t
          WHERE t.user_id = u.id AND t.is_passed = 1
-           AND strftime('%Y-%m', t.submitted_at) = ${THIS_MONTH}) AS passed_month,
+           AND to_char(t.submitted_at, 'YYYY-MM') = ${THIS_MONTH}) AS passed_month,
         (SELECT AVG(percentage) FROM user_assessment_attempts t
          WHERE t.user_id = u.id) AS avg_score,
         (SELECT COUNT(DISTINCT cm.course_id)
@@ -73,7 +73,7 @@ export class LearnerRepository {
          JOIN lessons l ON l.id = c.lesson_id
          JOIN course_modules cm ON cm.id = l.module_id
          WHERE c.user_id = u.id
-           AND strftime('%Y-%m', c.completed_at) = ${THIS_MONTH}) AS courses_month
+           AND to_char(c.completed_at, 'YYYY-MM') = ${THIS_MONTH}) AS courses_month
       FROM users u
       WHERE u.role = 'learner'
     `);
@@ -85,17 +85,17 @@ export class LearnerRepository {
     return this.db.all<LessonMinutesRow>(sql`
       SELECT u.id AS user_id,
         COALESCE(SUM(l.duration_minutes), 0) AS all_time,
-        COALESCE(SUM(CASE WHEN strftime('%Y-%m', c.completed_at) = ${THIS_MONTH}
+        COALESCE(SUM(CASE WHEN to_char(c.completed_at, 'YYYY-MM') = ${THIS_MONTH}
                      THEN l.duration_minutes ELSE 0 END), 0) AS this_month,
-        COALESCE(SUM(CASE WHEN strftime('%Y-%m', c.completed_at) = ${LAST_MONTH}
+        COALESCE(SUM(CASE WHEN to_char(c.completed_at, 'YYYY-MM') = ${LAST_MONTH}
                      THEN l.duration_minutes ELSE 0 END), 0) AS last_month,
-        COALESCE(SUM(CASE WHEN date(c.completed_at) BETWEEN ${w1.start} AND ${w1.end}
+        COALESCE(SUM(CASE WHEN c.completed_at::date BETWEEN ${w1.start} AND ${w1.end}
                      THEN l.duration_minutes ELSE 0 END), 0) AS w1,
-        COALESCE(SUM(CASE WHEN date(c.completed_at) BETWEEN ${w2.start} AND ${w2.end}
+        COALESCE(SUM(CASE WHEN c.completed_at::date BETWEEN ${w2.start} AND ${w2.end}
                      THEN l.duration_minutes ELSE 0 END), 0) AS w2,
-        COALESCE(SUM(CASE WHEN date(c.completed_at) BETWEEN ${w3.start} AND ${w3.end}
+        COALESCE(SUM(CASE WHEN c.completed_at::date BETWEEN ${w3.start} AND ${w3.end}
                      THEN l.duration_minutes ELSE 0 END), 0) AS w3,
-        COALESCE(SUM(CASE WHEN date(c.completed_at) BETWEEN ${w4.start} AND ${w4.end}
+        COALESCE(SUM(CASE WHEN c.completed_at::date BETWEEN ${w4.start} AND ${w4.end}
                      THEN l.duration_minutes ELSE 0 END), 0) AS w4
       FROM users u
       LEFT JOIN user_lesson_completions c ON c.user_id = u.id
@@ -531,7 +531,7 @@ export class LearnerRepository {
       JOIN lessons l ON l.id = ulc.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE ulc.user_id = ${userId}
-        AND strftime('%Y-%m', ulc.completed_at) = ${month}
+        AND to_char(ulc.completed_at, 'YYYY-MM') = ${month}
       GROUP BY cm.course_id
     `);
   }

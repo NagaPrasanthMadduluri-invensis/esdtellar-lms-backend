@@ -104,13 +104,14 @@ export class SessionsRepository {
    */
   async enrollDepartment(sessionId: number, department: string): Promise<void> {
     await this.db.run(sql`
-      INSERT OR IGNORE INTO session_roster (session_id, user_id)
+      INSERT INTO session_roster (session_id, user_id)
       SELECT ${sessionId}, u.id FROM users u
       WHERE u.role = 'learner' AND u.is_active = 1
         AND u.department = ${department}
         AND u.id NOT IN (
           SELECT user_id FROM session_roster WHERE session_id = ${sessionId}
         )
+      ON CONFLICT (session_id, user_id) DO NOTHING
     `);
   }
 
@@ -159,7 +160,7 @@ export class SessionsRepository {
           (session_id, user_id, status, join_time, notes, marked_by, is_locked, marked_at)
         VALUES (${sessionId}, ${record.user_id}, ${record.status ?? null},
                 ${record.join_time ?? null}, ${record.notes ?? null},
-                ${adminId}, ${isLocked}, datetime('now'))
+                ${adminId}, ${isLocked}, now())
         ON CONFLICT(session_id, user_id) DO UPDATE SET
           status    = excluded.status,
           join_time = excluded.join_time,

@@ -1,4 +1,4 @@
-import { boolean, index, integer, pgTable, real, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, real, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { users } from './users.schema';
 
@@ -26,7 +26,7 @@ export const scormPackages = pgTable(
      */
     courseId: integer('course_id'),
     createdBy: integer('created_by').references(() => users.id),
-    isActive: boolean('is_active').notNull().default(true),
+    isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
