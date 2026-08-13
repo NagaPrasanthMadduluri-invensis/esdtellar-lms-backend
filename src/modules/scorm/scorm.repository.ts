@@ -98,14 +98,14 @@ export class ScormRepository {
   ): Promise<number> {
     if (userIds.length === 0) return 0;
 
-    await this.db
+    const result = await this.db
       .insert(userScormAssignments)
       .values(
         userIds.map((userId) => ({ userId, packageId, assignedBy: adminId })),
       )
       .onConflictDoNothing();
 
-    return userIds.length;
+    return result.rowCount ?? 0;
   }
 
   async unassignLearner(packageId: number, userId: number): Promise<void> {
