@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 
-import { AdminMediaController } from './admin-media.controller';
+import {
+  AdminMediaController,
+  AdminMediaUploadController,
+} from './admin-media.controller';
 import { LearnerMediaController } from './learner-media.controller';
 import { MediaRepository } from './media.repository';
 import { MediaService } from './media.service';
@@ -13,7 +16,11 @@ import { R2StorageService } from './storage/r2-storage.service';
  * through the checks in MediaService (§3.2).
  */
 @Module({
-  controllers: [AdminMediaController, LearnerMediaController],
+  controllers: [
+    AdminMediaUploadController,
+    AdminMediaController,
+    LearnerMediaController,
+  ],
   providers: [MediaService, MediaRepository, R2StorageService],
   exports: [MediaService],
 })

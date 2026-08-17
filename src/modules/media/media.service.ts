@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 
 import {
@@ -71,6 +72,41 @@ export class MediaService {
   }
 
   /**
+   * Presign for a lesson that does not exist yet.
+   *
+   * The admin form uploads as soon as a file is chosen, so "Add lesson" can be
+   * gated on the upload finishing. At that moment there is no lesson id to
+   * namespace the key with, so it lands under `lessons/incoming/` and is
+   * attached by `confirmVideoUpload` once the row exists. The key is stored
+   * as-is — nothing later depends on the prefix, so there is no need to copy
+   * the object into a lesson-scoped path afterwards.
+   */
+  async presignStandaloneVideoUpload(dto: PresignVideoDto) {
+    const maxBytes = this.config.get<number>('media.videoMaxBytes') ?? 0;
+    if (maxBytes > 0 && dto.sizeBytes > maxBytes) {
+      throw new UnprocessableEntityException(
+        `Video is ${formatBytes(dto.sizeBytes)}, which exceeds the ${formatBytes(
+          maxBytes,
+        )} limit.`,
+      );
+    }
+
+    const extension =
+      EXTENSION_FOR_TYPE[dto.contentType] ??
+      extname(dto.filename).replace('.', '').toLowerCase() ??
+      'mp4';
+
+    const key = `lessons/incoming/${randomUUID()}.${extension}`;
+    const uploadUrl = await this.storage.presignUpload(key, dto.contentType);
+
+    return {
+      uploadUrl,
+      key,
+      expiresIn: this.config.get<number>('media.uploadUrlTtlSeconds') ?? 3600,
+    };
+  }
+
+  /**
    * Step 2: the browser reports the upload finished, and the key is recorded.
    *
    * The object is probed with HeadObject first, so a key can only be attached
@@ -83,8 +119,15 @@ export class MediaService {
     const lesson = await this.repository.findLesson(lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
-    const prefix = `lessons/${lessonId}/video/`;
-    if (!dto.key.startsWith(prefix)) {
+    // Either a key minted for this lesson, or one from the pre-creation upload
+    // path. Anything else is refused so a confirm cannot repoint a lesson at
+    // some other lesson's stored object.
+    const ownPrefix = `lessons/${lessonId}/video/`;
+    const incomingPrefix = 'lessons/incoming/';
+    if (
+      !dto.key.startsWith(ownPrefix) &&
+      !dto.key.startsWith(incomingPrefix)
+    ) {
       throw new BadRequestException(
         'Object key does not belong to this lesson.',
       );

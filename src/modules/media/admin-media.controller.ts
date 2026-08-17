@@ -26,6 +26,25 @@ import { MediaService } from './media.service';
  * here ever holds a video in memory. Captions are the exception: they are tiny
  * and need converting to WebVTT, so they are posted here as multipart.
  */
+/**
+ * Upload endpoints that do not name a lesson.
+ *
+ * Its own base path rather than a literal segment under `admin/lessons`, so it
+ * can never be captured by the `:lessonId` parameter route.
+ */
+@Controller('admin/media')
+@Roles('admin')
+export class AdminMediaUploadController {
+  constructor(private readonly media: MediaService) {}
+
+  /** Presign before the lesson exists, so the form can upload on file-select. */
+  @Post('video/presign')
+  @HttpCode(HttpStatus.OK)
+  async presignVideo(@Body() dto: PresignVideoDto) {
+    return this.media.presignStandaloneVideoUpload(dto);
+  }
+}
+
 @Controller('admin/lessons')
 @Roles('admin')
 export class AdminMediaController {
