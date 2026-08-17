@@ -35,7 +35,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const body = this.toBody(exception, status);
+    const body = this.toBody(exception);
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       // Log the cause server-side; never leak internals to the caller.
@@ -48,26 +48,32 @@ export class HttpExceptionFilter implements ExceptionFilter {
     response.status(status).json(body);
   }
 
-  private toBody(exception: unknown, status: number): ErrorBody {
-    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+  /**
+   * An `HttpException` was constructed deliberately, so its message is text the
+   * author chose to show a caller — including at 5xx, where a
+   * ServiceUnavailableException needs to say *what* is unavailable and why.
+   * Masking those made a misconfigured server indistinguishable from a crash.
+   *
+   * Anything that is NOT an HttpException is an unexpected failure — a driver
+   * error, a TypeError — whose message may carry connection strings or schema
+   * detail. Those are still replaced wholesale, which is what §8.3 is for.
+   */
+  private toBody(exception: unknown): ErrorBody {
+    if (!(exception instanceof HttpException)) {
       return { message: 'Internal server error' };
     }
 
-    if (exception instanceof HttpException) {
-      const payload = exception.getResponse();
+    const payload = exception.getResponse();
 
-      if (typeof payload === 'string') return { message: payload };
+    if (typeof payload === 'string') return { message: payload };
 
-      const { message } = payload as { message?: string | string[] };
+    const { message } = payload as { message?: string | string[] };
 
-      // class-validator returns one string per failed constraint.
-      if (Array.isArray(message)) {
-        return { message: message[0] ?? 'Validation failed', errors: group(message) };
-      }
-      return { message: message ?? exception.message };
+    // class-validator returns one string per failed constraint.
+    if (Array.isArray(message)) {
+      return { message: message[0] ?? 'Validation failed', errors: group(message) };
     }
-
-    return { message: 'Internal server error' };
+    return { message: message ?? exception.message };
   }
 }
 

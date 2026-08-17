@@ -40,6 +40,8 @@ export class R2StorageService {
   private readonly logger = new Logger(R2StorageService.name);
   private readonly client: S3Client | null;
   private readonly bucket: string;
+  /** Names (never values) of the vars that were absent at boot. */
+  private readonly missing: string[] = [];
 
   constructor(private readonly config: ConfigService) {
     const accessKeyId = this.config.get<string>('media.r2.accessKeyId') ?? '';
@@ -48,14 +50,23 @@ export class R2StorageService {
     const endpoint = this.config.get<string>('media.r2.endpoint') ?? '';
     this.bucket = this.config.get<string>('media.r2.bucket') ?? '';
 
-    if (!accessKeyId || !secretAccessKey || !endpoint || !this.bucket) {
+    if (!accessKeyId) this.missing.push('R2_ACCESS_KEY_ID');
+    if (!secretAccessKey) this.missing.push('R2_SECRET_ACCESS_KEY');
+    if (!this.bucket) this.missing.push('R2_BUCKET');
+    if (!endpoint) this.missing.push('R2_ENDPOINT (or R2_ACCOUNT_ID)');
+
+    if (this.missing.length > 0) {
       // Deliberately not a boot failure: the rest of the API is useful without
       // video, and failing startup would make R2 a hard dependency of every
       // endpoint. Calls that actually need storage raise 503 instead.
+      //
+      // The names are repeated in the 503 body as well. Config is read once at
+      // boot, so whoever fixes the environment must restart the process — and
+      // without that hint a correctly-edited .env looks like it changed nothing.
       this.logger.warn(
-        'R2 is not configured (need R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, ' +
-          'R2_BUCKET and R2_ENDPOINT/R2_ACCOUNT_ID). Video upload and playback ' +
-          'will return 503 until these are set in server/.env.',
+        `R2 is not configured — missing: ${this.missing.join(', ')}. ` +
+          'Video upload and playback will return 503 until these are set in ' +
+          'the environment and the process is RESTARTED.',
       );
       this.client = null;
       return;
@@ -89,8 +100,12 @@ export class R2StorageService {
 
   private get s3(): S3Client {
     if (!this.client) {
+      // Naming the variables is safe here: these routes are admin-only, and
+      // only the NAMES are reported, never any value.
       throw new ServiceUnavailableException(
-        'Object storage is not configured on this server.',
+        `Video storage is not configured on this server. Missing environment ` +
+          `variable(s): ${this.missing.join(', ')}. Set them on the API server ` +
+          `and restart it — configuration is read once at startup.`,
       );
     }
     return this.client;

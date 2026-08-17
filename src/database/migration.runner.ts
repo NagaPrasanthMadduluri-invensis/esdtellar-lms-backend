@@ -33,9 +33,13 @@ export async function runMigrations(
 
   for (const file of files) {
     const sql = await readFile(join(MIGRATIONS_DIR, file), 'utf8');
-    const statements = sql
+    // Comments are stripped BEFORE splitting on `;`. Splitting first meant a
+    // semicolon inside a comment cut the file mid-sentence, and the prose after
+    // it — no longer starting with `--` — was handed to Postgres as a
+    // statement. That failed the boot of the whole API, from a comma splice.
+    const statements = stripComments(sql)
       .split(';')
-      .map((statement) => stripComments(statement).trim())
+      .map((statement) => statement.trim())
       .filter((statement) => statement.length > 0);
 
     for (const statement of statements) {
@@ -45,6 +49,13 @@ export async function runMigrations(
   }
 }
 
+/**
+ * Drops whole-line `--` comments.
+ *
+ * Note the remaining limitation: a semicolon inside a string literal would
+ * still split a statement in two. No migration needs one today, and handling it
+ * properly means a real tokeniser rather than a regex.
+ */
 function stripComments(statement: string): string {
   return statement
     .split('\n')

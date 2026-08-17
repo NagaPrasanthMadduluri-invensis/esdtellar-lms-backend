@@ -427,8 +427,18 @@ why the filter exists.
 
 ### 8.3 Never leak internals
 
-The filter replaces any 5xx body with `{ "message": "Internal server error" }`
-and logs the stack server-side. Do not put a raw error message in a response.
+The filter replaces the body of any **non-`HttpException`** with
+`{ "message": "Internal server error" }` and logs the stack server-side. Do not
+put a raw error message in a response.
+
+A deliberately constructed `HttpException` keeps its message even at 5xx,
+because that text was written for the caller. This matters: a
+`ServiceUnavailableException` has to be able to say *what* is unavailable —
+masking it made a misconfigured server look identical to a crash, and cost real
+debugging time when R2 credentials were absent in production. The distinction is
+provenance, not status code: an author wrote the former, a driver or a
+`TypeError` produced the latter, and only the latter can leak a connection
+string.
 
 ### 8.4 Best-effort side effects must not break the caller
 
@@ -494,6 +504,7 @@ Update this table with every module you move.
 | certificates | 5 | `server/src/modules/certificates` |
 | analytics / reports / export | 6 | `server/src/modules/reports` |
 | media (lesson video + captions in R2) | 7 | `server/src/modules/media` |
+| scorm attempt history (admin view) | 1 | `server/src/modules/scorm` |
 
 **Migration complete — 85 handlers, all on the server.**
 

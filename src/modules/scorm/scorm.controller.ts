@@ -50,6 +50,15 @@ export class AdminScormController {
     return this.scorm.packageDetail(packageId);
   }
 
+  /** Attempt history + per-question breakdown for one learner. */
+  @Get(':packageId/attempts/:userId')
+  async learnerAttempts(
+    @Param('packageId', ParseIntPipe) packageId: number,
+    @Param('userId', ParseIntPipe) userId: number,
+  ) {
+    return this.scorm.learnerAttempts(packageId, userId);
+  }
+
   @Delete(':packageId')
   async remove(@Param('packageId', ParseIntPipe) packageId: number) {
     return this.scorm.deletePackage(packageId);

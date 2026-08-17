@@ -53,11 +53,25 @@ export class ScormRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * Roster for a package. The attempt count and best score come from correlated
+   * subqueries rather than a second pass, so the admin list stays one round trip
+   * however many learners are assigned (§7.1).
+   */
   async packageAssignments(packageId: number) {
     return this.db.all(sql`
       SELECT usa.*, u.first_name, u.last_name, u.email, u.department,
              st.lesson_status, st.completion_status, st.score_raw,
-             st.updated_at AS last_tracked
+             st.updated_at AS last_tracked,
+             (SELECT COUNT(*) FROM scorm_attempts sa
+               WHERE sa.user_id = usa.user_id AND sa.package_id = usa.package_id)
+               AS attempt_count,
+             (SELECT MAX(sa.percentage) FROM scorm_attempts sa
+               WHERE sa.user_id = usa.user_id AND sa.package_id = usa.package_id)
+               AS best_percentage,
+             (SELECT MAX(sa.submitted_at) FROM scorm_attempts sa
+               WHERE sa.user_id = usa.user_id AND sa.package_id = usa.package_id)
+               AS last_submitted_at
       FROM user_scorm_assignments usa
       JOIN users u ON u.id = usa.user_id
       LEFT JOIN scorm_tracking st
@@ -65,6 +79,99 @@ export class ScormRepository {
       WHERE usa.package_id = ${packageId}
       ORDER BY usa.assigned_at DESC
     `);
+  }
+
+  /* ── Attempts ── */
+
+  /**
+   * Appends one attempt. `attempt_number` is derived inside the statement so
+   * the count and the insert cannot disagree, and no read is needed first.
+   */
+  async appendAttempt(values: {
+    userId: number;
+    packageId: number;
+    scoreRaw: number | null;
+    scoreMax: number | null;
+    percentage: number | null;
+    lessonStatus: string | null;
+    completionStatus: string | null;
+    successStatus: string | null;
+    isPassed: number | null;
+    totalTime: string | null;
+    cmiData: string;
+  }): Promise<void> {
+    await this.db.run(sql`
+      INSERT INTO scorm_attempts
+        (user_id, package_id, attempt_number, score_raw, score_max, percentage,
+         lesson_status, completion_status, success_status, is_passed,
+         total_time, cmi_data, submitted_at)
+      VALUES (
+        ${values.userId}, ${values.packageId},
+        (SELECT COUNT(*) + 1 FROM scorm_attempts
+          WHERE user_id = ${values.userId} AND package_id = ${values.packageId}),
+        ${values.scoreRaw}, ${values.scoreMax}, ${values.percentage},
+        ${values.lessonStatus}, ${values.completionStatus},
+        ${values.successStatus}, ${values.isPassed},
+        ${values.totalTime}, ${values.cmiData}, now()
+      )
+    `);
+  }
+
+  /** Every attempt one learner made on one package, newest first. */
+  async listAttempts(packageId: number, userId: number) {
+    return this.db.all<{
+      id: number;
+      attempt_number: number;
+      score_raw: number | null;
+      score_max: number | null;
+      percentage: number | null;
+      lesson_status: string | null;
+      completion_status: string | null;
+      success_status: string | null;
+      is_passed: number | null;
+      total_time: string | null;
+      cmi_data: string;
+      submitted_at: string;
+    }>(sql`
+      SELECT id, attempt_number, score_raw, score_max, percentage,
+             lesson_status, completion_status, success_status, is_passed,
+             total_time, cmi_data, submitted_at
+      FROM scorm_attempts
+      WHERE package_id = ${packageId} AND user_id = ${userId}
+      ORDER BY attempt_number DESC
+    `);
+  }
+
+  /**
+   * Title/version for the attempts header. Separate from `findPackage`, which
+   * selects only what the storage paths need and is deliberately narrow.
+   */
+  async findPackageSummary(packageId: number) {
+    const rows = await this.db
+      .select({
+        id: scormPackages.id,
+        title: scormPackages.title,
+        version: scormPackages.version,
+      })
+      .from(scormPackages)
+      .where(eq(scormPackages.id, packageId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /** Name/email for the attempts header — the learner being inspected. */
+  async findLearner(userId: number) {
+    const rows = await this.db.all<{
+      id: number;
+      first_name: string;
+      last_name: string;
+      email: string;
+      department: string | null;
+    }>(sql`
+      SELECT id, first_name, last_name, email, department
+      FROM users WHERE id = ${userId}
+    `);
+    return rows[0] ?? null;
   }
 
   async createPackage(values: typeof scormPackages.$inferInsert) {
@@ -179,8 +286,26 @@ export class ScormRepository {
   }
 
   async findTracking(userId: number, packageId: number) {
-    const rows = await this.db.all(sql`
-      SELECT * FROM scorm_tracking
+    const rows = await this.db.all<{
+      id: number;
+      user_id: number;
+      package_id: number;
+      lesson_status: string | null;
+      completion_status: string | null;
+      success_status: string | null;
+      score_raw: number | null;
+      score_min: number | null;
+      score_max: number | null;
+      total_time: string | null;
+      suspend_data: string | null;
+      location: string | null;
+      cmi_data: string;
+      updated_at: string;
+    }>(sql`
+      SELECT id, user_id, package_id, lesson_status, completion_status,
+             success_status, score_raw, score_min, score_max, total_time,
+             suspend_data, location, cmi_data, updated_at
+      FROM scorm_tracking
       WHERE user_id = ${userId} AND package_id = ${packageId}
     `);
     return rows[0] ?? null;

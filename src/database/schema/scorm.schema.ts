@@ -94,5 +94,50 @@ export const scormTracking = pgTable(
   ],
 );
 
+/**
+ * Append-only attempt history — the counterpart to `scormTracking`, which is
+ * upserted and therefore only ever describes the latest state.
+ *
+ * Deliberately shaped like `userAssessmentAttempts` so an admin screen can
+ * render a SCORM package's attempts with the same columns it uses for an
+ * assessment: which attempt, what score, when submitted, passed or failed.
+ */
+export const scormAttempts = pgTable(
+  'scorm_attempts',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    packageId: integer('package_id')
+      .notNull()
+      .references(() => scormPackages.id, { onDelete: 'cascade' }),
+    attemptNumber: integer('attempt_number').notNull(),
+    scoreRaw: real('score_raw'),
+    scoreMax: real('score_max'),
+    /** Rounded 0-100. Null when the package reports no score. */
+    percentage: integer('percentage'),
+    lessonStatus: text('lesson_status'),
+    completionStatus: text('completion_status'),
+    successStatus: text('success_status'),
+    /** Null when the package only tracks completion and never grades. */
+    isPassed: integer('is_passed'),
+    totalTime: text('total_time'),
+    /** CMI snapshot at submission — holds `interactions` when reported. */
+    cmiData: text('cmi_data').notNull().default('{}'),
+    submittedAt: timestamp('submitted_at', {
+      mode: 'string',
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index('idx_scorm_attempts_user_package').on(table.userId, table.packageId),
+    index('idx_scorm_attempts_package').on(table.packageId),
+  ],
+);
+
 export type ScormPackageRow = typeof scormPackages.$inferSelect;
 export type ScormTrackingRow = typeof scormTracking.$inferSelect;
+export type ScormAttemptRow = typeof scormAttempts.$inferSelect;

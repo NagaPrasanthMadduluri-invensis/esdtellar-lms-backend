@@ -11,6 +11,7 @@ import {
 import { CertificatesService } from '@/modules/certificates/certificates.service';
 
 import type { AssignScormDto, SaveTrackingDto } from './dto/scorm.dto';
+import { parseInteractions } from './interactions.util';
 import { parseManifest } from './manifest.parser';
 import { ScormRepository } from './scorm.repository';
 import { ScormStorageService } from './storage/scorm-storage.service';
@@ -97,6 +98,53 @@ export class ScormService {
     }
   }
 
+  /**
+   * One learner's full attempt history on a package, for the admin view.
+   *
+   * Each attempt carries its own question breakdown, parsed from the CMI
+   * snapshot taken at submission — so attempt 1's answers stay attempt 1's,
+   * rather than every attempt showing the latest state. `reportsQuestions`
+   * tells the UI whether the package emits interactions at all, so it can say
+   * so instead of rendering an empty table.
+   */
+  async learnerAttempts(packageId: number, userId: number) {
+    const pkg = await this.repository.findPackageSummary(packageId);
+    if (!pkg) throw new NotFoundException('Package not found');
+
+    const learner = await this.repository.findLearner(userId);
+    if (!learner) throw new NotFoundException('Learner not found');
+
+    const rows = await this.repository.listAttempts(packageId, userId);
+
+    const attempts = rows.map((row) => {
+      const interactions = parseInteractions(row.cmi_data);
+      return {
+        id: row.id,
+        attempt_number: row.attempt_number,
+        score_raw: row.score_raw,
+        score_max: row.score_max,
+        percentage: row.percentage,
+        lesson_status: row.lesson_status,
+        completion_status: row.completion_status,
+        success_status: row.success_status,
+        // null = the package never graded this, which is not the same as failed
+        is_passed: row.is_passed === null ? null : row.is_passed === 1,
+        total_time: row.total_time,
+        submitted_at: row.submitted_at,
+        interactions,
+        correct_count: interactions.filter((i) => i.isCorrect === true).length,
+        question_count: interactions.length,
+      };
+    });
+
+    return {
+      package: { id: pkg.id, title: pkg.title, version: pkg.version },
+      learner,
+      attempts,
+      reportsQuestions: attempts.some((a) => a.question_count > 0),
+    };
+  }
+
   async deletePackage(packageId: number) {
     const pkg = await this.repository.findPackage(packageId);
     if (!pkg) throw new NotFoundException('Package not found');
@@ -162,6 +210,11 @@ export class ScormService {
   ) {
     await this.assertAccess(userId, packageId);
 
+    // Read before the upsert overwrites it: whether this commit is the moment
+    // the learner *became* finished is the only signal available for closing an
+    // attempt, and it is gone once the row is updated.
+    const previous = await this.repository.findTracking(userId, packageId);
+
     const cmi = dto.cmi_data as CmiPayload;
 
     const lessonStatus =
@@ -203,6 +256,65 @@ export class ScormService {
       lessonStatus === 'passed' ||
       lessonStatus === 'completed';
 
+    /**
+     * Close an attempt on the transition into a finished state.
+     *
+     * Deliberately NOT `isDone`: that decides whether the *lesson* is complete,
+     * and a failed attempt must not complete a lesson or issue a certificate.
+     * A failed attempt is still a submission the admin needs to see, so
+     * "finished" here includes `failed` where "done" above does not.
+     *
+     * The player commits repeatedly — on Commit, on Finish, on unmount — so
+     * appending on every finished commit would record one sitting many times.
+     * Requiring the previous state to be unfinished collapses that to one row
+     * per submission.
+     *
+     * The known cost: a package that never resets its status on a retake (no
+     * `ab-initio`, stays "passed") reads as the same finished attempt, so the
+     * retake is not recorded. A learner who abandons midway is likewise not
+     * recorded, which is the intent.
+     */
+    const isSubmission = isTerminal(
+      lessonStatus,
+      completionStatus,
+      successStatus,
+    );
+    const wasSubmission = isTerminal(
+      previous?.lesson_status ?? null,
+      previous?.completion_status ?? null,
+      previous?.success_status ?? null,
+    );
+
+    if (isSubmission && !wasSubmission) {
+      const percentage =
+        scoreRaw !== null && scoreMax !== null && Number(scoreMax) > 0
+          ? Math.round((Number(scoreRaw) / Number(scoreMax)) * 100)
+          : null;
+
+      // Null, not false, when the package only reports completion: "not graded"
+      // and "failed" are different things and must not render the same.
+      const isPassed =
+        successStatus === 'passed' || lessonStatus === 'passed'
+          ? 1
+          : successStatus === 'failed' || lessonStatus === 'failed'
+            ? 0
+            : null;
+
+      await this.repository.appendAttempt({
+        userId,
+        packageId,
+        scoreRaw: scoreRaw !== null ? Number(scoreRaw) : null,
+        scoreMax: scoreMax !== null ? Number(scoreMax) : null,
+        percentage,
+        lessonStatus,
+        completionStatus,
+        successStatus,
+        isPassed,
+        totalTime: cmi?.core?.total_time ?? cmi?.total_time ?? null,
+        cmiData: JSON.stringify(cmi),
+      });
+    }
+
     if (isDone) {
       const lesson = await this.repository.findLinkedLesson(userId, packageId);
       if (lesson) {
@@ -219,4 +331,25 @@ export class ScormService {
       throw new ForbiddenException('Not enrolled in this package');
     }
   }
+}
+
+/**
+ * Has the content reported that this sitting is over — passed OR failed?
+ *
+ * Covers both dialects: SCORM 1.2 puts the verdict in `lesson_status`, 2004
+ * splits it across `completion_status` and `success_status`.
+ */
+function isTerminal(
+  lessonStatus: string | null,
+  completionStatus: string | null,
+  successStatus: string | null,
+): boolean {
+  return (
+    completionStatus === 'completed' ||
+    lessonStatus === 'passed' ||
+    lessonStatus === 'completed' ||
+    lessonStatus === 'failed' ||
+    successStatus === 'passed' ||
+    successStatus === 'failed'
+  );
 }
