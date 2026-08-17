@@ -118,13 +118,21 @@ export class UsersService {
     const user = await this.repository.findLearnerProfile(userId);
     if (!user) throw new NotFoundException('User not found');
 
-    const [assignments, progressRows, assessmentRows, attemptRows] =
-      await Promise.all([
-        this.repository.findAssignedCourses(userId),
-        this.repository.lessonProgressByCourse(userId),
-        this.repository.assessmentsForAssignedCourses(userId),
-        this.repository.attemptsForAssignedCourses(userId),
-      ]);
+    const [
+      assignments,
+      progressRows,
+      assessmentRows,
+      attemptRows,
+      scormRows,
+      scormAttemptRows,
+    ] = await Promise.all([
+      this.repository.findAssignedCourses(userId),
+      this.repository.lessonProgressByCourse(userId),
+      this.repository.assessmentsForAssignedCourses(userId),
+      this.repository.attemptsForAssignedCourses(userId),
+      this.repository.scormPackagesForAssignedCourses(userId),
+      this.repository.scormAttemptsForAssignedCourses(userId),
+    ]);
 
     const progressByCourse = new Map(
       progressRows.map((row) => [Number(row.course_id), row]),
@@ -159,6 +167,51 @@ export class UsersService {
       else assessmentsByCourse.set(key, [entry]);
     }
 
+    // SCORM packages get the same treatment as assessments: grouped by course,
+    // each carrying its own attempt list, so one card can render both without
+    // the UI needing to know which kind it is looking at.
+    const scormAttemptsByPackage = new Map<number, typeof scormAttemptRows>();
+    for (const attempt of scormAttemptRows) {
+      const key = Number(attempt.package_id);
+      const list = scormAttemptsByPackage.get(key);
+      if (list) list.push(attempt);
+      else scormAttemptsByPackage.set(key, [attempt]);
+    }
+
+    const scormByCourse = new Map<number, unknown[]>();
+    for (const pkg of scormRows) {
+      const entry = {
+        id: pkg.id,
+        title: pkg.title,
+        version: pkg.version,
+        attempt_count: Number(pkg.attempt_count),
+        best_score:
+          pkg.best_percentage !== null ? Number(pkg.best_percentage) : null,
+        // null when the package only reports completion and never grades —
+        // which must not render the same as "failed".
+        has_passed: pkg.has_passed === null ? null : Number(pkg.has_passed) === 1,
+        attempts: (scormAttemptsByPackage.get(Number(pkg.id)) ?? []).map(
+          (attempt) => ({
+            id: attempt.id,
+            attempt_number: attempt.attempt_number,
+            score_raw: attempt.score_raw,
+            score_max: attempt.score_max,
+            percentage: attempt.percentage,
+            is_passed:
+              attempt.is_passed === null ? null : attempt.is_passed === 1,
+            lesson_status: attempt.lesson_status,
+            total_time: attempt.total_time,
+            submitted_at: attempt.submitted_at,
+          }),
+        ),
+      };
+
+      const key = Number(pkg.course_id);
+      const list = scormByCourse.get(key);
+      if (list) list.push(entry);
+      else scormByCourse.set(key, [entry]);
+    }
+
     const courses = assignments.map((assignment) => {
       const courseId = Number(assignment.course_id);
       const progress = progressByCourse.get(courseId);
@@ -178,6 +231,10 @@ export class UsersService {
         assessments: (assessmentsByCourse.get(courseId) ?? []) as {
           has_passed: boolean;
           attempts: { percentage: number }[];
+        }[],
+        scorm_packages: (scormByCourse.get(courseId) ?? []) as {
+          has_passed: boolean | null;
+          attempts: { percentage: number | null }[];
         }[],
       };
     });

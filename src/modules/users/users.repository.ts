@@ -282,6 +282,87 @@ export class UsersRepository {
   }
 
   /** Every attempt for the learner; grouped by assessment in the service. */
+  /**
+   * SCORM packages sitting inside this learner's assigned courses, with the
+   * same roll-up the assessment query produces so the admin view can render
+   * both the same way.
+   *
+   * A package reaches a course two ways: embedded as a lesson
+   * (`lessons.scorm_package_id`), or attached directly via
+   * `scorm_packages.course_id`. Both are covered, and `DISTINCT` collapses a
+   * package that is embedded in more than one lesson of the same course.
+   */
+  async scormPackagesForAssignedCourses(userId: number) {
+    return this.db.all<{
+      id: number;
+      course_id: number;
+      title: string;
+      version: string;
+      attempt_count: number;
+      best_percentage: number | null;
+      has_passed: number | null;
+    }>(sql`
+      SELECT DISTINCT sp.id, cm.course_id, sp.title, sp.version,
+             (SELECT COUNT(*) FROM scorm_attempts sa
+              WHERE sa.package_id = sp.id AND sa.user_id = ${userId})
+               AS attempt_count,
+             (SELECT MAX(percentage) FROM scorm_attempts sa
+              WHERE sa.package_id = sp.id AND sa.user_id = ${userId})
+               AS best_percentage,
+             (SELECT MAX(is_passed) FROM scorm_attempts sa
+              WHERE sa.package_id = sp.id AND sa.user_id = ${userId})
+               AS has_passed
+      FROM scorm_packages sp
+      JOIN lessons l ON l.scorm_package_id = sp.id AND l.is_active = 1
+      JOIN course_modules cm ON cm.id = l.module_id AND cm.is_active = 1
+      WHERE sp.is_active = 1
+        AND cm.course_id IN (
+          SELECT course_id FROM user_course_assignments WHERE user_id = ${userId}
+        )
+
+      UNION
+
+      SELECT DISTINCT sp.id, sp.course_id AS course_id, sp.title, sp.version,
+             (SELECT COUNT(*) FROM scorm_attempts sa
+              WHERE sa.package_id = sp.id AND sa.user_id = ${userId})
+               AS attempt_count,
+             (SELECT MAX(percentage) FROM scorm_attempts sa
+              WHERE sa.package_id = sp.id AND sa.user_id = ${userId})
+               AS best_percentage,
+             (SELECT MAX(is_passed) FROM scorm_attempts sa
+              WHERE sa.package_id = sp.id AND sa.user_id = ${userId})
+               AS has_passed
+      FROM scorm_packages sp
+      WHERE sp.is_active = 1 AND sp.course_id IS NOT NULL
+        AND sp.course_id IN (
+          SELECT course_id FROM user_course_assignments WHERE user_id = ${userId}
+        )
+    `);
+  }
+
+  /** Every SCORM attempt this learner made inside their assigned courses. */
+  async scormAttemptsForAssignedCourses(userId: number) {
+    return this.db.all<{
+      id: number;
+      package_id: number;
+      attempt_number: number;
+      score_raw: number | null;
+      score_max: number | null;
+      percentage: number | null;
+      is_passed: number | null;
+      lesson_status: string | null;
+      total_time: string | null;
+      submitted_at: string;
+    }>(sql`
+      SELECT sa.id, sa.package_id, sa.attempt_number, sa.score_raw,
+             sa.score_max, sa.percentage, sa.is_passed, sa.lesson_status,
+             sa.total_time, sa.submitted_at
+      FROM scorm_attempts sa
+      WHERE sa.user_id = ${userId}
+      ORDER BY sa.submitted_at DESC
+    `);
+  }
+
   async attemptsForAssignedCourses(userId: number) {
     return this.db.all<{
       id: number;
