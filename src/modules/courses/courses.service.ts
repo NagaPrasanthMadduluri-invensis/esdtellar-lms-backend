@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
+import { MediaService } from '@/modules/media/media.service';
+
 import { CoursesRepository } from './courses.repository';
 import type {
   CourseDto,
@@ -11,7 +13,10 @@ import type {
 
 @Injectable()
 export class CoursesService {
-  constructor(private readonly repository: CoursesRepository) {}
+  constructor(
+    private readonly repository: CoursesRepository,
+    private readonly media: MediaService,
+  ) {}
 
   /* ── Courses ── */
 
@@ -201,6 +206,10 @@ export class CoursesService {
   }
 
   async removeLesson(lessonId: number) {
+    // Drop the R2 objects before the row that names them disappears —
+    // afterwards there is nothing left to say which keys were this lesson's.
+    // Best-effort: a storage hiccup must not block deleting the lesson (§8.4).
+    await this.media.releaseLessonMedia(lessonId);
     await this.repository.deleteLesson(lessonId);
     return { message: 'Lesson deleted' };
   }

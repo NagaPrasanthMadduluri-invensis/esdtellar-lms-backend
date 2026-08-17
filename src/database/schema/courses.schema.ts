@@ -52,6 +52,9 @@ export const lessons = pgTable(
     description: text('description'),
     contentType: text('content_type').notNull().default('video'),
     contentUrl: text('content_url'),
+    // R2 object keys, not URLs — playback links are presigned per request.
+    videoKey: text('video_key'),
+    captionKey: text('caption_key'),
     durationMinutes: integer('duration_minutes'),
     sortOrder: integer('sort_order').notNull().default(0),
     isPreview: integer('is_preview').notNull().default(0),

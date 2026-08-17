@@ -72,11 +72,26 @@ export function parseIsoDuration(iso: string | null): number {
   );
 }
 
+/**
+ * Parses a timestamp as it arrives from the database.
+ *
+ * Postgres renders `timestamptz` as `2026-08-17 12:34:56.789+00` — a space
+ * separator and a *two-digit* UTC offset. That offset is not valid ISO 8601, so
+ * rewriting the space to a `T` puts V8 into strict ISO mode and yields an
+ * Invalid Date. Left alone, V8's non-ISO parser reads the string correctly.
+ *
+ * SQLite stored `2026-08-17 12:34:56` with no offset at all, where the `T`
+ * rewrite was what made it parse — hence the swap this replaces. Plain
+ * `YYYY-MM-DD` values (see `addDays`) parse correctly here too.
+ */
+export function parseTimestamp(iso: string): Date {
+  return new Date(iso);
+}
+
 export function relativeTime(iso: string | null): string {
   if (!iso) return '';
   const diff = Math.floor(
-    (new Date(TODAY).getTime() - new Date(iso.replace(' ', 'T')).getTime()) /
-      86_400_000,
+    (new Date(TODAY).getTime() - parseTimestamp(iso).getTime()) / 86_400_000,
   );
   if (diff === 0) return 'Today';
   if (diff === 1) return 'Yesterday';
@@ -91,7 +106,7 @@ export function relativeTime(iso: string | null): string {
 
 export function formatDate(iso: string | null): string {
   if (!iso) return '';
-  return new Date(iso.replace(' ', 'T')).toLocaleDateString('en-GB', {
+  return parseTimestamp(iso).toLocaleDateString('en-GB', {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
@@ -99,7 +114,7 @@ export function formatDate(iso: string | null): string {
 }
 
 export function addDays(iso: string, days: number): string {
-  const d = new Date(iso.replace(' ', 'T'));
+  const d = parseTimestamp(iso);
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
 }

@@ -2,7 +2,7 @@
   "name": "edstellar-lms-server",
   "version": "0.1.0",
   "private": true,
-  "description": "Edstellar LMS backend. NestJS + Drizzle + Turso. Owns the entire database schema and every API endpoint.",
+  "description": "Edstellar LMS backend. NestJS + Drizzle + PostgreSQL. Owns the entire database schema and every API endpoint.",
   "scripts": {
     "build": "nest build",
     "dev": "nest start --watch",
@@ -14,6 +14,8 @@
     "db:seed": "node scripts/seed.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1111.0",
+    "@aws-sdk/s3-request-presigner": "^3.1111.0",
     "@nestjs/common": "^11.0.0",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^11.0.0",

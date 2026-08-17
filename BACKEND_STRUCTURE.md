@@ -307,7 +307,8 @@ The declaration documents intent next to the table; the migration is what
 actually executes.
 
 Do not add an index that duplicates the leftmost prefix of an existing `UNIQUE`
-constraint — SQLite already has a usable index for it. `UNIQUE(user_id, course_id)`
+constraint — Postgres already backs that constraint with a btree index, which
+serves leftmost-prefix lookups. `UNIQUE(user_id, course_id)`
 serves lookups by `user_id`, so only the reverse direction (`course_id`) needs one.
 
 ### 6.4 Format-locked code
@@ -460,6 +461,20 @@ lesson complete. Log the reason; do not propagate.
 | `AUTH_TOKEN_DAYS` | no (7) | Token + cookie lifetime |
 | `SCORM_STORAGE_DRIVER` | no (`local`) | `local` now, `s3` when credentials arrive |
 | `SCORM_STORAGE_PATH` | no | Local SCORM root |
+| `R2_ACCOUNT_ID` | for video | Cloudflare account id; used to derive the endpoint |
+| `R2_ACCESS_KEY_ID` | for video | R2 API token key |
+| `R2_SECRET_ACCESS_KEY` | for video | R2 API token secret |
+| `R2_BUCKET` | for video | Bucket holding lesson videos and captions |
+| `R2_ENDPOINT` | no | Account-level S3 endpoint, **without** the bucket path |
+| `VIDEO_URL_TTL_SECONDS` | no (900) | Lifetime of a presigned playback URL |
+| `UPLOAD_URL_TTL_SECONDS` | no (3600) | Lifetime of a presigned upload URL |
+| `VIDEO_MAX_BYTES` | no (2 GiB) | Rejected at presign, re-checked against R2 on confirm |
+| `CAPTION_MAX_BYTES` | no (2 MiB) | Caption uploads are proxied, so this is a real body cap |
+
+The R2 variables are **not** boot-required: without them the API starts, logs a
+warning, and returns 503 from the video routes only. `S3_API_ENDPOINT` from the
+Cloudflare dashboard includes the bucket in its path and must not be used as
+`R2_ENDPOINT` — the SDK appends the bucket itself.
 
 ---
 
@@ -478,6 +493,7 @@ Update this table with every module you move.
 | scorm (upload, assign, tracking, static content) | 9 | `server/src/modules/scorm` |
 | certificates | 5 | `server/src/modules/certificates` |
 | analytics / reports / export | 6 | `server/src/modules/reports` |
+| media (lesson video + captions in R2) | 7 | `server/src/modules/media` |
 
 **Migration complete — 85 handlers, all on the server.**
 

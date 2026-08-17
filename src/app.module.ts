@@ -12,6 +12,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CertificatesModule } from './modules/certificates/certificates.module';
 import { CoursesModule } from './modules/courses/courses.module';
 import { LearnerModule } from './modules/learner/learner.module';
+import { MediaModule } from './modules/media/media.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { ScormModule } from './modules/scorm/scorm.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
@@ -36,6 +37,7 @@ import { UsersModule } from './modules/users/users.module';
     LearnerModule,
     ScormModule,
     ReportsModule,
+    MediaModule,
   ],
   providers: [
     // Order matters: AuthGuard populates request.user, RolesGuard reads it.

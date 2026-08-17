@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { MediaModule } from '@/modules/media/media.module';
+
 import {
   AssignmentsController,
   CoursesController,
@@ -10,6 +12,7 @@ import { CoursesRepository } from './courses.repository';
 import { CoursesService } from './courses.service';
 
 @Module({
+  imports: [MediaModule],
   controllers: [
     CoursesController,
     ModulesController,

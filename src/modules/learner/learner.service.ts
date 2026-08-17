@@ -23,6 +23,7 @@ import {
   MODE_ORDER,
   MONTHLY_GOAL_HOURS,
   parseIsoDuration,
+  parseTimestamp,
   POINTS_PER_LESSON,
   POINTS_PER_PASSED_ASSESSMENT,
   relativeTime,
@@ -500,6 +501,10 @@ export class LearnerService {
         description: lesson.description,
         content_type: lesson.content_type,
         content_url: lesson.content_url,
+        // Booleans, not the R2 keys themselves: the player asks
+        // GET /learner/lessons/:id/media for a signed URL when this is true.
+        has_video: Boolean(lesson.video_key),
+        has_captions: Boolean(lesson.caption_key),
         scorm_package_id: lesson.scorm_package_id ?? null,
         duration_minutes: lesson.duration_minutes,
         module: { title: lesson.module_title },
@@ -1130,7 +1135,7 @@ export class LearnerService {
   /* ── helpers ── */
 
   private shortDate(iso: string): string {
-    return new Date(iso.replace(' ', 'T')).toLocaleDateString('en-GB', {
+    return parseTimestamp(iso).toLocaleDateString('en-GB', {
       day: 'numeric',
       month: 'short',
     });

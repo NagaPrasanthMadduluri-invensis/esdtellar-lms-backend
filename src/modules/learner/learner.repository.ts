@@ -332,6 +332,8 @@ export class LearnerRepository {
       description: string | null;
       content_type: string;
       content_url: string | null;
+      video_key: string | null;
+      caption_key: string | null;
       scorm_package_id: number | null;
       duration_minutes: number | null;
       sort_order: number;
