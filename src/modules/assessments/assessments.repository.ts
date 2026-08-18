@@ -77,6 +77,10 @@ export class AssessmentsRepository {
         title: input.title,
         description: input.description,
         passingScore: input.passingScore,
+        // Detached on creation. An assessment is authored under a course but is
+        // not delivered to anyone until an admin attaches it on the course's
+        // Assessments tab — so a half-built quiz cannot reach a learner.
+        isActive: 0,
       })
       .returning();
     return created;
@@ -102,6 +106,23 @@ export class AssessmentsRepository {
       .where(eq(assessments.id, id))
       .returning();
     return updated;
+  }
+
+  /**
+   * Attaches or detaches an assessment from its course.
+   *
+   * `is_active` is the attachment flag. It already gates every learner-facing
+   * read, the certificate completion snapshot and the reports, so attaching is
+   * one column rather than a parallel concept those 22 queries would each have
+   * to learn about.
+   */
+  async setAttached(id: number, attached: boolean) {
+    const [updated] = await this.db
+      .update(assessments)
+      .set({ isActive: attached ? 1 : 0 })
+      .where(eq(assessments.id, id))
+      .returning();
+    return updated ?? null;
   }
 
   async deleteAssessment(id: number): Promise<void> {

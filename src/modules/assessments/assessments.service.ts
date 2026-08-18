@@ -47,12 +47,32 @@ export class AssessmentsService {
     return { assessment };
   }
 
+  /**
+   * Attach/detach. Detaching hides the assessment from learners and stops new
+   * attempts, but past attempts stay in the admin reports — and because course
+   * completion keys off attached assessments, detaching one can make a course
+   * completable that was not before.
+   */
+  async setAttached(assessmentId: number, attached: boolean) {
+    const assessment = await this.repository.setAttached(assessmentId, attached);
+    if (!assessment) throw new NotFoundException('Assessment not found');
+    return { assessment, attached };
+  }
+
   async update(assessmentId: number, dto: AssessmentDto) {
+    const current = await this.repository.findById(assessmentId);
+    if (!current) throw new NotFoundException('Assessment not found');
+
     const assessment = await this.repository.updateAssessment(assessmentId, {
       title: dto.title,
       description: dto.description ?? null,
       passingScore: dto.passing_score ?? 60,
-      isActive: Boolean(dto.is_active),
+      // Omitted means "leave the attachment alone" — editing a title must not
+      // detach a live assessment as a side effect.
+      isActive:
+        dto.is_active === undefined
+          ? current.isActive === 1
+          : Boolean(dto.is_active),
     });
     if (!assessment) throw new NotFoundException('Assessment not found');
     return { assessment };

@@ -53,32 +53,6 @@ export class LearnerRepository {
      learner learning-hours page ran a query per learner PER WEEK.
   ───────────────────────────────────────────── */
 
-  async pointsForAllLearners(): Promise<LearnerPointsRow[]> {
-    return this.db.all<LearnerPointsRow>(sql`
-      SELECT u.id, u.first_name, u.last_name, u.department,
-        (SELECT COUNT(*) FROM user_lesson_completions c
-         WHERE c.user_id = u.id) AS lessons,
-        (SELECT COUNT(*) FROM user_lesson_completions c
-         WHERE c.user_id = u.id
-           AND to_char(c.completed_at, 'YYYY-MM') = ${THIS_MONTH}) AS lessons_month,
-        (SELECT COUNT(*) FROM user_assessment_attempts t
-         WHERE t.user_id = u.id AND t.is_passed = 1) AS passed,
-        (SELECT COUNT(*) FROM user_assessment_attempts t
-         WHERE t.user_id = u.id AND t.is_passed = 1
-           AND to_char(t.submitted_at, 'YYYY-MM') = ${THIS_MONTH}) AS passed_month,
-        (SELECT AVG(percentage) FROM user_assessment_attempts t
-         WHERE t.user_id = u.id) AS avg_score,
-        (SELECT COUNT(DISTINCT cm.course_id)
-         FROM user_lesson_completions c
-         JOIN lessons l ON l.id = c.lesson_id
-         JOIN course_modules cm ON cm.id = l.module_id
-         WHERE c.user_id = u.id
-           AND to_char(c.completed_at, 'YYYY-MM') = ${THIS_MONTH}) AS courses_month
-      FROM users u
-      WHERE u.role = 'learner'
-    `);
-  }
-
   /** Lesson minutes per learner, bucketed by period — one query, seven buckets. */
   async lessonMinutesByPeriod(): Promise<LessonMinutesRow[]> {
     const [w1, w2, w3, w4] = WEEKS;

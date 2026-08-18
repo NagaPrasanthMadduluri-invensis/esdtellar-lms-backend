@@ -126,6 +126,66 @@ export class CertificatesService {
     }
   }
 
+  /**
+   * Admin-issued certificate.
+   *
+   * Deliberately does NOT require completion. Auto-issue already covers the
+   * learner who finished in the system; this exists for the cases it cannot
+   * see — training completed offline, a migrated record, or an auto-issue that
+   * was missed while storage or the database was misbehaving. The completion
+   * state is returned so the admin can see what they overrode rather than
+   * finding out later.
+   *
+   * A revoked certificate for the same learner and course is reinstated rather
+   * than duplicated, because UNIQUE(user_id, course_id) means there can only
+   * ever be one.
+   */
+  async issueManually(userId: number, courseId: number, adminId: number) {
+    const learner = await this.repository.findLearner(userId);
+    if (!learner) throw new NotFoundException('Learner not found');
+
+    const course = await this.repository.findCourse(courseId);
+    if (!course) throw new NotFoundException('Course not found');
+
+    const snapshot = await this.repository.getCompletionSnapshot(userId, courseId);
+    const verdict = this.evaluate(snapshot);
+
+    const existing = await this.repository.findByUserAndCourse(userId, courseId);
+    if (existing) {
+      if (existing.isRevoked === 0) {
+        throw new ConflictException(
+          'This learner already has a certificate for this course.',
+        );
+      }
+      const reinstated = await this.reinstate(existing.id);
+      return { ...reinstated, reinstated: true, hadCompleted: verdict.complete };
+    }
+
+    const id = await this.repository.insert({
+      userId,
+      courseId,
+      certificateCode: this.generateCode(courseId, userId),
+      issuedAt: new Date().toISOString(),
+      finalScore: verdict.finalScore,
+    });
+
+    this.logger.log(
+      `Certificate ${id} issued manually by admin=${adminId} for user=${userId} ` +
+        `course=${courseId} (completed=${verdict.complete})`,
+    );
+
+    return {
+      id,
+      userId,
+      courseId,
+      isRevoked: false,
+      reinstated: false,
+      // false means the admin granted it to someone the system does not
+      // consider finished — worth surfacing, not hiding.
+      hadCompleted: verdict.complete,
+    };
+  }
+
   async listForLearner(userId: number) {
     const rows = await this.repository.listForLearner(userId);
     return rows.map((row) => ({

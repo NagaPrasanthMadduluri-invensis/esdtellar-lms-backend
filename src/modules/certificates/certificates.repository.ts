@@ -130,6 +130,21 @@ export class CertificatesRepository {
     };
   }
 
+  /** Existence checks for a manual issue — cheap, explicit column lists. */
+  async findLearner(userId: number) {
+    const rows = await this.db.all<{ id: number; role: string }>(sql`
+      SELECT id, role FROM users WHERE id = ${userId} AND role = 'learner'
+    `);
+    return rows[0] ?? null;
+  }
+
+  async findCourse(courseId: number) {
+    const rows = await this.db.all<{ id: number; name: string }>(sql`
+      SELECT id, name FROM courses WHERE id = ${courseId}
+    `);
+    return rows[0] ?? null;
+  }
+
   async findByUserAndCourse(userId: number, courseId: number) {
     const rows = await this.db
       .select({ id: certificates.id, isRevoked: certificates.isRevoked })

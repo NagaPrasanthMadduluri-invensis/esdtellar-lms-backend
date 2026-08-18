@@ -55,6 +55,8 @@ export const lessons = pgTable(
     // R2 object keys, not URLs — playback links are presigned per request.
     videoKey: text('video_key'),
     captionKey: text('caption_key'),
+    /** Real length of the uploaded file, read from its metadata on upload. */
+    videoDurationSeconds: integer('video_duration_seconds'),
     durationMinutes: integer('duration_minutes'),
     sortOrder: integer('sort_order').notNull().default(0),
     isPreview: integer('is_preview').notNull().default(0),

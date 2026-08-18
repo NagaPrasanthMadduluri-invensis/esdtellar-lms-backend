@@ -9,6 +9,8 @@ import {
 
 import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
+import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
 
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import {
@@ -22,7 +24,7 @@ import {
   minutesToHours,
   MODE_ORDER,
   MONTHLY_GOAL_HOURS,
-  parseIsoDuration,
+  parseScormDuration,
   parseTimestamp,
   POINTS_PER_LESSON,
   POINTS_PER_PASSED_ASSESSMENT,
@@ -71,50 +73,13 @@ export class LearnerService {
   constructor(
     private readonly repository: LearnerRepository,
     private readonly certificates: CertificatesService,
+    private readonly hours: LearningHoursService,
+    private readonly leaderboard_: LeaderboardService,
   ) {}
 
   /* ─────────────────────────────────────────────
      Shared: points + hours for every learner
   ───────────────────────────────────────────── */
-
-  private pointsOf(row: { lessons: number; passed: number }): number {
-    return (
-      Number(row.lessons) * POINTS_PER_LESSON +
-      Number(row.passed) * POINTS_PER_PASSED_ASSESSMENT
-    );
-  }
-
-  /** Buckets ISO-duration SCORM time per learner, per period. */
-  private async scormMinutesByLearner() {
-    const rows = await this.repository.scormTimes();
-    const buckets = new Map<
-      number,
-      { all: number; thisMonth: number; lastMonth: number; weeks: number[] }
-    >();
-
-    for (const row of rows) {
-      const minutes = parseIsoDuration(row.total_time);
-      if (minutes === 0) continue;
-
-      const key = Number(row.user_id);
-      const entry =
-        buckets.get(key) ??
-        { all: 0, thisMonth: 0, lastMonth: 0, weeks: [0, 0, 0, 0] };
-
-      entry.all += minutes;
-      const month = (row.updated_at || '').slice(0, 7);
-      if (month === THIS_MONTH) entry.thisMonth += minutes;
-      if (month === LAST_MONTH) entry.lastMonth += minutes;
-
-      const day = (row.updated_at || '').slice(0, 10);
-      WEEKS.forEach((week, index) => {
-        if (day >= week.start && day <= week.end) entry.weeks[index] += minutes;
-      });
-
-      buckets.set(key, entry);
-    }
-    return buckets;
-  }
 
   /* ─────────────────────────────────────────────
      GET /learner/courses
@@ -211,12 +176,12 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async dashboard(userId: number) {
-    const [rows, allPoints, lessonMinutes, scormBuckets, attempts] =
+    const [rows, standings, lessonMinutes, scormBuckets, attempts] =
       await Promise.all([
         this.repository.assignedCourses(userId),
-        this.repository.pointsForAllLearners(),
-        this.repository.lessonMinutesByPeriod(),
-        this.scormMinutesByLearner(),
+        this.leaderboard_.standings(),
+        this.hours.lessonMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
+        this.hours.scormMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
         this.repository.recentAttempts(userId, 5),
       ]);
 
@@ -244,12 +209,11 @@ export class LearnerService {
       };
     });
 
-    const me = allPoints.find((row) => Number(row.id) === userId);
-    const points = me ? this.pointsOf(me) : 0;
-    // Rank derived in memory from the single points query — the legacy handler
-    // issued two queries per learner here.
-    const rank =
-      allPoints.filter((row) => this.pointsOf(row) > points).length + 1;
+    // Points and rank come from the shared leaderboard calculation, so the
+    // figure on the dashboard is the same one the leaderboard shows.
+    const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
+    const points = myStanding?.points ?? 0;
+    const rank = myStanding?.rank ?? standings.entries.length + 1;
 
     const minutes = lessonMinutes.find((row) => Number(row.user_id) === userId);
     const scorm = scormBuckets.get(userId);
@@ -309,14 +273,12 @@ export class LearnerService {
         hours_all_time: minutesToHours(
           Number(minutes?.all_time ?? 0) + (scorm?.all ?? 0),
         ),
-        completed_assessments: attempts.length
-          ? Number(me ? me.passed : 0) + 0
-          : 0,
+        completed_assessments: myStanding?.badges ?? 0,
       },
       points,
       rank,
-      rank_of: allPoints.length,
-      badges: Number(me?.passed ?? 0),
+      rank_of: standings.entries.length,
+      badges: myStanding?.badges ?? 0,
       skill_tags: skillTags(enrolled.map((c) => c.course.name)).slice(0, 5),
       continue_learning:
         enrolled
@@ -540,8 +502,8 @@ export class LearnerService {
         this.repository.assignedCourses(userId),
         this.repository.courseLessonProgress(userId),
         this.repository.scormForAssignedCourses(userId),
-        this.repository.lessonMinutesByPeriod(),
-        this.scormMinutesByLearner(),
+        this.hours.lessonMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
+        this.hours.scormMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
         this.repository.allAttempts(userId),
       ]);
 
@@ -570,7 +532,7 @@ export class LearnerService {
       let partialBonus = 0;
 
       for (const row of scorm) {
-        if (row.total_time) minutesSpent += parseIsoDuration(row.total_time);
+        if (row.total_time) minutesSpent += parseScormDuration(row.total_time);
 
         if (row.score_raw !== null) {
           const raw = Number(row.score_raw);
@@ -751,19 +713,18 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async achievements(userId: number) {
-    const [allPoints, assigned, attempts, lessonEvents, passedEvents] =
+    const [standings, assigned, attempts, lessonEvents, passedEvents] =
       await Promise.all([
-        this.repository.pointsForAllLearners(),
+        this.leaderboard_.standings(),
         this.repository.assignedCourses(userId),
         this.repository.allAttempts(userId),
         this.repository.lessonEvents(userId, 10),
         this.repository.assessmentEvents(userId, 100, true),
       ]);
 
-    const me = allPoints.find((r) => Number(r.id) === userId);
-    const points = me ? this.pointsOf(me) : 0;
-    const rank =
-      allPoints.filter((row) => this.pointsOf(row) > points).length + 1;
+    const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
+    const points = myStanding?.points ?? 0;
+    const rank = myStanding?.rank ?? standings.entries.length + 1;
 
     let completedCourses = 0;
     let completedBeforeDue = 0;
@@ -819,7 +780,7 @@ export class LearnerService {
       summary: {
         points,
         rank,
-        rankOf: allPoints.length,
+        rankOf: standings.entries.length,
         earnedCount: badges.filter((b) => b.earned).length,
       },
       badges,
@@ -864,80 +825,49 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async leaderboard(userId: number) {
-    const rows = await this.repository.pointsForAllLearners();
+    const { byPoints, byMonth, recognition } = await this.leaderboard_.standings();
 
-    const stats = rows.map((row) => {
-      const name = `${row.first_name} ${row.last_name}`;
-      return {
-        id: Number(row.id),
-        name,
-        initials: initialsOf(row.first_name, row.last_name),
-        dept: row.department || 'Unknown',
-        color: avatarColor(name),
-        allTimePoints: this.pointsOf(row),
-        monthPoints:
-          Number(row.lessons_month) * POINTS_PER_LESSON +
-          Number(row.passed_month) * POINTS_PER_PASSED_ASSESSMENT,
-        badges: Number(row.passed),
-        avgScore: row.avg_score !== null ? Math.round(Number(row.avg_score)) : null,
-        coursesMonth: Number(row.courses_month),
-        isYou: Number(row.id) === userId,
-        allTimeRank: 0,
-        monthRank: 0,
-      };
+    const decorate = (e: (typeof byPoints)[number]) => ({
+      id: e.id,
+      name: e.name,
+      initials: initialsOf(e.firstName, e.lastName),
+      dept: e.dept,
+      color: avatarColor(e.name),
+      allTimeRank: e.rank,
+      monthRank: e.monthRank,
+      allTimePoints: e.points,
+      monthPoints: e.monthPoints,
+      badges: e.badges,
+      isYou: e.id === userId,
     });
 
-    const byAllTime = [...stats].sort(
-      (a, b) => b.allTimePoints - a.allTimePoints || b.badges - a.badges,
-    );
-    byAllTime.forEach((l, i) => { l.allTimeRank = i + 1; });
-
-    const byMonth = [...stats].sort(
-      (a, b) => b.monthPoints - a.monthPoints || b.badges - a.badges,
-    );
-    byMonth.forEach((l, i) => { l.monthRank = i + 1; });
-
-    const top3 = byAllTime.slice(0, 3);
+    const allLearners = byPoints.map(decorate);
+    const top3 = allLearners.slice(0, 3);
     const podium = [
       top3[1] ? { ...top3[1], podiumPos: 2 } : null,
       top3[0] ? { ...top3[0], podiumPos: 1 } : null,
       top3[2] ? { ...top3[2], podiumPos: 3 } : null,
     ].filter(Boolean);
 
-    const learnerOfMonth = byMonth[0] ?? null;
-    const quickLearner =
-      [...stats].sort((a, b) => b.coursesMonth - a.coursesMonth)[0] ?? null;
-    const topper =
-      [...stats]
-        .filter((l) => l.avgScore !== null)
-        .sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0))[0] ?? null;
+    const withYou = (card: { id: number } | null) =>
+      card ? { ...card, isYou: card.id === userId } : null;
 
     return {
-      me: stats.find((l) => l.isYou) ?? null,
+      me: allLearners.find((l) => l.isYou) ?? null,
       recognition: {
-        learnerOfMonth: learnerOfMonth
-          ? { name: learnerOfMonth.name, points: learnerOfMonth.monthPoints, badges: learnerOfMonth.badges, isYou: learnerOfMonth.isYou }
-          : null,
-        quickLearner: quickLearner
-          ? { name: quickLearner.name, coursesThisMonth: quickLearner.coursesMonth, isYou: quickLearner.isYou }
-          : null,
-        assessmentTopper: topper
-          ? { name: topper.name, avgScore: topper.avgScore, isYou: topper.isYou }
-          : null,
+        learnerOfMonth: withYou(recognition.learnerOfMonth),
+        quickLearner: withYou(recognition.quickLearner),
+        assessmentTopper: withYou(recognition.assessmentTopper),
       },
       podium,
-      allLearners: byAllTime.map((l) => ({
-        id: l.id, name: l.name, initials: l.initials, dept: l.dept, color: l.color,
-        allTimeRank: l.allTimeRank, monthRank: l.monthRank,
-        allTimePoints: l.allTimePoints, monthPoints: l.monthPoints,
-        badges: l.badges, isYou: l.isYou,
-      })),
+      allLearners,
       departments: [
         'All Departments',
-        ...new Set(stats.map((l) => l.dept).filter(Boolean)),
+        ...new Set(byPoints.map((l) => l.dept).filter(Boolean)),
       ].sort((a, b) =>
         a === 'All Departments' ? -1 : b === 'All Departments' ? 1 : a.localeCompare(b),
       ),
+      byMonth: byMonth.map(decorate),
     };
   }
 
@@ -949,8 +879,8 @@ export class LearnerService {
     const [me, profiles, minutes, scormBuckets, courseHours] = await Promise.all([
       this.repository.findUser(userId),
       this.repository.allLearnerProfiles(),
-      this.repository.lessonMinutesByPeriod(),
-      this.scormMinutesByLearner(),
+      this.hours.lessonMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
+      this.hours.scormMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
       this.repository.monthlyHoursByCourse(userId, THIS_MONTH),
     ]);
 

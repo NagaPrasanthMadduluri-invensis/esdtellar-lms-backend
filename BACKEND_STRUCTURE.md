@@ -505,6 +505,38 @@ Update this table with every module you move.
 | analytics / reports / export | 6 | `server/src/modules/reports` |
 | media (lesson video + captions in R2) | 7 | `server/src/modules/media` |
 | scorm attempt history (admin view) | 1 | `server/src/modules/scorm` |
+| lesson video progress (learner) | 1 | `server/src/modules/media` |
+| manual certificate issue (admin) | 1 | `server/src/modules/certificates` |
+
+### 10.5 Leaderboard
+
+`modules/leaderboard` owns the single ranking, read by both portals. Points are
+`lessons x 10 + DISTINCT assessments passed x 50`, over active learners only.
+
+Two things are load-bearing and were previously wrong: passes are counted
+`DISTINCT` (counting rows let a learner farm points by re-taking an assessment
+they had already passed), and `is_active = 1` is filtered (deactivated learners
+kept competing, while the dashboard's own user count already excluded them).
+
+The admin board shows hours and completion as columns but does NOT rank on them
+— it used to rank on a 60/40 blend, so the two boards could disagree about who
+was first. Do not add a second points calculation.
+
+### 10.4 Learning hours
+
+`modules/learning-hours` owns the single definition of an hour of learning, and
+both portals read it. Exactly one source counts per lesson, which is what stops
+a sitting being paid for twice:
+
+| Content | Counted from |
+|---|---|
+| uploaded video | measured watch seconds (`lesson_video_progress`) |
+| SCORM | `total_time` reported by the package |
+| everything else | `lessons.duration_minutes`, credited on completion |
+
+Do not add a second place that sums hours. The learner view and the admin
+analytics previously computed them independently — the admin side counted no
+SCORM at all — and the same learner read differently depending on who looked.
 
 **Migration complete — 85 handlers, all on the server.**
 

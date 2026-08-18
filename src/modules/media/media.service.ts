@@ -14,7 +14,11 @@ import { ConfigService } from '@nestjs/config';
 import { toWebVtt } from './captions.util';
 import { MediaRepository } from './media.repository';
 import { R2StorageService } from './storage/r2-storage.service';
-import type { ConfirmVideoDto, PresignVideoDto } from './dto/media.dto';
+import type {
+  ConfirmVideoDto,
+  PresignVideoDto,
+  VideoProgressDto,
+} from './dto/media.dto';
 
 const EXTENSION_FOR_TYPE: Record<string, string> = {
   'video/mp4': 'mp4',
@@ -153,6 +157,16 @@ export class MediaService {
     const previousKey = lesson.video_key;
     await this.repository.setVideoKey(lessonId, dto.key);
 
+    // The browser reads this off the file's own metadata, so the stored length
+    // is the video's real one rather than a number someone typed. Optional:
+    // an older client that does not send it simply leaves the column alone.
+    if (dto.durationSeconds !== undefined && dto.durationSeconds !== null) {
+      await this.repository.setVideoDuration(
+        lessonId,
+        Math.round(dto.durationSeconds),
+      );
+    }
+
     // Replacing a video orphans the old object; clearing it is best-effort and
     // must not fail the request (§8.4).
     if (previousKey && previousKey !== dto.key) {
@@ -288,6 +302,42 @@ export class MediaService {
    * `expiresIn` is returned so the player can refresh the URL before it lapses
    * instead of failing mid-video.
    */
+  /**
+   * Records how much of a video the learner has actually watched.
+   *
+   * Entitlement is re-checked on every write — this endpoint is the only way
+   * learning hours can be increased from the client, so it must not trust a
+   * lesson id alone. `watchedSeconds` is clamped to the video's real duration
+   * where one is known, so a tampered payload cannot inflate a learner's hours
+   * beyond the length of the material.
+   */
+  async saveVideoProgress(
+    lessonId: number,
+    userId: number,
+    dto: VideoProgressDto,
+  ) {
+    const lesson = await this.repository.findLessonForLearner(lessonId, userId);
+    if (!lesson) throw new NotFoundException('Lesson not found');
+    if (!lesson.assigned && !lesson.is_preview) {
+      throw new ForbiddenException('You are not enrolled in this course.');
+    }
+
+    const cap = lesson.video_duration_seconds;
+    const watched =
+      cap && cap > 0
+        ? Math.min(dto.watchedSeconds, cap)
+        : dto.watchedSeconds;
+
+    await this.repository.upsertVideoProgress({
+      userId,
+      lessonId,
+      watchedSeconds: Math.round(watched),
+      positionSeconds: Math.round(dto.positionSeconds),
+    });
+
+    return { ok: true, watchedSeconds: Math.round(watched) };
+  }
+
   async learnerLessonMedia(lessonId: number, userId: number) {
     const lesson = await this.repository.findLessonForLearner(lessonId, userId);
     if (!lesson) throw new NotFoundException('Lesson not found');
@@ -309,14 +359,23 @@ export class MediaService {
 
     // Both URLs are signed in parallel — two independent signature
     // computations, no reason to await them in sequence.
-    const [videoUrl, captionUrl] = await Promise.all([
+    const [videoUrl, captionUrl, progress] = await Promise.all([
       this.storage.presignDownload(lesson.video_key, ttl),
       lesson.caption_key
         ? this.storage.presignDownload(lesson.caption_key, ttl)
         : Promise.resolve(null),
+      this.repository.findVideoProgress(userId, lessonId),
     ]);
 
-    return { lessonId: lesson.id, videoUrl, captionUrl, expiresIn: ttl };
+    return {
+      lessonId: lesson.id,
+      videoUrl,
+      captionUrl,
+      expiresIn: ttl,
+      durationSeconds: lesson.video_duration_seconds,
+      watchedSeconds: progress?.watched_seconds ?? 0,
+      resumeAtSeconds: progress?.last_position_seconds ?? 0,
+    };
   }
 }
 

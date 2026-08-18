@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
+import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
+import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
+
 import {
   AnalyticsRepository,
   type LearnerStatsRow,
@@ -36,7 +39,24 @@ export class AnalyticsService {
     new Date(REFERENCE_DATE.getFullYear(), REFERENCE_DATE.getMonth() - 1, 1),
   );
 
-  constructor(private readonly repository: AnalyticsRepository) {}
+  constructor(
+    private readonly repository: AnalyticsRepository,
+    private readonly hours: LearningHoursService,
+    private readonly leaderboard_: LeaderboardService,
+  ) {}
+
+  /**
+   * Per-learner minutes from the shared calculation.
+   *
+   * The admin figures used to come from this module's own SUM of
+   * `lessons.duration_minutes`, which counted no SCORM time at all and no
+   * measured video time — so the same learner read differently here than on
+   * their own dashboard. Both sides now read LearningHoursService, and there is
+   * one definition of an hour rather than two.
+   */
+  private async minutes() {
+    return this.hours.minutesByUser();
+  }
 
   /** Shared status rule — identical across every analytics endpoint. */
   private statusOf(row: LearnerStatsRow): LearnerStatus {
@@ -70,6 +90,7 @@ export class AnalyticsService {
   }
 
   async reports() {
+    const minutesByUser = await this.minutes();
     const [rows, activeCourses, overdueCourses] = await Promise.all([
       this.stats(),
       this.repository.activeCourseCount(),
@@ -121,7 +142,7 @@ export class AnalyticsService {
         .map((l) => l.score)
         .filter((s): s is number => s !== null);
       const totalMinutes = members.reduce(
-        (sum, l) => sum + Number(l.all_time_minutes),
+        (sum, l) => sum + (minutesByUser.get(Number(l.id))?.all ?? 0),
         0,
       );
 
@@ -244,36 +265,48 @@ export class AnalyticsService {
     };
   }
 
+  /**
+   * Admin standings.
+   *
+   * Ranked by the SAME points calculation the learner board uses — previously
+   * this blended completion and hours 60/40, so the two boards could disagree
+   * about who was first. Hours and completion are still shown as columns,
+   * because they are useful to an admin, but they no longer decide the order.
+   */
   async leaderboard() {
-    const rows = await this.stats();
+    const [{ byPoints, recognition }, statRows, minutesByUser] = await Promise.all([
+      this.leaderboard_.standings(),
+      this.stats(),
+      this.minutes(),
+    ]);
 
-    const learners = rows.map((row) => {
-      const assigned = Number(row.assigned_lessons);
-      const completed = Number(row.completed_lessons);
+    const statsById = new Map(statRows.map((r) => [Number(r.id), r]));
+
+    const ranked = byPoints.map((entry) => {
+      const row = statsById.get(entry.id);
+      const assigned = Number(row?.assigned_lessons ?? 0);
+      const completed = Number(row?.completed_lessons ?? 0);
 
       return {
-        id: row.id,
-        name: `${row.first_name} ${row.last_name}`,
-        dept: row.department,
-        job_role: row.job_role ?? null,
-        location: row.location ?? null,
-        thisMonth: minutesToHours(row.this_month_minutes),
-        allTime: minutesToHours(row.all_time_minutes),
+        id: entry.id,
+        name: entry.name,
+        dept: entry.dept,
+        job_role: row?.job_role ?? null,
+        location: row?.location ?? null,
+        rank: entry.rank,
+        // `score` stays the field the table sorts and bars on — it is points now.
+        score: entry.points,
+        points: entry.points,
+        monthPoints: entry.monthPoints,
+        badges: entry.badges,
+        attempts: entry.attempts,
+        avgScore: entry.avgScore,
+        thisMonth: minutesToHours(minutesByUser.get(entry.id)?.thisMonth ?? 0),
+        allTime: minutesToHours(minutesByUser.get(entry.id)?.all ?? 0),
         completionPct: assigned > 0 ? Math.round((completed / assigned) * 100) : 0,
-        assessScore: Number(row.best_score ?? 0),
+        assessScore: Number(row?.best_score ?? 0),
       };
     });
-
-    // Composite: 60% course completion, 40% hours normalised to the top learner.
-    const maxAllTime = Math.max(...learners.map((l) => l.allTime), 1);
-    const ranked = learners
-      .map((learner) => ({
-        ...learner,
-        score: Math.round(
-          learner.completionPct * 0.6 + (learner.allTime / maxAllTime) * 100 * 0.4,
-        ),
-      }))
-      .sort((a, b) => b.score - a.score);
 
     const totalLearners = ranked.length;
 
@@ -281,33 +314,35 @@ export class AnalyticsService {
       stats: {
         totalLearners,
         avgHours: totalLearners
-          ? round1(
-              learners.reduce((sum, l) => sum + l.thisMonth, 0) / totalLearners,
-            )
+          ? round1(ranked.reduce((sum, l) => sum + l.thisMonth, 0) / totalLearners)
           : 0,
         avgCompletion: totalLearners
           ? Math.round(
-              learners.reduce((sum, l) => sum + l.completionPct, 0) / totalLearners,
+              ranked.reduce((sum, l) => sum + l.completionPct, 0) / totalLearners,
             )
           : 0,
         topName: ranked[0]?.name ?? '',
         topDept: ranked[0]?.dept ?? '',
       },
+      recognition,
       learners: ranked,
     };
   }
 
   async learningHours() {
-    const [rows, weeklyRaw, enrollmentRows, completionRows] = await Promise.all([
+    const [rows, weeklyRaw, enrollmentRows, completionRows, minutesByUser] =
+      await Promise.all([
       this.stats(),
       this.repository.weeklyHoursByDepartment(this.thisMonth),
       this.repository.weeklyEnrollments(this.thisMonth),
       this.repository.weeklyCompletions(this.thisMonth),
+      this.minutes(),
     ]);
 
     const learners = rows
       .map((row) => {
-        const thisMonth = minutesToHours(row.this_month_minutes);
+        const mine = minutesByUser.get(Number(row.id));
+        const thisMonth = minutesToHours(mine?.thisMonth ?? 0);
         const progressPct = Math.min(
           Math.round((thisMonth / MONTHLY_GOAL_HOURS) * 100),
           150,
@@ -320,10 +355,10 @@ export class AnalyticsService {
           job_role: row.job_role ?? null,
           location: row.location ?? null,
           thisMonth,
-          lastMonth: minutesToHours(row.last_month_minutes),
+          lastMonth: minutesToHours(mine?.lastMonth ?? 0),
           goal: MONTHLY_GOAL_HOURS,
           progressPct,
-          allTime: minutesToHours(row.all_time_minutes),
+          allTime: minutesToHours(mine?.all ?? 0),
           status:
             progressPct >= 100 ? 'On Track' : progressPct >= 60 ? 'Close' : 'Behind',
         };

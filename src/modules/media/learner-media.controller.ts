@@ -1,8 +1,18 @@
-import { Controller, Get, Param, ParseIntPipe } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseIntPipe,
+  Post,
+} from '@nestjs/common';
 
 import { CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
+import { VideoProgressDto } from './dto/media.dto';
 import { MediaService } from './media.service';
 
 /**
@@ -24,5 +34,19 @@ export class LearnerMediaController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.media.learnerLessonMedia(lessonId, user.userId);
+  }
+
+  /**
+   * Reports how far the learner has watched. Called periodically by the player
+   * and once more when it unmounts, so time is not lost if the tab is closed.
+   */
+  @Post(':lessonId/video-progress')
+  @HttpCode(HttpStatus.OK)
+  async saveProgress(
+    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Body() dto: VideoProgressDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.media.saveVideoProgress(lessonId, user.userId, dto);
   }
 }

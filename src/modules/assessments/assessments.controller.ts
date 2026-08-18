@@ -71,6 +71,22 @@ export class AdminAssessmentsController {
     return this.assessments.update(assessmentId, dto);
   }
 
+  /**
+   * Attach to / detach from the course. Symmetric with the SCORM assign routes:
+   * the verb is the method, so the two states are greppable rather than hidden
+   * behind a boolean in an update payload.
+   */
+  @Post(':assessmentId/attach')
+  @HttpCode(HttpStatus.OK)
+  async attach(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
+    return this.assessments.setAttached(assessmentId, true);
+  }
+
+  @Delete(':assessmentId/attach')
+  async detach(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
+    return this.assessments.setAttached(assessmentId, false);
+  }
+
   @Delete(':assessmentId')
   async remove(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
     return this.assessments.remove(assessmentId);

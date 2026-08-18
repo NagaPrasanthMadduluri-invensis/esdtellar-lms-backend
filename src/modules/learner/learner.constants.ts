@@ -6,20 +6,12 @@
  * the legacy handlers verbatim. Change here only, and only when the data stops
  * being seed data.
  */
-export const THIS_MONTH = '2026-06';
-export const LAST_MONTH = '2026-05';
-export const TODAY = '2026-06-15';
+import { TODAY } from '@/modules/learning-hours/periods';
+
+export { THIS_MONTH, LAST_MONTH, TODAY, WEEKS } from '@/modules/learning-hours/periods';
 
 export const MONTHLY_GOAL_HOURS = 10;
 export const DUE_DAYS = 44;
-
-/** Week boundaries used by the learner learning-hours trend. */
-export const WEEKS = [
-  { label: 'Jun W1', start: '2026-06-01', end: '2026-06-07' },
-  { label: 'Jun W2', start: '2026-06-08', end: '2026-06-14' },
-  { label: 'Jun W3', start: '2026-06-15', end: '2026-06-21' },
-  { label: 'Jun W4', start: '2026-06-22', end: '2026-06-30' },
-] as const;
 
 /** Points model: 10 per lesson completed, 50 per assessment passed. */
 export const POINTS_PER_LESSON = 10;
@@ -58,19 +50,7 @@ export const AVATAR_COLORS = [
 
 /* ── Shared helpers ── */
 
-/** Parses an ISO 8601 duration ("PT1H30M45S") to minutes. SCORM stores time this way. */
-export function parseIsoDuration(iso: string | null): number {
-  if (!iso) return 0;
-  const m = iso.match(
-    /PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?/,
-  );
-  if (!m) return 0;
-  return (
-    parseFloat(m[1] || '0') * 60 +
-    parseFloat(m[2] || '0') +
-    parseFloat(m[3] || '0') / 60
-  );
-}
+export { parseScormDuration } from '@/common/scorm-duration.util';
 
 /**
  * Parses a timestamp as it arrives from the database.
