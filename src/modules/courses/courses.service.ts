@@ -5,6 +5,7 @@ import { MediaService } from '@/modules/media/media.service';
 import { CoursesRepository } from './courses.repository';
 import type {
   CourseDto,
+  BulkAssignmentDto,
   CreateAssignmentDto,
   CreateLessonDto,
   ModuleDto,
@@ -59,7 +60,10 @@ export class CoursesService {
       name: dto.name,
       description: dto.description ?? null,
       thumbnailUrl: dto.thumbnail_url ?? null,
-      isActive: Boolean(dto.is_active),
+      // `is_active` is optional, and `Boolean(undefined)` is false — so a
+      // course created without the flag used to be born hidden, contradicting
+      // the column's own DEFAULT 1. Omitted now means active.
+      isActive: dto.is_active ?? true,
     });
     return { course };
   }
@@ -72,7 +76,9 @@ export class CoursesService {
       name: dto.name,
       description: dto.description ?? null,
       thumbnailUrl: dto.thumbnail_url ?? null,
-      isActive: Boolean(dto.is_active),
+      // Omitted means "leave it alone". Renaming a course must not hide it
+      // from every learner as a side effect.
+      isActive: dto.is_active ?? existing.isActive === 1,
     });
     return { course };
   }
@@ -122,10 +128,13 @@ export class CoursesService {
   }
 
   async updateModule(moduleId: number, dto: ModuleDto) {
+    const current = await this.repository.findModuleById(moduleId);
+    if (!current) throw new NotFoundException('Module not found');
+
     const module = await this.repository.updateModule(moduleId, {
       title: dto.title,
       description: dto.description ?? null,
-      isActive: Boolean(dto.is_active),
+      isActive: dto.is_active ?? current.isActive === 1,
     });
     if (!module) throw new NotFoundException('Module not found');
     return { module };
@@ -236,6 +245,27 @@ export class CoursesService {
         scorm_results: scormByUser.get(Number(assignment.user_id)) ?? [],
       })),
     };
+  }
+
+  /**
+   * Bulk assign, in one statement.
+   *
+   * Returns how many were NEWLY created — learners already on the course are
+   * skipped by the unique constraint — so the UI can report "assigned 7 of 12"
+   * instead of implying it enrolled everyone it was handed.
+   */
+  async createAssignments(
+    courseId: number,
+    dto: BulkAssignmentDto,
+    adminId: number,
+  ) {
+    const assigned = await this.repository.createAssignments({
+      userIds: dto.user_ids,
+      courseId,
+      assignedBy: adminId,
+      dueDate: dto.due_date ?? null,
+    });
+    return { assigned, requested: dto.user_ids.length };
   }
 
   /**

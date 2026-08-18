@@ -17,6 +17,14 @@ export interface AppConfig {
     driver: 'local' | 's3';
     localPath: string;
   };
+  reporting: {
+    /**
+     * Pins "today" for every report. Leave unset in production so monthly
+     * figures track the real calendar; set it to a date inside the seeded
+     * period to demo seed data.
+     */
+    referenceDate: string | null;
+  };
   media: {
     /** Cloudflare R2, addressed through its S3-compatible API. */
     r2: {
@@ -53,6 +61,9 @@ export default (): AppConfig => ({
   storage: {
     driver: (process.env.SCORM_STORAGE_DRIVER as 'local' | 's3') ?? 'local',
     localPath: process.env.SCORM_STORAGE_PATH ?? './storage/scorm',
+  },
+  reporting: {
+    referenceDate: process.env.REPORTING_REFERENCE_DATE || null,
   },
   media: {
     r2: {

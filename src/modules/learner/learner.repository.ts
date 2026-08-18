@@ -4,7 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '@/database/database.service';
 import { userCourseAssignments, userLessonCompletions, users } from '@/database/schema';
 
-import { LAST_MONTH, THIS_MONTH, WEEKS } from './learner.constants';
+import { lastMonth, thisMonth, weeks } from './learner.constants';
 
 export interface LearnerPointsRow {
   id: number;
@@ -55,13 +55,13 @@ export class LearnerRepository {
 
   /** Lesson minutes per learner, bucketed by period — one query, seven buckets. */
   async lessonMinutesByPeriod(): Promise<LessonMinutesRow[]> {
-    const [w1, w2, w3, w4] = WEEKS;
+    const [w1, w2, w3, w4] = weeks();
     return this.db.all<LessonMinutesRow>(sql`
       SELECT u.id AS user_id,
         COALESCE(SUM(l.duration_minutes), 0) AS all_time,
-        COALESCE(SUM(CASE WHEN to_char(c.completed_at, 'YYYY-MM') = ${THIS_MONTH}
+        COALESCE(SUM(CASE WHEN to_char(c.completed_at, 'YYYY-MM') = ${thisMonth()}
                      THEN l.duration_minutes ELSE 0 END), 0) AS this_month,
-        COALESCE(SUM(CASE WHEN to_char(c.completed_at, 'YYYY-MM') = ${LAST_MONTH}
+        COALESCE(SUM(CASE WHEN to_char(c.completed_at, 'YYYY-MM') = ${lastMonth()}
                      THEN l.duration_minutes ELSE 0 END), 0) AS last_month,
         COALESCE(SUM(CASE WHEN c.completed_at::date BETWEEN ${w1.start} AND ${w1.end}
                      THEN l.duration_minutes ELSE 0 END), 0) AS w1,
@@ -101,6 +101,26 @@ export class LearnerRepository {
     }>(sql`
       SELECT id, first_name, last_name, department
       FROM users WHERE role = 'learner'
+    `);
+  }
+
+  /**
+   * The content types each of this learner's courses actually contains.
+   *
+   * Replaces a hard-coded map that covered course ids 1-4 and asserted things
+   * the data contradicted — course 1 was labelled "eLearning / SCORM" while
+   * every lesson in it was video, and any course beyond id 4 fell off the map
+   * entirely.
+   */
+  async courseContentTypes(userId: number) {
+    return this.db.all<{ course_id: number; content_types: string }>(sql`
+      SELECT cm.course_id,
+             string_agg(DISTINCT l.content_type, ',') AS content_types
+      FROM user_course_assignments uca
+      JOIN course_modules cm ON cm.course_id = uca.course_id AND cm.is_active = 1
+      JOIN lessons l ON l.module_id = cm.id AND l.is_active = 1
+      WHERE uca.user_id = ${userId}
+      GROUP BY cm.course_id
     `);
   }
 

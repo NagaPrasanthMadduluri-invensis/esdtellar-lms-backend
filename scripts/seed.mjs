@@ -51,6 +51,51 @@ export function hashPassword(password) {
    SEED DATA
 ───────────────────────────────────────────── */
 
+/**
+ * Demo seeding is opt-in, always.
+ *
+ * A freshly reset production install and a brand-new developer database look
+ * identical from the inside — both hold one admin and nothing else — so the
+ * script cannot tell them apart by inspection. Rather than guess, it requires
+ * an explicit flag. That way `npm run db:seed`, run by habit or by a deploy
+ * script against the system an admin has just been handed, does nothing.
+ *
+ * Re-seeding a database that is already in use is refused outright: the later
+ * steps here have weaker guards than the first and WILL re-insert demo
+ * learners and courses into a live system.
+ */
+export async function assertSeedingIntended(db, { confirmed = false } = {}) {
+  const courses = Number(
+    (await db.execute('SELECT COUNT(*) AS c FROM courses')).rows[0].c,
+  );
+  const learners = Number(
+    (
+      await db.execute("SELECT COUNT(*) AS c FROM users WHERE role <> 'admin'")
+    ).rows[0].c,
+  );
+  const inUse = courses > 0 || learners > 0;
+
+  if (inUse) {
+    console.error(
+      `REFUSING TO SEED: this database already holds ${courses} course(s) and ` +
+        `${learners} learner(s).\n` +
+        'Seeding adds demo data to a system in use. Nothing was changed.',
+    );
+    process.exit(1);
+  }
+
+  if (!confirmed) {
+    console.error(
+      'REFUSING TO SEED: demo data is opt-in.\n\n' +
+        'This database is empty, but an empty database is also what a freshly\n' +
+        'reset production install looks like — seeding one would hand the admin\n' +
+        'a system full of fake learners and courses.\n\n' +
+        'If you genuinely want demo data:  npm run db:seed -- --confirm',
+    );
+    process.exit(1);
+  }
+}
+
 export async function seedIfEmpty(db) {
   const count = (await db.execute("SELECT COUNT(*) as c FROM users")).rows[0];
   if (count.c > 0) return;
@@ -906,6 +951,9 @@ const pool = new pg.Pool({
   options: '-c TimeZone=UTC',
 });
 const db = makeDb(pool);
+
+// Bail out before touching anything if this database is already in use.
+await assertSeedingIntended(db, { confirmed: process.argv.includes('--confirm') });
 
 /* Order matters: users and courses exist before anything references them. */
 const steps = [

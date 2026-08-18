@@ -480,6 +480,7 @@ lesson complete. Log the reason; do not propagate.
 | `UPLOAD_URL_TTL_SECONDS` | no (3600) | Lifetime of a presigned upload URL |
 | `VIDEO_MAX_BYTES` | no (2 GiB) | Rejected at presign, re-checked against R2 on confirm |
 | `CAPTION_MAX_BYTES` | no (2 MiB) | Caption uploads are proxied, so this is a real body cap |
+| `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
 
 The R2 variables are **not** boot-required: without them the API starts, logs a
 warning, and returns 503 from the video routes only. `S3_API_ENDPOINT` from the
@@ -507,6 +508,21 @@ Update this table with every module you move.
 | scorm attempt history (admin view) | 1 | `server/src/modules/scorm` |
 | lesson video progress (learner) | 1 | `server/src/modules/media` |
 | manual certificate issue (admin) | 1 | `server/src/modules/certificates` |
+
+### 10.6 Handing over a clean install
+
+`npm run db:reset-to-admin` empties every table and keeps only admin accounts,
+for giving an admin a system they will populate themselves. Dry-run by default;
+`--commit` applies it. It refuses outright if no admin would survive.
+
+Demo seeding is opt-in for the same reason: `npm run db:seed` does nothing
+without `-- --confirm`, and refuses entirely once the database holds courses or
+learners. A freshly reset production install and a new developer database are
+indistinguishable from the inside, so the script asks rather than guesses.
+
+Neither script touches `server/storage/scorm/` or the R2 bucket — extracted
+packages and uploaded videos outlive a database wipe and must be cleared
+separately.
 
 ### 10.5 Leaderboard
 

@@ -19,6 +19,7 @@ import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { CoursesService } from './courses.service';
 import {
   CourseDto,
+  BulkAssignmentDto,
   CreateAssignmentDto,
   CreateLessonDto,
   ModuleDto,
@@ -76,6 +77,17 @@ export class CoursesController {
   @Get(':courseId/assignments')
   async listAssignments(@Param('courseId', ParseIntPipe) courseId: number) {
     return this.courses.listAssignments(courseId);
+  }
+
+  /** Bulk assign — one statement, so a department cannot end up half-enrolled. */
+  @Post(':courseId/assignments/bulk')
+  @HttpCode(HttpStatus.CREATED)
+  async createAssignments(
+    @Param('courseId', ParseIntPipe) courseId: number,
+    @Body() dto: BulkAssignmentDto,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.courses.createAssignments(courseId, dto, admin.userId);
   }
 
   @Post(':courseId/assignments')

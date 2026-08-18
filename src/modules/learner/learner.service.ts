@@ -16,13 +16,13 @@ import type { ChangePasswordDto } from './dto/change-password.dto';
 import {
   addDays,
   avatarColor,
-  COURSE_MODE,
+  contentTypeOf,
   DUE_DAYS,
   formatDate,
   initialsOf,
-  LAST_MONTH,
+  lastMonth as previousMonthKey,
   minutesToHours,
-  MODE_ORDER,
+  modeOf,
   MONTHLY_GOAL_HOURS,
   parseScormDuration,
   parseTimestamp,
@@ -31,22 +31,12 @@ import {
   relativeTime,
   round1,
   skillTags,
-  THIS_MONTH,
-  WEEKS,
+  thisMonth as currentMonthKey,
+  weeks as monthWeeks,
 } from './learner.constants';
 import { LearnerRepository } from './learner.repository';
 
 /** Synthetic per-course metadata for the My Courses cards. */
-const COURSE_META: Record<
-  number,
-  { contentType: string; category: string | null; isMandatory: boolean }
-> = {
-  1: { contentType: 'VIDEO', category: 'Project Mgmt', isMandatory: true },
-  2: { contentType: 'VIDEO', category: 'Agile', isMandatory: true },
-  3: { contentType: 'VIDEO', category: 'AI & Finance', isMandatory: false },
-  4: { contentType: 'VIDEO', category: 'Leadership', isMandatory: true },
-};
-
 const BADGE_DEFS = [
   { id: 'first_steps', tier: 'BRONZE', title: 'First Steps', desc: 'Completed your first course', icon: 'target' },
   { id: 'quick_learner', tier: null, title: 'Quick Learner', desc: 'Completed a course before its due date', icon: 'zap' },
@@ -86,16 +76,30 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async courses(userId: number) {
-    const rows = await this.repository.assignedCourses(userId);
+    const [rows, contentRows] = await Promise.all([
+      this.repository.assignedCourses(userId),
+      this.repository.courseContentTypes(userId),
+    ]);
+
+    // What each course actually holds, rather than a hard-coded assumption.
+    const typesByCourse = new Map(
+      contentRows.map((r) => [
+        Number(r.course_id),
+        (r.content_types || '').split(',').filter(Boolean),
+      ]),
+    );
 
     const courses = rows.map((row) => {
       const total = Number(row.total_lessons);
       const done = Number(row.completed_lessons);
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
       const dueDate = addDays(row.assigned_at, DUE_DAYS);
-      const meta = COURSE_META[Number(row.course_id)] ?? {
-        contentType: 'VIDEO',
-        category: null,
+      const types = typesByCourse.get(Number(row.course_id)) ?? [];
+      const meta = {
+        contentType: contentTypeOf(types),
+        // Neither of these has a column to come from. They were invented per
+        // course id; reporting null is honest, where a guess was not.
+        category: null as string | null,
         isMandatory: false,
       };
 
@@ -180,8 +184,8 @@ export class LearnerService {
       await Promise.all([
         this.repository.assignedCourses(userId),
         this.leaderboard_.standings(),
-        this.hours.lessonMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
-        this.hours.scormMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
+        this.hours.lessonMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
+        this.hours.scormMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
         this.repository.recentAttempts(userId, 5),
       ]);
 
@@ -502,8 +506,8 @@ export class LearnerService {
         this.repository.assignedCourses(userId),
         this.repository.courseLessonProgress(userId),
         this.repository.scormForAssignedCourses(userId),
-        this.hours.lessonMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
-        this.hours.scormMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
+        this.hours.lessonMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
+        this.hours.scormMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
         this.repository.allAttempts(userId),
       ]);
 
@@ -876,12 +880,14 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async learningHours(userId: number) {
-    const [me, profiles, minutes, scormBuckets, courseHours] = await Promise.all([
+    const [me, profiles, minutes, scormBuckets, courseHours, contentRows] =
+      await Promise.all([
       this.repository.findUser(userId),
       this.repository.allLearnerProfiles(),
-      this.hours.lessonMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
-      this.hours.scormMinutes(THIS_MONTH, LAST_MONTH, WEEKS),
-      this.repository.monthlyHoursByCourse(userId, THIS_MONTH),
+      this.hours.lessonMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
+      this.hours.scormMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
+      this.repository.monthlyHoursByCourse(userId, currentMonthKey()),
+      this.repository.courseContentTypes(userId),
     ]);
 
     const myDept = me?.department || 'Unknown';
@@ -955,7 +961,7 @@ export class LearnerService {
       };
     });
 
-    const weeklyTrend = WEEKS.map((week, index) => {
+    const weeklyTrend = monthWeeks().map((week, index) => {
       const entry: Record<string, string | number> = { week: week.label };
       for (const dept of depts) {
         const members = profiles.filter(
@@ -975,13 +981,17 @@ export class LearnerService {
     });
 
     /* Training-mode breakdown for this month. */
+    const typesByCourse = new Map(
+      contentRows.map((r) => [
+        Number(r.course_id),
+        (r.content_types || '').split(',').filter(Boolean),
+      ]),
+    );
+
     const modeMap: Record<string, number> = {};
     for (const row of courseHours) {
-      const cfg = COURSE_MODE[Number(row.course_id)] ?? {
-        mode: 'Video / Self-paced',
-        color: '#10b981',
-      };
-      modeMap[cfg.mode] = (modeMap[cfg.mode] ?? 0) + Number(row.hrs);
+      const mode = modeOf(typesByCourse.get(Number(row.course_id)) ?? []);
+      modeMap[mode] = (modeMap[mode] ?? 0) + Number(row.hrs);
     }
     const scormHours = round1((scormBuckets.get(userId)?.thisMonth ?? 0) / 60);
     if (scormHours > 0) {
@@ -1009,14 +1019,18 @@ export class LearnerService {
       },
       weeklyTrend,
       depts,
-      modeBreakdown: MODE_ORDER.filter((m) => modeMap[m] > 0).map((mode) => ({
-        mode,
-        hours: round1(modeMap[mode]),
-        pct: Math.round((modeMap[mode] / totalModeHours) * 100),
-        color:
-          Object.values(COURSE_MODE).find((c) => c.mode === mode)?.color ??
-          '#6b7280',
-      })),
+      // Order by hours, not a fixed list — the modes are derived now, so a
+      // hard-coded ordering would drop any mode not in it.
+      modeBreakdown: Object.keys(modeMap)
+        .filter((m) => modeMap[m] > 0)
+        .sort((a, b) => modeMap[b] - modeMap[a])
+        .map((mode) => ({
+          mode,
+          hours: round1(modeMap[mode]),
+          pct: Math.round((modeMap[mode] / totalModeHours) * 100),
+          // No colour: the client picks from the brand ramp. The hex values
+          // that used to be here were off-palette (TASTE §10.1).
+        })),
       deptPeers: peers,
       orgOverview,
     };

@@ -7,6 +7,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 
 import { AppModule } from './app.module';
+import { setReferenceDate } from './modules/learning-hours/periods';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ScormStorageService } from './modules/scorm/storage/scorm-storage.service';
 
@@ -18,6 +19,17 @@ async function bootstrap(): Promise<void> {
   // Every route is mounted under /api, matching the paths the client already
   // calls (/api/auth/login, /api/learner/courses, ...). Keeping the paths
   // identical means the migration is a base-URL change, not a rewrite.
+  // Reports normally track the real calendar. REPORTING_REFERENCE_DATE pins
+  // them to a chosen day so the seeded period can still be demonstrated.
+  const referenceDate = config.get<string | null>('reporting.referenceDate');
+  setReferenceDate(referenceDate ?? null);
+  if (referenceDate) {
+    logger.warn(
+      `Reporting period pinned to ${referenceDate}. Monthly figures will not ` +
+        'track the real calendar until REPORTING_REFERENCE_DATE is removed.',
+    );
+  }
+
   app.setGlobalPrefix('api');
 
   app.use(cookieParser());

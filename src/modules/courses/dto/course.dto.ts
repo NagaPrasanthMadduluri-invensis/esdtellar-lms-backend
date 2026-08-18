@@ -1,5 +1,7 @@
 import { Transform } from 'class-transformer';
 import {
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsInt,
   IsOptional,
@@ -73,6 +75,15 @@ export class UpdateLessonDto {
   @IsOptional() @IsInt() sort_order?: number;
   @IsOptional() @IsBoolean() is_preview?: boolean;
   @IsOptional() @IsBoolean() is_active?: boolean;
+}
+
+export class BulkAssignmentDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Select at least one learner' })
+  @IsInt({ each: true, message: 'user_ids must be integers' })
+  user_ids!: number[];
+
+  @IsOptional() @Transform(nullable) due_date?: string | null;
 }
 
 export class CreateAssignmentDto {

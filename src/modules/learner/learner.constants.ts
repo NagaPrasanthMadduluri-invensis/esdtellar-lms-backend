@@ -6,9 +6,9 @@
  * the legacy handlers verbatim. Change here only, and only when the data stops
  * being seed data.
  */
-import { TODAY } from '@/modules/learning-hours/periods';
+import { today } from '@/modules/learning-hours/periods';
 
-export { THIS_MONTH, LAST_MONTH, TODAY, WEEKS } from '@/modules/learning-hours/periods';
+export { thisMonth, lastMonth, today, weeks } from '@/modules/learning-hours/periods';
 
 export const MONTHLY_GOAL_HOURS = 10;
 export const DUE_DAYS = 44;
@@ -17,7 +17,34 @@ export const DUE_DAYS = 44;
 export const POINTS_PER_LESSON = 10;
 export const POINTS_PER_PASSED_ASSESSMENT = 50;
 
-/** Synthetic per-course metadata — the schema has no such column. */
+/**
+ * Delivery mode, derived from what a course actually contains.
+ *
+ * SCORM wins when present because it is the most specific thing a course can
+ * hold; otherwise video, then documents, then anything else. Colours are NOT
+ * returned — the client picks them from the brand ramp (TASTE §10.4), which is
+ * why the old hex values here were both wrong and off-palette.
+ */
+export function modeOf(contentTypes: string[]): string {
+  const types = new Set(contentTypes.map((t) => (t || '').toLowerCase()));
+  if (types.has('scorm')) return 'eLearning / SCORM';
+  if (types.has('video')) return 'Video / Self-paced';
+  if (types.has('pdf')) return 'Reading / Documents';
+  if (types.has('quiz')) return 'Assessment';
+  return 'Other';
+}
+
+/** The dominant content type for a course card, from the same source. */
+export function contentTypeOf(contentTypes: string[]): string {
+  const types = new Set(contentTypes.map((t) => (t || '').toLowerCase()));
+  if (types.has('scorm')) return 'SCORM';
+  if (types.has('video')) return 'VIDEO';
+  if (types.has('pdf')) return 'PDF';
+  if (types.has('quiz')) return 'QUIZ';
+  return 'MIXED';
+}
+
+/** Legacy synthetic metadata — retained only for the MODE_ORDER listing. */
 export const COURSE_MODE: Record<number, { mode: string; color: string }> = {
   1: { mode: 'eLearning / SCORM', color: '#f59e0b' },
   2: { mode: 'Video / Self-paced', color: '#10b981' },
@@ -71,7 +98,7 @@ export function parseTimestamp(iso: string): Date {
 export function relativeTime(iso: string | null): string {
   if (!iso) return '';
   const diff = Math.floor(
-    (new Date(TODAY).getTime() - parseTimestamp(iso).getTime()) / 86_400_000,
+    (new Date(today()).getTime() - parseTimestamp(iso).getTime()) / 86_400_000,
   );
   if (diff === 0) return 'Today';
   if (diff === 1) return 'Yesterday';

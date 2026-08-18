@@ -4,7 +4,7 @@ import {
   POINTS_PER_LESSON,
   POINTS_PER_PASSED_ASSESSMENT,
 } from '@/modules/leaderboard/points';
-import { THIS_MONTH } from '@/modules/learning-hours/periods';
+import { thisMonth } from '@/modules/learning-hours/periods';
 
 import { LeaderboardRepository } from './leaderboard.repository';
 
@@ -54,8 +54,8 @@ export interface Recognition {
 export class LeaderboardService {
   constructor(private readonly repository: LeaderboardRepository) {}
 
-  async standings(thisMonth: string = THIS_MONTH) {
-    const rows = await this.repository.standings(thisMonth);
+  async standings(month: string = thisMonth()) {
+    const rows = await this.repository.standings(month);
 
     const entries: LeaderboardEntry[] = rows.map((row) => {
       const passed = Number(row.passed);

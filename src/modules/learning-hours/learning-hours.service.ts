@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { parseScormDuration } from '@/common/scorm-duration.util';
 
-import { LAST_MONTH, THIS_MONTH, WEEKS } from './periods';
+import { lastMonth, thisMonth, weeks } from './periods';
 import {
   LearningHoursRepository,
   type MinutesRow,
@@ -40,18 +40,18 @@ export class LearningHoursService {
    * SCORM deliberately excluded (it is counted from its own reported time).
    */
   async lessonMinutes(
-    thisMonth: string = THIS_MONTH,
-    lastMonth: string = LAST_MONTH,
-    weeks: readonly Week[] = WEEKS,
+    month: string = thisMonth(),
+    previousMonth: string = lastMonth(),
+    weekRanges: readonly Week[] = weeks(),
   ): Promise<MinutesRow[]> {
-    return this.repository.minutesByUser(thisMonth, lastMonth, weeks);
+    return this.repository.minutesByUser(month, previousMonth, weekRanges);
   }
 
   /** SCORM minutes per learner, parsed from whichever format the package used. */
   async scormMinutes(
-    thisMonth: string = THIS_MONTH,
-    lastMonth: string = LAST_MONTH,
-    weeks: readonly Week[] = WEEKS,
+    month: string = thisMonth(),
+    previousMonth: string = lastMonth(),
+    weekRanges: readonly Week[] = weeks(),
   ): Promise<Map<number, LearnerMinutes>> {
     const rows = await this.repository.scormTimes();
     const buckets = new Map<number, LearnerMinutes>();
@@ -65,12 +65,12 @@ export class LearningHoursService {
       entry.all += minutes;
 
       const stamp = row.updated_at || '';
-      const month = stamp.slice(0, 7);
-      if (month === thisMonth) entry.thisMonth += minutes;
-      if (month === lastMonth) entry.lastMonth += minutes;
+      const stampMonth = stamp.slice(0, 7);
+      if (stampMonth === month) entry.thisMonth += minutes;
+      if (stampMonth === previousMonth) entry.lastMonth += minutes;
 
       const day = stamp.slice(0, 10);
-      weeks.forEach((week, index) => {
+      weekRanges.forEach((week, index) => {
         if (day >= week.start && day <= week.end) entry.weeks[index] += minutes;
       });
 
@@ -84,13 +84,13 @@ export class LearningHoursService {
    * needs the two halves separately.
    */
   async minutesByUser(
-    thisMonth: string = THIS_MONTH,
-    lastMonth: string = LAST_MONTH,
-    weeks: readonly Week[] = WEEKS,
+    month: string = thisMonth(),
+    previousMonth: string = lastMonth(),
+    weekRanges: readonly Week[] = weeks(),
   ): Promise<Map<number, LearnerMinutes>> {
     const [lessonRows, scorm] = await Promise.all([
-      this.lessonMinutes(thisMonth, lastMonth, weeks),
-      this.scormMinutes(thisMonth, lastMonth, weeks),
+      this.lessonMinutes(month, previousMonth, weekRanges),
+      this.scormMinutes(month, previousMonth, weekRanges),
     ]);
 
     const totals = new Map<number, LearnerMinutes>();

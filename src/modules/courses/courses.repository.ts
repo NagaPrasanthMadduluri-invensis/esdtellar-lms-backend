@@ -167,6 +167,16 @@ export class CoursesRepository {
     return Number(rows[0]?.m ?? 0) + 1;
   }
 
+  /** Current state of a module — used to preserve flags the caller omitted. */
+  async findModuleById(moduleId: number) {
+    const rows = await this.db
+      .select()
+      .from(courseModules)
+      .where(eq(courseModules.id, moduleId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
   async createModule(input: {
     courseId: number;
     title: string;
@@ -303,6 +313,40 @@ export class CoursesRepository {
       )
       .limit(1);
     return rows[0] ?? null;
+  }
+
+  /**
+   * Assigns many learners in ONE statement.
+   *
+   * "Assign all" for a department used to be a client-side loop issuing a
+   * request per learner — 20 round trips for 20 people, each able to fail
+   * independently and leave the department half-assigned. Already-assigned
+   * learners are skipped by the UNIQUE(user_id, course_id) conflict rather
+   * than by filtering them first, so the caller does not need to know who is
+   * already enrolled.
+   */
+  async createAssignments(input: {
+    userIds: number[];
+    courseId: number;
+    assignedBy: number;
+    dueDate: string | null;
+  }): Promise<number> {
+    if (input.userIds.length === 0) return 0;
+
+    const rows = await this.db
+      .insert(userCourseAssignments)
+      .values(
+        input.userIds.map((userId) => ({
+          userId,
+          courseId: input.courseId,
+          assignedBy: input.assignedBy,
+          dueDate: input.dueDate,
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ id: userCourseAssignments.id });
+
+    return rows.length;
   }
 
   async createAssignment(input: {
