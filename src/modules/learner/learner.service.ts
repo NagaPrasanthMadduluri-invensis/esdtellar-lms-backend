@@ -137,6 +137,9 @@ export class LearnerService {
           id: row.course_id,
           name: row.name,
           description: row.description,
+          // The list cards show course art too, so the thumbnail has to reach
+          // them — only the detail endpoint used to return it.
+          thumbnail_url: row.thumbnail_url,
         },
       };
     });
