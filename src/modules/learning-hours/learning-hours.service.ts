@@ -115,6 +115,43 @@ export class LearningHoursService {
     return totals;
   }
 
+  /**
+   * All-time minutes per learner PER COURSE, keyed `userId:courseId`.
+   *
+   * What the exported report needs for its "Time Spent" column, which was a
+   * literal em dash on every row before this existed. Reads the same two
+   * halves as `minutesByUser` and combines them the same way, so a learner's
+   * course rows add up to the total shown everywhere else.
+   */
+  async minutesByUserAndCourse(): Promise<Map<string, number>> {
+    const [lessonRows, scormRows] = await Promise.all([
+      this.repository.lessonMinutesByCourse(),
+      this.repository.scormTimesByCourse(),
+    ]);
+
+    const totals = new Map<string, number>();
+    const add = (userId: number, courseId: number, minutes: number) => {
+      if (!minutes) return;
+      const key = `${userId}:${courseId}`;
+      totals.set(key, (totals.get(key) ?? 0) + minutes);
+    };
+
+    for (const row of lessonRows) {
+      add(Number(row.user_id), Number(row.course_id), Number(row.minutes));
+    }
+    for (const row of scormRows) {
+      // Parsed here rather than in SQL for the same reason as everywhere else:
+      // the two SCORM versions use formats Postgres cannot sum.
+      add(
+        Number(row.user_id),
+        Number(row.course_id),
+        parseScormDuration(row.total_time),
+      );
+    }
+
+    return totals;
+  }
+
   /** Zero-filled entry, so callers never branch on "this learner has none". */
   static empty(): LearnerMinutes {
     return { all: 0, thisMonth: 0, lastMonth: 0, weeks: [0, 0, 0, 0] };

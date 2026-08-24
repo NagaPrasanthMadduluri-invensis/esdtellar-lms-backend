@@ -624,10 +624,23 @@ existing session, roster and completed-session attendance record as set-based
 for giving an admin a system they will populate themselves. Dry-run by default;
 `--commit` applies it. It refuses outright if no admin would survive.
 
-Demo seeding is opt-in for the same reason: `npm run db:seed` does nothing
-without `-- --confirm`, and refuses entirely once the database holds courses or
-learners. A freshly reset production install and a new developer database are
+Demo seeding is opt-in: `npm run db:seed` does nothing without `-- --confirm`.
+A freshly reset production install and a new developer database are
 indistinguishable from the inside, so the script asks rather than guesses.
+
+It used to **refuse outright** once the database held any course or learner.
+That refusal was removed deliberately, so a populated database can be re-seeded
+without editing the script first. It now prints the counts and warns instead.
+Know what that costs: the steps after the first have weaker guards and WILL
+insert demo learners and courses alongside real ones, so `--confirm` is the
+only thing left between a stray `npm run db:seed` — in a deploy script, or run
+by habit — and fake data in front of a real admin. To start clean, reset first
+rather than seeding on top:
+
+```bash
+npm run db:reset-to-admin -- --commit
+npm run db:seed -- --confirm
+```
 
 Neither script touches `server/storage/scorm/` or the R2 bucket — extracted
 packages and uploaded videos outlive a database wipe and must be cleared
@@ -662,6 +675,13 @@ a sitting being paid for twice:
 Do not add a second place that sums hours. The learner view and the admin
 analytics previously computed them independently — the admin side counted no
 SCORM at all — and the same learner read differently depending on who looked.
+
+There are two shapes of the same figure: `minutesByUser()` (per learner, with
+monthly and weekly buckets) and `minutesByUserAndCourse()` (per learner per
+course, for the exported report's "Time Spent" column). Both are built from one
+`lessonSource` SQL fragment in the repository, so the per-course rows always sum
+to the per-learner total — writing the second query by hand is exactly how they
+would come to disagree.
 
 **Migration complete — 85 handlers, all on the server.**
 

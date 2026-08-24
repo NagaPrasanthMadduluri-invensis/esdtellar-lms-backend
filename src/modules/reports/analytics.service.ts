@@ -32,6 +32,22 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/**
+ * Time spent, for a spreadsheet cell.
+ *
+ * "N/A" when nothing was recorded — the learner has not started, and a bare 0
+ * would read as a measurement rather than an absence. Anything under an hour
+ * stays in minutes; there is no value in "0h 12m".
+ */
+function formatTimeSpent(minutes: number): string {
+  const total = Math.round(minutes);
+  if (total <= 0) return 'N/A';
+  if (total < 60) return `${total}m`;
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  return rest > 0 ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
 @Injectable()
 export class AnalyticsService {
   private readonly thisMonth = monthKey(REFERENCE_DATE);
@@ -427,10 +443,14 @@ export class AnalyticsService {
 
   /** Row data for the four export sheets. */
   async exportRows() {
-    const [rows, courseRows, topScorers] = await Promise.all([
+    const [rows, courseRows, topScorers, courseMinutes] = await Promise.all([
       this.stats(),
       this.repository.courseProgressPerLearner(),
       this.repository.topScorers(20),
+      // "Time Spent" was a literal em dash on every row. It comes from the same
+      // calculation as every other hours figure, so the report agrees with the
+      // dashboards instead of inventing a fourth number.
+      this.hours.minutesByUserAndCourse(),
     ]);
 
     const byLearner = new Map<number, typeof courseRows>();
@@ -453,7 +473,7 @@ export class AnalyticsService {
 
       if (courses.length === 0) {
         progressRows.push([seq++, employeeId, fullName, dept, '—', learner.email,
-          '—', '—', '—', 'Not Started', 0, '—', 'N/A', '—']);
+          '—', '—', '—', 'Not Started', 0, 'N/A', 'N/A', 'N/A']);
         assignRows.push([employeeId, fullName, dept, '—', '—', '—', '—', 'Not Started', '—']);
         continue;
       }
@@ -476,9 +496,13 @@ export class AnalyticsService {
         progressRows.push([
           seq++, employeeId, fullName, dept, '—', learner.email,
           course.course_name, assignedDate, '—', status, progress,
-          course.best_score !== null ? Number(course.best_score) : '—',
+          // "N/A" rather than an em dash, so the two assessment columns agree
+          // with each other about what "no attempt yet" looks like.
+          course.best_score !== null ? Number(course.best_score) : 'N/A',
           attemptCount === 0 ? 'N/A' : hasPassed ? 'Pass ✓' : 'Fail ✗',
-          '—',
+          formatTimeSpent(
+            courseMinutes.get(`${learner.id}:${course.course_id}`) ?? 0,
+          ),
         ]);
 
         assignRows.push([

@@ -60,9 +60,17 @@ export function hashPassword(password) {
  * an explicit flag. That way `npm run db:seed`, run by habit or by a deploy
  * script against the system an admin has just been handed, does nothing.
  *
- * Re-seeding a database that is already in use is refused outright: the later
- * steps here have weaker guards than the first and WILL re-insert demo
- * learners and courses into a live system.
+ * It does NOT refuse a database that already holds data. It used to, and the
+ * refusal was removed deliberately so a populated database can be re-seeded
+ * without editing this file first. Know what that means before you use it:
+ * the later steps here have weaker guards than the first and WILL re-insert
+ * demo learners and courses into a live system. `--confirm` is now the only
+ * thing standing between a stray `npm run db:seed` and fake data in front of
+ * a real admin.
+ *
+ * The counts are still read and still printed, because seeing "this database
+ * holds 3 courses and 2 learners" immediately before demo data lands on top of
+ * them is the difference between a deliberate act and an accident.
  */
 export async function assertSeedingIntended(db, { confirmed = false } = {}) {
   const courses = Number(
@@ -76,20 +84,25 @@ export async function assertSeedingIntended(db, { confirmed = false } = {}) {
   const inUse = courses > 0 || learners > 0;
 
   if (inUse) {
-    console.error(
-      `REFUSING TO SEED: this database already holds ${courses} course(s) and ` +
+    console.warn(
+      `WARNING: this database already holds ${courses} course(s) and ` +
         `${learners} learner(s).\n` +
-        'Seeding adds demo data to a system in use. Nothing was changed.',
+        'Seeding adds demo data ON TOP of them — it does not replace them.\n' +
+        'For a clean start instead:  npm run db:reset-to-admin -- --commit\n',
     );
-    process.exit(1);
   }
 
   if (!confirmed) {
     console.error(
       'REFUSING TO SEED: demo data is opt-in.\n\n' +
-        'This database is empty, but an empty database is also what a freshly\n' +
-        'reset production install looks like — seeding one would hand the admin\n' +
-        'a system full of fake learners and courses.\n\n' +
+        (inUse
+          // Reachable now that an in-use database is no longer refused
+          // outright, so it must not claim the database is empty.
+          ? 'This database is in use. Seeding will add demo learners and\n' +
+            'courses alongside what is already there.\n\n'
+          : 'This database is empty, but an empty database is also what a\n' +
+            'freshly reset production install looks like — seeding one would\n' +
+            'hand the admin a system full of fake learners and courses.\n\n') +
         'If you genuinely want demo data:  npm run db:seed -- --confirm',
     );
     process.exit(1);

@@ -21,6 +21,20 @@ export interface ScormTimeRow {
   updated_at: string;
 }
 
+/** Lesson-side minutes for one learner on one course. */
+export interface CourseMinutesRow {
+  user_id: number;
+  course_id: number;
+  minutes: number;
+}
+
+/** SCORM time for one learner on one course, still unparsed. */
+export interface CourseScormTimeRow {
+  user_id: number;
+  course_id: number;
+  total_time: string | null;
+}
+
 export interface Week {
   start: string;
   end: string;
@@ -32,6 +46,54 @@ export class LearningHoursRepository {
 
   private get db() {
     return this.database.db;
+  }
+
+  /**
+   * THE definition of what counts as lesson-side learning time.
+   *
+   * Written once and interpolated into every query that needs it, so the
+   * per-learner totals and the per-course breakdown can never drift apart —
+   * which is the whole point of this module existing (§10.4). Emits one row per
+   * countable event: `user_id`, `course_id`, `minutes`, and `at` (when it
+   * happened, for the monthly and weekly buckets).
+   *
+   * Exactly one source counts per lesson:
+   *
+   *   video with a progress row  -> measured watch time, declared value ignored
+   *   SCORM lesson               -> excluded here entirely, counted from
+   *                                 scorm_tracking instead (it reports its own
+   *                                 time, and marking the lesson complete would
+   *                                 otherwise ALSO credit duration_minutes)
+   *   anything else completed    -> the admin-declared duration_minutes, which
+   *                                 for a document is mandatory precisely so
+   *                                 this is never silently zero
+   */
+  private get lessonSource() {
+    return sql`
+      SELECT vp.user_id,
+             cm.course_id,
+             vp.watched_seconds / 60.0 AS minutes,
+             vp.updated_at AS at
+      FROM lesson_video_progress vp
+      JOIN lessons l ON l.id = vp.lesson_id
+      JOIN course_modules cm ON cm.id = l.module_id
+      WHERE l.content_type <> 'scorm'
+
+      UNION ALL
+
+      SELECT c.user_id,
+             cm.course_id,
+             COALESCE(l.duration_minutes, 0) AS minutes,
+             c.completed_at AS at
+      FROM user_lesson_completions c
+      JOIN lessons l ON l.id = c.lesson_id
+      JOIN course_modules cm ON cm.id = l.module_id
+      WHERE l.content_type <> 'scorm'
+        AND NOT EXISTS (
+          SELECT 1 FROM lesson_video_progress vp
+          WHERE vp.user_id = c.user_id AND vp.lesson_id = c.lesson_id
+        )
+    `;
   }
 
   /**
@@ -57,27 +119,7 @@ export class LearningHoursRepository {
   ): Promise<MinutesRow[]> {
     const [w1, w2, w3, w4] = weeks;
     return this.db.all<MinutesRow>(sql`
-      WITH source AS (
-        SELECT vp.user_id,
-               vp.watched_seconds / 60.0 AS minutes,
-               vp.updated_at AS at
-        FROM lesson_video_progress vp
-        JOIN lessons l ON l.id = vp.lesson_id
-        WHERE l.content_type <> 'scorm'
-
-        UNION ALL
-
-        SELECT c.user_id,
-               COALESCE(l.duration_minutes, 0) AS minutes,
-               c.completed_at AS at
-        FROM user_lesson_completions c
-        JOIN lessons l ON l.id = c.lesson_id
-        WHERE l.content_type <> 'scorm'
-          AND NOT EXISTS (
-            SELECT 1 FROM lesson_video_progress vp
-            WHERE vp.user_id = c.user_id AND vp.lesson_id = c.lesson_id
-          )
-      )
+      WITH source AS (${this.lessonSource})
       SELECT u.id AS user_id,
         COALESCE(SUM(s.minutes), 0) AS all_time,
         COALESCE(SUM(CASE WHEN to_char(s.at, 'YYYY-MM') = ${thisMonth}
@@ -96,6 +138,41 @@ export class LearningHoursRepository {
       LEFT JOIN source s ON s.user_id = u.id
       WHERE u.role = 'learner'
       GROUP BY u.id
+    `);
+  }
+
+  /**
+   * The same minutes, broken down by course.
+   *
+   * Built on the identical `lessonSource`, so a learner's per-course figures
+   * always sum to their total — a second hand-written query would eventually
+   * disagree with the first, which is the failure §10.4 was written after.
+   */
+  async lessonMinutesByCourse(): Promise<CourseMinutesRow[]> {
+    return this.db.all<CourseMinutesRow>(sql`
+      WITH source AS (${this.lessonSource})
+      SELECT user_id, course_id, COALESCE(SUM(minutes), 0) AS minutes
+      FROM source
+      GROUP BY user_id, course_id
+    `);
+  }
+
+  /**
+   * SCORM time per course.
+   *
+   * A package reaches a course by being used in one of its lessons. Grouped by
+   * package as well as course so a course that uses the same package in two
+   * lessons counts that sitting once — it was one sitting.
+   */
+  async scormTimesByCourse(): Promise<CourseScormTimeRow[]> {
+    return this.db.all<CourseScormTimeRow>(sql`
+      SELECT st.user_id, cm.course_id, MAX(st.total_time) AS total_time
+      FROM scorm_tracking st
+      JOIN lessons l ON l.scorm_package_id = st.package_id
+      JOIN course_modules cm ON cm.id = l.module_id
+      WHERE st.total_time IS NOT NULL
+        AND l.is_active = 1 AND cm.is_active = 1
+      GROUP BY st.user_id, cm.course_id, st.package_id
     `);
   }
 
