@@ -19,6 +19,12 @@ export interface CompletionSnapshot {
   hasAssessment: boolean;
   hasPassed: boolean;
   bestScore: number | null;
+  /**
+   * Set when this course is a live/offline session's companion training
+   * (`courses.session_id`). Those certificates are the admin's to issue by
+   * hand, so auto-issue steps aside — see CertificatesService.autoIssue.
+   */
+  sessionId: number | null;
 }
 
 @Injectable()
@@ -105,19 +111,26 @@ export class CertificatesRepository {
         ),
       );
 
+    const sessionId = this.db
+      .select({ value: courses.sessionId })
+      .from(courses)
+      .where(eq(courses.id, courseId));
+
     const rows = await this.db.all<{
       total_lessons: number;
       completed_lessons: number;
       assessment_count: number;
       best_score: number | null;
       passed_count: number;
+      session_id: number | null;
     }>(sql`
       SELECT
         (${totalLessons})      AS total_lessons,
         (${completedLessons})  AS completed_lessons,
         (${activeAssessments}) AS assessment_count,
         (${bestScore})         AS best_score,
-        (${passedAttempts})    AS passed_count
+        (${passedAttempts})    AS passed_count,
+        (${sessionId})         AS session_id
     `);
     const row = rows[0];
 
@@ -127,6 +140,7 @@ export class CertificatesRepository {
       hasAssessment: Number(row.assessment_count) > 0,
       hasPassed: Number(row.passed_count) > 0,
       bestScore: row.best_score === null ? null : Number(row.best_score),
+      sessionId: row.session_id === null ? null : Number(row.session_id),
     };
   }
 

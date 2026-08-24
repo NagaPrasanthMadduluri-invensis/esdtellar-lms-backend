@@ -103,8 +103,9 @@ export class R2StorageService {
       // Naming the variables is safe here: these routes are admin-only, and
       // only the NAMES are reported, never any value.
       throw new ServiceUnavailableException(
-        `Video storage is not configured on this server. Missing environment ` +
-          `variable(s): ${this.missing.join(', ')}. Set them on the API server ` +
+        `File storage is not configured on this server. Missing environment ` +
+          `variable(s): ${this.missing.join(', ')}. Video, document and ` +
+          `resource uploads need them. Set them on the API server ` +
           `and restart it — configuration is read once at startup.`,
       );
     }
@@ -112,7 +113,11 @@ export class R2StorageService {
   }
 
   /** `lessons/12/video/<uuid>.mp4` — grouped by lesson so cleanup is obvious. */
-  buildKey(lessonId: number, kind: 'video' | 'captions', extension: string) {
+  buildKey(
+    lessonId: number,
+    kind: 'video' | 'captions' | 'document' | 'resource',
+    extension: string,
+  ) {
     return `lessons/${lessonId}/${kind}/${randomUUID()}.${extension}`;
   }
 

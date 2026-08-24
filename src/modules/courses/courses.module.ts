@@ -7,6 +7,7 @@ import {
   CoursesController,
   LessonsController,
   ModulesController,
+  ResourcesController,
 } from './courses.controller';
 import { CoursesRepository } from './courses.repository';
 import { CoursesService } from './courses.service';
@@ -17,6 +18,7 @@ import { CoursesService } from './courses.service';
     CoursesController,
     ModulesController,
     LessonsController,
+    ResourcesController,
     AssignmentsController,
   ],
   providers: [CoursesService, CoursesRepository],

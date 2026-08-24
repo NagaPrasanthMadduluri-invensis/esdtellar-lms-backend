@@ -50,3 +50,27 @@ export class LearnerMediaController {
     return this.media.saveVideoProgress(lessonId, user.userId, dto);
   }
 }
+
+/**
+ * Supporting resources, on their own path so a resource id is never read as a
+ * lesson id.
+ */
+@Controller('learner/resources')
+@Roles('learner')
+export class LearnerResourcesController {
+  constructor(private readonly media: MediaService) {}
+
+  /**
+   * A signed URL for an uploaded resource, or the external URL for a linked
+   * one. Minted per click rather than handed out with the lesson, so an
+   * unopened resource costs nothing and no link outlives its TTL inside a
+   * response the browser might keep.
+   */
+  @Get(':resourceId/url')
+  async url(
+    @Param('resourceId', ParseIntPipe) resourceId: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.media.learnerResourceUrl(resourceId, user.userId);
+  }
+}

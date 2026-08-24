@@ -25,6 +25,14 @@ export const scormPackages = pgTable(
      * only the Drizzle metadata omits it.
      */
     courseId: integer('course_id'),
+    /**
+     * Runtime declared by the manifest's LOM `typicalLearningTime`, in minutes.
+     * Null when the package does not say — plenty of authoring tools omit it —
+     * and then the lesson's duration has to be typed by the admin instead.
+     * This is the package's STATED length; actual learning hours still come
+     * from the runtime's own reported `total_time` (§10.4).
+     */
+    durationMinutes: integer('duration_minutes'),
     createdBy: integer('created_by').references(() => users.id),
     isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })

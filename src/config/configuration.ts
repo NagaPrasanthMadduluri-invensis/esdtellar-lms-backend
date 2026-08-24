@@ -40,6 +40,8 @@ export interface AppConfig {
     uploadUrlTtlSeconds: number;
     videoMaxBytes: number;
     captionMaxBytes: number;
+    /** Cap for an uploaded document — a slide deck, not a feature film. */
+    documentMaxBytes: number;
   };
 }
 
@@ -85,5 +87,8 @@ export default (): AppConfig => ({
     uploadUrlTtlSeconds: Number(process.env.UPLOAD_URL_TTL_SECONDS ?? 3600),
     videoMaxBytes: Number(process.env.VIDEO_MAX_BYTES ?? 2 * 1024 * 1024 * 1024),
     captionMaxBytes: Number(process.env.CAPTION_MAX_BYTES ?? 2 * 1024 * 1024),
+    documentMaxBytes: Number(
+      process.env.DOCUMENT_MAX_BYTES ?? 100 * 1024 * 1024,
+    ),
   },
 });

@@ -69,3 +69,68 @@ export class VideoProgressDto {
   @Min(0)
   positionSeconds!: number;
 }
+
+/**
+ * Document formats a lesson can carry, as primary content or as a supporting
+ * resource. Closed for the same reason the video list is: the presigned URL is
+ * signed with the declared content type, so this list IS what can be stored.
+ *
+ * `application/octet-stream` is deliberately absent — it is what a browser
+ * reports when it cannot identify a file, and allowing it would make the
+ * signed content type meaningless.
+ */
+export const ALLOWED_DOCUMENT_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
+] as const;
+
+/** Extension used for a stored object, per declared type. */
+export const EXTENSION_FOR_DOCUMENT_TYPE: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+};
+
+/** The coarse kind shown as an icon and a label. */
+export const RESOURCE_TYPE_FOR_MIME: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'doc',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'ppt',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xls',
+  'text/plain': 'other',
+  'text/csv': 'xls',
+};
+
+export class PresignDocumentDto {
+  @IsString()
+  @MaxLength(255)
+  filename!: string;
+
+  @IsIn(ALLOWED_DOCUMENT_TYPES as unknown as string[], {
+    message: `contentType must be one of: ${ALLOWED_DOCUMENT_TYPES.join(', ')}`,
+  })
+  contentType!: string;
+
+  /** Checked before signing so an oversized file is refused up front, and
+   *  again against R2 on confirm — a presigned PUT cannot cap its own body. */
+  @IsInt()
+  @Min(1)
+  @Max(Number.MAX_SAFE_INTEGER)
+  sizeBytes!: number;
+}

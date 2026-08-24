@@ -7,6 +7,7 @@ import {
   courses,
   lessons,
   userCourseAssignments,
+  lessonResources,
 } from '@/database/schema';
 
 @Injectable()
@@ -68,6 +69,133 @@ export class CoursesRepository {
       FROM courses c
       ORDER BY c.created_at DESC
     `);
+  }
+
+  /* ── Lesson resources ───────────────────────────────────────────────────
+     Supporting material on a lesson. Reference only — no duration, no bearing
+     on completion or learning hours (§10.4).
+  ────────────────────────────────────────────────────────────────────────── */
+
+  async listResources(lessonId: number) {
+    return this.db
+      .select({
+        id: lessonResources.id,
+        lesson_id: lessonResources.lessonId,
+        title: lessonResources.title,
+        resource_type: lessonResources.resourceType,
+        source: lessonResources.source,
+        file_name: lessonResources.fileName,
+        file_size_bytes: lessonResources.fileSizeBytes,
+        mime_type: lessonResources.mimeType,
+        url: lessonResources.url,
+        sort_order: lessonResources.sortOrder,
+        created_at: lessonResources.createdAt,
+      })
+      .from(lessonResources)
+      .where(eq(lessonResources.lessonId, lessonId))
+      .orderBy(asc(lessonResources.sortOrder), asc(lessonResources.id));
+  }
+
+  /**
+   * Resources for MANY lessons in one query, so the admin lesson list does not
+   * fan out into a query per row (§7.1).
+   */
+  async listResourcesForLessons(lessonIds: number[]) {
+    if (lessonIds.length === 0) return [];
+    return this.db.all<{
+      id: number;
+      lesson_id: number;
+      title: string;
+      resource_type: string;
+      source: string;
+      file_name: string | null;
+      file_size_bytes: number | null;
+      mime_type: string | null;
+      url: string | null;
+      sort_order: number;
+    }>(sql`
+      SELECT id, lesson_id, title, resource_type, source,
+             file_name, file_size_bytes, mime_type, url, sort_order
+      FROM lesson_resources
+      WHERE lesson_id IN (${sql.join(lessonIds.map((id) => sql`${id}`), sql`, `)})
+      ORDER BY lesson_id, sort_order, id
+    `);
+  }
+
+  /** The stored key too — the caller needs it to drop the object on delete. */
+  async findResourceById(resourceId: number) {
+    const rows = await this.db
+      .select({
+        id: lessonResources.id,
+        lessonId: lessonResources.lessonId,
+        fileKey: lessonResources.fileKey,
+      })
+      .from(lessonResources)
+      .where(eq(lessonResources.id, resourceId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async nextResourceSortOrder(lessonId: number): Promise<number> {
+    const rows = await this.db.all<{ next: number }>(sql`
+      SELECT COALESCE(MAX(sort_order) + 1, 0) AS next
+      FROM lesson_resources WHERE lesson_id = ${lessonId}
+    `);
+    return Number(rows[0]?.next ?? 0);
+  }
+
+  async createResource(values: typeof lessonResources.$inferInsert) {
+    const [created] = await this.db
+      .insert(lessonResources)
+      .values(values)
+      .returning();
+    return created;
+  }
+
+  /** Just the stored keys, for cleaning up when a lesson is deleted. */
+  async listResourcesForKeys(lessonId: number) {
+    return this.db.all<{ file_key: string | null }>(sql`
+      SELECT file_key FROM lesson_resources
+      WHERE lesson_id = ${lessonId} AND file_key IS NOT NULL
+    `);
+  }
+
+  async deleteResource(resourceId: number): Promise<void> {
+    await this.db
+      .delete(lessonResources)
+      .where(eq(lessonResources.id, resourceId));
+  }
+
+  /* ── Session trainings ─────────────────────────────────────────────────
+     A session's companion course is generated and kept in step by the
+     sessions module (migration 0005). These three lookups are what lets the
+     course editor refuse to edit one out from under its session.
+  ────────────────────────────────────────────────────────────────────────── */
+
+  async findSessionIdForCourse(courseId: number): Promise<number | null> {
+    const rows = await this.db.all<{ session_id: number | null }>(sql`
+      SELECT session_id FROM courses WHERE id = ${courseId}
+    `);
+    return rows[0]?.session_id ?? null;
+  }
+
+  async findSessionIdForModule(moduleId: number): Promise<number | null> {
+    const rows = await this.db.all<{ session_id: number | null }>(sql`
+      SELECT c.session_id FROM course_modules cm
+      JOIN courses c ON c.id = cm.course_id
+      WHERE cm.id = ${moduleId}
+    `);
+    return rows[0]?.session_id ?? null;
+  }
+
+  async findSessionIdForLesson(lessonId: number): Promise<number | null> {
+    const rows = await this.db.all<{ session_id: number | null }>(sql`
+      SELECT c.session_id FROM lessons l
+      JOIN course_modules cm ON cm.id = l.module_id
+      JOIN courses c ON c.id = cm.course_id
+      WHERE l.id = ${lessonId}
+    `);
+    return rows[0]?.session_id ?? null;
   }
 
   async findById(id: number) {

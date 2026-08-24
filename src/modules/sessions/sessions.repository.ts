@@ -30,20 +30,43 @@ export class SessionsRepository {
   async list() {
     return this.db.all(sql`
       SELECT s.*, c.name AS course_name,
+        tc.id AS training_course_id,
         (SELECT COUNT(*) FROM session_roster sr
-         WHERE sr.session_id = s.id) AS roster_count
+         WHERE sr.session_id = s.id) AS roster_count,
+        (SELECT COUNT(*) FROM session_attendance sa
+         WHERE sa.session_id = s.id AND sa.status IS NOT NULL) AS marked_count,
+        (SELECT COUNT(*) FROM session_attendance sa
+         WHERE sa.session_id = s.id
+           AND sa.status IN ('present', 'late', 'partial')) AS credited_count
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
+      LEFT JOIN courses tc ON tc.session_id = s.id
       ORDER BY s.date DESC, s.start_time DESC
     `);
   }
 
   async findWithCourse(sessionId: number) {
     const rows = await this.db.all(sql`
-      SELECT s.*, c.name AS course_name
+      SELECT s.*, c.name AS course_name, tc.id AS training_course_id
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
+      LEFT JOIN courses tc ON tc.session_id = s.id
       WHERE s.id = ${sessionId}
+    `);
+    return rows[0] ?? null;
+  }
+
+  /** Status and schedule only — what the completion rules need, nothing more. */
+  async findStatus(sessionId: number) {
+    const rows = await this.db.all<{
+      id: number;
+      status: string;
+      date: string;
+      start_time: string;
+      end_time: string;
+    }>(sql`
+      SELECT id, status, date, start_time, end_time
+      FROM sessions WHERE id = ${sessionId}
     `);
     return rows[0] ?? null;
   }
@@ -172,6 +195,223 @@ export class SessionsRepository {
     }
   }
 
+  /* ── Training course ───────────────────────────────────────────────────
+     A session's companion course: one course, one module, one lesson of
+     content_type 'session'. Everything downstream (My Courses, progress,
+     learning hours, dashboards, certificates) reads courses/assignments/
+     completions, so keeping this in step is the whole integration.
+  ────────────────────────────────────────────────────────────────────────── */
+
+  /** The session lesson's ids, or null when the training was never built. */
+  async findTraining(sessionId: number) {
+    const rows = await this.db.all<{
+      course_id: number;
+      module_id: number;
+      lesson_id: number;
+    }>(sql`
+      SELECT c.id AS course_id, cm.id AS module_id, l.id AS lesson_id
+      FROM courses c
+      JOIN course_modules cm ON cm.course_id = c.id
+      JOIN lessons l ON l.module_id = cm.id AND l.content_type = 'session'
+      WHERE c.session_id = ${sessionId}
+      LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Builds the course, its module and its session lesson.
+   *
+   * `ON CONFLICT (session_id)` makes this safe to call twice — two admins
+   * saving the same new session cannot produce two trainings, because
+   * courses_session_unique refuses the second.
+   */
+  async createTraining(
+    sessionId: number,
+    values: {
+      name: string;
+      description: string | null;
+      isActive: number;
+      lessonTitle: string;
+      contentUrl: string;
+      durationMinutes: number;
+    },
+  ): Promise<void> {
+    await this.db.run(sql`
+      WITH new_course AS (
+        INSERT INTO courses (name, description, is_active, session_id)
+        VALUES (${values.name}, ${values.description}, ${values.isActive},
+                ${sessionId})
+        ON CONFLICT (session_id) DO NOTHING
+        RETURNING id
+      ), new_module AS (
+        INSERT INTO course_modules (course_id, title, sort_order, is_active)
+        SELECT id, 'Live session', 0, 1 FROM new_course
+        RETURNING id
+      )
+      INSERT INTO lessons (module_id, title, description, content_type,
+                           content_url, duration_minutes, sort_order,
+                           is_preview, is_active)
+      SELECT id, ${values.lessonTitle}, ${values.description}, 'session',
+             ${values.contentUrl}, ${values.durationMinutes}, 0, 0, 1
+      FROM new_module
+    `);
+  }
+
+  /** Keeps the training in step after the session is edited. */
+  async updateTraining(
+    sessionId: number,
+    values: {
+      name: string;
+      description: string | null;
+      isActive: number;
+      lessonTitle: string;
+      contentUrl: string;
+      durationMinutes: number;
+    },
+  ): Promise<void> {
+    await this.db.run(sql`
+      UPDATE courses SET
+        name = ${values.name},
+        description = ${values.description},
+        is_active = ${values.isActive},
+        updated_at = now()
+      WHERE session_id = ${sessionId}
+    `);
+
+    await this.db.run(sql`
+      UPDATE lessons SET
+        title = ${values.lessonTitle},
+        description = ${values.description},
+        content_url = ${values.contentUrl},
+        duration_minutes = ${values.durationMinutes}
+      WHERE content_type = 'session'
+        AND module_id IN (
+          SELECT cm.id FROM course_modules cm
+          JOIN courses c ON c.id = cm.course_id
+          WHERE c.session_id = ${sessionId}
+        )
+    `);
+  }
+
+  /**
+   * Roster membership becomes a course assignment — the whole roster in one
+   * statement, so adding a department of 200 learners is still a single round
+   * trip. Idempotent, so it can follow any roster change.
+   */
+  async assignRosterToTraining(
+    sessionId: number,
+    adminId: number,
+  ): Promise<void> {
+    await this.db.run(sql`
+      INSERT INTO user_course_assignments
+        (user_id, course_id, assigned_by, due_date)
+      SELECT sr.user_id, c.id, ${adminId}, s.date
+      FROM session_roster sr
+      JOIN sessions s ON s.id = sr.session_id
+      JOIN courses c ON c.session_id = sr.session_id
+      WHERE sr.session_id = ${sessionId}
+      ON CONFLICT (user_id, course_id) DO NOTHING
+    `);
+  }
+
+  /** Leaving the roster withdraws the training and any credit for it. */
+  async unassignFromTraining(
+    sessionId: number,
+    userId: number,
+  ): Promise<void> {
+    await this.db.run(sql`
+      DELETE FROM user_lesson_completions ulc
+      USING lessons l, course_modules cm, courses c
+      WHERE ulc.lesson_id = l.id
+        AND l.module_id = cm.id
+        AND cm.course_id = c.id
+        AND c.session_id = ${sessionId}
+        AND l.content_type = 'session'
+        AND ulc.user_id = ${userId}
+    `);
+
+    await this.db.run(sql`
+      DELETE FROM user_course_assignments uca
+      USING courses c
+      WHERE uca.course_id = c.id
+        AND c.session_id = ${sessionId}
+        AND uca.user_id = ${userId}
+    `);
+  }
+
+  /** Learners the attendance record credits: present, late or partial. */
+  async attendanceTally(sessionId: number) {
+    const rows = await this.db.all<{ marked: number; credited: number }>(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE status IS NOT NULL) AS marked,
+        COUNT(*) FILTER (
+          WHERE status IN ('present', 'late', 'partial')
+        ) AS credited
+      FROM session_attendance
+      WHERE session_id = ${sessionId}
+    `);
+    return {
+      marked: Number(rows[0]?.marked ?? 0),
+      credited: Number(rows[0]?.credited ?? 0),
+    };
+  }
+
+  /**
+   * Brings lesson completions in line with the attendance record.
+   *
+   * Two statements rather than one so an attendance correction after the fact
+   * is honoured in both directions: a learner switched to `present` gains the
+   * training credit and its hours, and one switched to `absent` loses them.
+   * `completed_at` is the session's own end time, not now(), so the hours land
+   * in the month the training actually happened — capped at now() so marking a
+   * future-dated session complete cannot post hours into the future.
+   */
+  async syncCompletions(sessionId: number): Promise<void> {
+    await this.db.run(sql`
+      INSERT INTO user_lesson_completions (user_id, lesson_id, completed_at)
+      SELECT sa.user_id, l.id,
+             LEAST(now(), (s.date::date + s.end_time::time)::timestamptz)
+      FROM session_attendance sa
+      JOIN sessions s ON s.id = sa.session_id
+      JOIN courses c ON c.session_id = s.id
+      JOIN course_modules cm ON cm.course_id = c.id
+      JOIN lessons l ON l.module_id = cm.id AND l.content_type = 'session'
+      WHERE sa.session_id = ${sessionId}
+        AND sa.status IN ('present', 'late', 'partial')
+      ON CONFLICT (user_id, lesson_id) DO NOTHING
+    `);
+
+    await this.db.run(sql`
+      DELETE FROM user_lesson_completions ulc
+      USING lessons l, course_modules cm, courses c
+      WHERE ulc.lesson_id = l.id
+        AND l.module_id = cm.id
+        AND cm.course_id = c.id
+        AND c.session_id = ${sessionId}
+        AND l.content_type = 'session'
+        AND NOT EXISTS (
+          SELECT 1 FROM session_attendance sa
+          WHERE sa.session_id = ${sessionId}
+            AND sa.user_id = ulc.user_id
+            AND sa.status IN ('present', 'late', 'partial')
+        )
+    `);
+  }
+
+  /** Reopening a completed session withdraws every learner's credit. */
+  async clearCompletions(sessionId: number): Promise<void> {
+    await this.db.run(sql`
+      DELETE FROM user_lesson_completions ulc
+      USING lessons l, course_modules cm, courses c
+      WHERE ulc.lesson_id = l.id
+        AND l.module_id = cm.id
+        AND cm.course_id = c.id
+        AND c.session_id = ${sessionId}
+        AND l.content_type = 'session'
+    `);
+  }
+
   /* ── Learner ── */
 
   async listForLearner(userId: number) {
@@ -180,10 +420,12 @@ export class SessionsRepository {
              s.start_time, s.end_time, s.trainer, s.venue_url,
              s.description, s.status, s.capacity,
              c.name AS course_name,
+             tc.id AS training_course_id,
              sa.status AS attendance_status
       FROM session_roster sr
       JOIN sessions s ON s.id = sr.session_id
       LEFT JOIN courses c ON c.id = s.course_id
+      LEFT JOIN courses tc ON tc.session_id = s.id
       LEFT JOIN session_attendance sa
         ON sa.session_id = sr.session_id AND sa.user_id = sr.user_id
       WHERE sr.user_id = ${userId}

@@ -104,6 +104,13 @@ export class CertificatesService {
         userId,
         courseId,
       );
+
+      // A live/offline session's training never auto-issues. Its single lesson
+      // is completed for the learner by the admin marking the session done, so
+      // auto-issue would mint a certificate for merely turning up. Certificates
+      // for sessions are the admin's own call, through issueManually().
+      if (snapshot.sessionId !== null) return null;
+
       const verdict = this.evaluate(snapshot);
       if (!verdict.complete) return null;
 
@@ -139,6 +146,9 @@ export class CertificatesService {
    * A revoked certificate for the same learner and course is reinstated rather
    * than duplicated, because UNIQUE(user_id, course_id) means there can only
    * ever be one.
+   *
+   * This is also the ONLY route to a certificate for a session's training:
+   * auto-issue declines those on purpose (see autoIssue).
    */
   async issueManually(userId: number, courseId: number, adminId: number) {
     const learner = await this.repository.findLearner(userId);

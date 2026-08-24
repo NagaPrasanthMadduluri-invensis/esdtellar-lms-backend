@@ -14,10 +14,13 @@ import { ConfigService } from '@nestjs/config';
 import { toWebVtt } from './captions.util';
 import { MediaRepository } from './media.repository';
 import { R2StorageService } from './storage/r2-storage.service';
-import type {
-  ConfirmVideoDto,
-  PresignVideoDto,
-  VideoProgressDto,
+import {
+  EXTENSION_FOR_DOCUMENT_TYPE,
+  RESOURCE_TYPE_FOR_MIME,
+  type ConfirmVideoDto,
+  type PresignDocumentDto,
+  type PresignVideoDto,
+  type VideoProgressDto,
 } from './dto/media.dto';
 
 const EXTENSION_FOR_TYPE: Record<string, string> = {
@@ -40,6 +43,113 @@ export class MediaService {
   /* ─────────────────────────────────────────────
      Admin — video
   ───────────────────────────────────────────── */
+
+  /* ─────────────────────────────────────────────
+     Admin — documents
+
+     Documents are uploaded the same way video is: the browser PUTs straight to
+     R2 with a presigned URL, so the bytes never pass through this process.
+
+     Unlike video there is no `confirm` endpoint. A document is attached by the
+     lesson save itself (its key travels in the lesson payload) or by creating a
+     resource row — both of which call `verifyUploadedDocument` first, so a key
+     can only ever be stored once the bytes genuinely exist. Splitting it into a
+     second round trip would buy nothing: there is no duration to report back,
+     which is the only reason video needs one.
+  ───────────────────────────────────────────── */
+
+  /**
+   * A URL for a document upload, minted before the lesson exists.
+   *
+   * The admin form uploads as soon as a file is chosen — the same reason
+   * `presignStandaloneVideoUpload` exists — so the key lands under
+   * `lessons/documents/incoming/` and is claimed by whichever lesson or
+   * resource row is saved next.
+   */
+  async presignDocumentUpload(dto: PresignDocumentDto) {
+    const maxBytes = this.config.get<number>('media.documentMaxBytes') ?? 0;
+    if (maxBytes > 0 && dto.sizeBytes > maxBytes) {
+      throw new UnprocessableEntityException(
+        `Document is ${formatBytes(dto.sizeBytes)}, which exceeds the ` +
+          `${formatBytes(maxBytes)} limit.`,
+      );
+    }
+
+    const extension =
+      EXTENSION_FOR_DOCUMENT_TYPE[dto.contentType] ??
+      extname(dto.filename).replace('.', '').toLowerCase() ??
+      'pdf';
+
+    const key = `lessons/documents/incoming/${randomUUID()}.${extension}`;
+    const uploadUrl = await this.storage.presignUpload(key, dto.contentType);
+
+    return {
+      uploadUrl,
+      key,
+      expiresIn: this.config.get<number>('media.uploadUrlTtlSeconds') ?? 3600,
+    };
+  }
+
+  /**
+   * Proves an uploaded document is really there before anything records its key.
+   *
+   * Without this a failed or abandoned upload would leave a lesson pointing at
+   * nothing, and the learner would find out instead of the admin. The prefix
+   * check is the same guard the video confirm makes: a key from outside the
+   * document upload paths cannot be smuggled in to repoint a lesson at some
+   * other object in the bucket.
+   */
+  async verifyUploadedDocument(key: string): Promise<{
+    sizeBytes: number;
+    contentType: string | null;
+  }> {
+    const allowed =
+      key.startsWith('lessons/documents/incoming/') ||
+      /^lessons\/\d+\/(document|resource)\//.test(key);
+    if (!allowed) {
+      throw new BadRequestException('Object key is not a lesson document.');
+    }
+
+    const stat = await this.storage.statObject(key);
+    if (!stat) {
+      throw new UnprocessableEntityException(
+        'Upload not found in storage. The document may not have finished uploading.',
+      );
+    }
+
+    const maxBytes = this.config.get<number>('media.documentMaxBytes') ?? 0;
+    if (maxBytes > 0 && stat.size > maxBytes) {
+      // A presigned PUT cannot cap its own body, so the real size is only
+      // knowable here. Drop the object rather than keep one over the limit.
+      await this.storage.deleteObject(key);
+      throw new UnprocessableEntityException(
+        `Uploaded document is ${formatBytes(stat.size)}, which exceeds the ` +
+          `${formatBytes(maxBytes)} limit.`,
+      );
+    }
+
+    return { sizeBytes: stat.size, contentType: stat.contentType };
+  }
+
+  /** A short-lived URL to read a stored document. */
+  async documentUrl(key: string): Promise<string> {
+    return this.storage.presignDownload(key);
+  }
+
+  /**
+   * Best-effort removal of a stored object, for when a document is replaced or
+   * a resource deleted. Never throws into the caller (§8.4) — an orphaned
+   * object costs storage, a thrown error costs the admin their edit.
+   */
+  async discardObject(key: string | null | undefined): Promise<void> {
+    if (!key) return;
+    await this.storage.deleteObject(key);
+  }
+
+  /** The coarse kind a mime type maps to, for the icon and label. */
+  resourceTypeForMime(mime: string | null | undefined): string {
+    return RESOURCE_TYPE_FOR_MIME[(mime ?? '').toLowerCase()] ?? 'other';
+  }
 
   /**
    * Step 1 of the upload: hand back a URL the browser PUTs the file to.
@@ -253,7 +363,9 @@ export class MediaService {
       if (!lesson) return;
 
       await Promise.all(
-        [lesson.video_key, lesson.caption_key]
+        // The document key belongs here too: it is a lesson-owned object, and
+        // once the row is gone nothing records which key was its.
+        [lesson.video_key, lesson.caption_key, lesson.document_key]
           .filter((key): key is string => Boolean(key))
           .map((key) => this.storage.deleteObject(key)),
       );
@@ -311,6 +423,42 @@ export class MediaService {
    * where one is known, so a tampered payload cannot inflate a learner's hours
    * beyond the length of the material.
    */
+  /**
+   * A link to one supporting resource.
+   *
+   * An uploaded resource is signed per request, like every other stored object
+   * — the key never reaches the browser. A linked one is just its URL, but it
+   * still goes through here so entitlement is checked the same way either way.
+   */
+  async learnerResourceUrl(resourceId: number, userId: number) {
+    const resource = await this.repository.findResourceForLearner(
+      resourceId,
+      userId,
+    );
+    if (!resource) throw new NotFoundException('Resource not found');
+
+    if (!resource.assigned && !resource.is_preview) {
+      throw new ForbiddenException('You are not enrolled in this course.');
+    }
+
+    if (resource.source === 'link') {
+      return { url: resource.url, expiresIn: 0, title: resource.title };
+    }
+
+    if (!resource.file_key) {
+      throw new NotFoundException('Resource file is missing.');
+    }
+
+    const ttl = this.config.get<number>('media.videoUrlTtlSeconds') ?? 900;
+    return {
+      url: await this.storage.presignDownload(resource.file_key, ttl),
+      expiresIn: ttl,
+      title: resource.title,
+      fileName: resource.file_name,
+      mimeType: resource.mime_type,
+    };
+  }
+
   async saveVideoProgress(
     lessonId: number,
     userId: number,
@@ -346,12 +494,25 @@ export class MediaService {
       throw new ForbiddenException('You are not enrolled in this course.');
     }
 
+    // A document lesson has no video, so the player never asks — but the same
+    // endpoint is what hands back a link to the document, and it must be signed
+    // per request for exactly the reason the video URL is.
     if (!lesson.video_key) {
+      const documentUrl = lesson.document_key
+        ? await this.storage.presignDownload(lesson.document_key)
+        : null;
+
       return {
         lessonId: lesson.id,
         videoUrl: null,
         captionUrl: null,
-        expiresIn: 0,
+        expiresIn: documentUrl
+          ? (this.config.get<number>('media.videoUrlTtlSeconds') ?? 900)
+          : 0,
+        documentUrl,
+        documentName: lesson.document_name,
+        documentMime: lesson.document_mime,
+        documentSizeBytes: lesson.document_size_bytes,
       };
     }
 

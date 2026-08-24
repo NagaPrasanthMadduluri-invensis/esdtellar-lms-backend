@@ -88,6 +88,9 @@ export class ScormService {
         packageDir,
         courseId: body.course_id ? Number(body.course_id) : null,
         createdBy: adminId,
+        // Null when the manifest declares no typicalLearningTime, which is the
+        // signal the lesson form uses to ask the admin for it instead.
+        durationMinutes: parsed.durationMinutes,
       });
 
       return { package: created };

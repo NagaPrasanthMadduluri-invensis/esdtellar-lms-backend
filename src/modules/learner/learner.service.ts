@@ -11,6 +11,9 @@ import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
 import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
+// A pure derivation, not a service: "in progress" has to mean the same thing on
+// the course card as it does in the calendar, so both read the one function.
+import { displayStatus } from '@/modules/sessions/session-status.util';
 
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import {
@@ -93,7 +96,7 @@ export class LearnerService {
       const total = Number(row.total_lessons);
       const done = Number(row.completed_lessons);
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-      const dueDate = addDays(row.assigned_at, DUE_DAYS);
+      const dueDate = this.dueDateFor(row);
       const types = typesByCourse.get(Number(row.course_id)) ?? [];
       const meta = {
         contentType: contentTypeOf(types),
@@ -141,6 +144,10 @@ export class LearnerService {
           // them — only the detail endpoint used to return it.
           thumbnail_url: row.thumbnail_url,
         },
+        // Null for a catalog course. Present when this training IS a live or
+        // in-person session, so the card can show when and where it is held
+        // instead of a progress bar the learner cannot move themselves.
+        session: this.sessionOf(row),
       };
     });
 
@@ -204,7 +211,8 @@ export class LearnerService {
         last_activity: row.last_activity ?? null,
         status: isDone ? 'completed' : done > 0 ? 'in-progress' : 'assigned',
         progress_percentage: pct,
-        due_date: addDays(row.assigned_at, DUE_DAYS),
+        due_date: this.dueDateFor(row),
+        session: this.sessionOf(row),
         course: {
           id: row.course_id,
           name: row.name,
@@ -426,10 +434,12 @@ export class LearnerService {
 
     // One query gives every lesson in the course with its completion state,
     // which is enough to resolve both the lock check and the next-lesson link.
-    const all = await this.repository.lessonsWithStatus(
-      Number(lesson.course_id),
-      userId,
-    );
+    // The resources come alongside it rather than after — they are needed on
+    // the same render, so there is no reason to wait for one before the other.
+    const [all, resources] = await Promise.all([
+      this.repository.lessonsWithStatus(Number(lesson.course_id), userId),
+      this.repository.lessonResources(lessonId),
+    ]);
 
     const inModule = all.filter(
       (l) => Number(l.module_id) === Number(lesson.module_id),
@@ -476,8 +486,49 @@ export class LearnerService {
         has_captions: Boolean(lesson.caption_key),
         scorm_package_id: lesson.scorm_package_id ?? null,
         duration_minutes: lesson.duration_minutes,
+        // Present when the lesson IS a document. The file itself is fetched
+        // from GET /learner/lessons/:id/media, which signs it per request —
+        // the storage key never reaches the browser.
+        has_document: Boolean(lesson.document_key),
+        document_name: lesson.document_name ?? null,
+        document_mime: lesson.document_mime ?? null,
+        document_size_bytes: lesson.document_size_bytes ?? null,
         module: { title: lesson.module_title },
+        // Present only for a session lesson: there is nothing to play, so the
+        // page shows when, where and with whom instead.
+        session: lesson.session_id
+          ? {
+              id: Number(lesson.session_id),
+              type: lesson.session_type,
+              trainer: lesson.trainer,
+              venue: lesson.venue_url,
+              date: lesson.session_date,
+              date_label: formatDate(lesson.session_date),
+              start_time: lesson.start_time,
+              end_time: lesson.end_time,
+              status: displayStatus({
+                status: lesson.session_status,
+                date: lesson.session_date,
+                start_time: lesson.start_time,
+              }),
+            }
+          : null,
       },
+      // Supporting material, listed alongside whatever the lesson's primary
+      // content is. Reference only: resources carry no duration and never
+      // reach learning hours, so the lesson still counts exactly once (§10.4).
+      resources: resources.map((resource) => ({
+        id: Number(resource.id),
+        title: resource.title,
+        resource_type: resource.resource_type,
+        source: resource.source,
+        file_name: resource.file_name,
+        file_size_bytes: resource.file_size_bytes,
+        mime_type: resource.mime_type,
+        // A link is safe to hand over directly; an upload is not — it is
+        // fetched from /learner/resources/:id/url on click.
+        url: resource.source === 'link' ? resource.url : null,
+      })),
       progress_status: current?.progress_status ?? 'not_started',
       next_lesson_id: next ? Number(next.id) : null,
     };
@@ -492,11 +543,71 @@ export class LearnerService {
       throw new ForbiddenException('Access denied');
     }
 
+    // Attending a session is not something the learner can assert. The admin
+    // marks the session completed, and attendance decides who is credited —
+    // without this, any learner could POST here and award themselves the
+    // training, its learning hours and its completion.
+    if (lesson.content_type === 'session') {
+      throw new ForbiddenException(
+        'This training is completed by your trainer once the session has ' +
+          'taken place.',
+      );
+    }
+
     await this.repository.markLessonComplete(userId, lessonId);
     // Finishing the last lesson can complete the course. Best-effort.
     await this.certificates.autoIssue(userId, courseId);
 
     return { message: 'Lesson marked as complete' };
+  }
+
+  /* ─────────────────────────────────────────────
+     Session trainings
+  ───────────────────────────────────────────── */
+
+  /**
+   * A live session's deadline is the day it is held; every other course keeps
+   * the generic window after assignment. Without this a session scheduled for
+   * next week reported a due date a month out, and it stayed in "upcoming
+   * deadlines" long after the sitting had passed.
+   */
+  private dueDateFor(row: {
+    assigned_at: string;
+    session_date?: string | null;
+  }): string {
+    return row.session_date || addDays(row.assigned_at, DUE_DAYS);
+  }
+
+  /** The session behind a training card, or null for a catalog course. */
+  private sessionOf(row: {
+    session_id?: number | null;
+    session_type?: string | null;
+    trainer?: string | null;
+    venue_url?: string | null;
+    session_department?: string | null;
+    session_date?: string | null;
+    session_start_time?: string | null;
+    session_end_time?: string | null;
+    session_status?: string | null;
+  }) {
+    if (!row.session_id) return null;
+
+    return {
+      id: Number(row.session_id),
+      type: row.session_type ?? 'ILT',
+      trainer: row.trainer ?? null,
+      venue: row.venue_url ?? null,
+      department: row.session_department ?? null,
+      date: row.session_date ?? null,
+      date_label: formatDate(row.session_date ?? ''),
+      start_time: row.session_start_time ?? null,
+      end_time: row.session_end_time ?? null,
+      status: displayStatus({
+        status: row.session_status,
+        date: row.session_date,
+        start_time: row.session_start_time,
+      }),
+    };
   }
 
   /* ─────────────────────────────────────────────

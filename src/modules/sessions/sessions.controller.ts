@@ -61,13 +61,26 @@ export class AdminSessionsController {
     return this.sessions.roster(sessionId);
   }
 
+  /**
+   * Manual completion — the only thing that credits the training, its learning
+   * hours and the learner's completion metrics. Separate from the edit route so
+   * the action is explicit at the call site rather than a status field an admin
+   * could change while editing something else.
+   */
+  @Post(':sessionId/complete')
+  @HttpCode(HttpStatus.OK)
+  async complete(@Param('sessionId', ParseIntPipe) sessionId: number) {
+    return this.sessions.complete(sessionId);
+  }
+
   @Post(':sessionId/roster')
   @HttpCode(HttpStatus.OK)
   async addToRoster(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: RosterAddDto,
+    @CurrentUser() admin: AuthenticatedUser,
   ) {
-    return this.sessions.addToRoster(sessionId, dto);
+    return this.sessions.addToRoster(sessionId, admin.userId, dto);
   }
 
   @Delete(':sessionId/roster')

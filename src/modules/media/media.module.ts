@@ -4,7 +4,10 @@ import {
   AdminMediaController,
   AdminMediaUploadController,
 } from './admin-media.controller';
-import { LearnerMediaController } from './learner-media.controller';
+import {
+  LearnerMediaController,
+  LearnerResourcesController,
+} from './learner-media.controller';
 import { MediaRepository } from './media.repository';
 import { MediaService } from './media.service';
 import { R2StorageService } from './storage/r2-storage.service';
@@ -20,6 +23,7 @@ import { R2StorageService } from './storage/r2-storage.service';
     AdminMediaUploadController,
     AdminMediaController,
     LearnerMediaController,
+    LearnerResourcesController,
   ],
   providers: [MediaService, MediaRepository, R2StorageService],
   exports: [MediaService],

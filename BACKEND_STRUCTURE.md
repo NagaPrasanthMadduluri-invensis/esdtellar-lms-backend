@@ -480,6 +480,7 @@ lesson complete. Log the reason; do not propagate.
 | `UPLOAD_URL_TTL_SECONDS` | no (3600) | Lifetime of a presigned upload URL |
 | `VIDEO_MAX_BYTES` | no (2 GiB) | Rejected at presign, re-checked against R2 on confirm |
 | `CAPTION_MAX_BYTES` | no (2 MiB) | Caption uploads are proxied, so this is a real body cap |
+| `DOCUMENT_MAX_BYTES` | no (100 MiB) | Cap for an uploaded document — a slide deck, not a feature film |
 | `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
 
 The R2 variables are **not** boot-required: without them the API starts, logs a
@@ -508,6 +509,114 @@ Update this table with every module you move.
 | scorm attempt history (admin view) | 1 | `server/src/modules/scorm` |
 | lesson video progress (learner) | 1 | `server/src/modules/media` |
 | manual certificate issue (admin) | 1 | `server/src/modules/certificates` |
+| session completion (admin) | 1 | `server/src/modules/sessions` |
+| document upload + lesson resources | 4 | `server/src/modules/media`, `server/src/modules/courses` |
+
+### 10.8 Lesson content: video, SCORM, document — plus resources
+
+A lesson has **one primary content**, and may carry any number of **supporting
+resources** alongside it.
+
+| Primary | Stored as | Duration comes from |
+|---|---|---|
+| video | R2 object (`lessons.video_key`) or a URL | the file's own metadata, read in the browser on upload; typed for a linked video |
+| SCORM | package (`lessons.scorm_package_id`) | the manifest's LOM `typicalLearningTime`, when it declares one — **otherwise typed, and mandatory** |
+| document | R2 object (`lessons.document_key`) **or** an external URL (`content_url`) | **typed, and mandatory** — a document has no runtime to read |
+| quiz | the question set | n/a |
+
+Documents are PDF, Word, PowerPoint, Excel, txt or csv (`ALLOWED_DOCUMENT_TYPES`
+in `modules/media/dto/media.dto.ts`). Upload and link are equivalent options,
+and every resource type offers both.
+
+**Resources** (`lesson_resources`) are reference material: slides beside a
+video, a handout beside a live session, a link to a spec. Each is an uploaded
+file or an external link. They deliberately carry **no duration** and never
+reach learning hours — which is what keeps exactly one number per lesson
+counting.
+
+`CoursesService.assertLessonContent` is the one place both rules live. It runs
+on create and on update, against the MERGED state rather than the incoming
+patch, so a partial edit cannot leave a lesson invalid. The browser checks the
+same things first, so the admin hears it before pressing Save rather than as a
+422 afterwards — but the API is what enforces it.
+
+**Learning hours are unchanged by any of this (§10.4).** Video still counts
+measured watch seconds, SCORM its own reported `total_time`, and everything
+else — documents included — the declared duration on completion. A document
+falls into "everything else" with no new code path, which is precisely why the
+declared duration was made mandatory: null would silently make the lesson worth
+zero hours.
+
+Uploads use one presign endpoint (`POST /admin/media/document/presign`) for
+both a primary document and a resource — the key is claimed by whichever row is
+saved next. There is no `confirm` step, unlike video: the save itself calls
+`MediaService.verifyUploadedDocument` (HeadObject, size cap, prefix check)
+before recording a key, and there is no duration to report back, which is the
+only reason video needs a second round trip.
+
+Learners never see a storage key. A primary document is signed by
+`GET /learner/lessons/:id/media`; a resource by
+`GET /learner/resources/:id/url`, minted per click so an unopened resource
+costs nothing and no link outlives its TTL inside a cached response. Both check
+entitlement from the verified JWT in a single query (§7.1).
+
+### 10.7 Sessions are trainings, not calendar events
+
+A live/offline session IS a course assignment. Every row in `sessions` owns a
+**companion course** — `courses.session_id` points back at the session — holding
+one module and one lesson of `content_type = 'session'` whose
+`duration_minutes` is the scheduled length of the sitting.
+
+| Session event | What is written |
+|---|---|
+| session created / edited | training course + lesson created / kept in step |
+| learner added to roster | `user_course_assignments` row (this is the course card) |
+| learner removed from roster | assignment and any completion withdrawn |
+| admin marks session completed | `user_lesson_completions` for those who attended |
+| session deleted | everything above, by `ON DELETE CASCADE` |
+
+**Why a companion course rather than a parallel concept.** My Courses,
+progress, the dashboards, the leaderboard, learning hours and certificates all
+already read assignments and lesson completions. Teaching each of them about
+sessions would have meant six new code paths and a second definition of both
+"an hour of learning" and "completed" — exactly what §10.4 and §10.5 exist to
+prevent. This way a session is picked up by definitions that already work.
+
+Three rules are load-bearing:
+
+- **Only attendance credits a learner.** `present`, `late` and `partial` earn
+  the training and its hours; `absent` and `excused` do not. Completing a
+  session whose attendance has never been marked is refused with a 422 rather
+  than succeeding with no effect. Editing attendance afterwards moves the credit
+  in **both** directions (`SessionsRepository.syncCompletions`), so a learner
+  marked absent by mistake does not keep the training for good.
+- **The learner cannot complete a session lesson.** `LearnerService.completeLesson`
+  throws 403 for `content_type = 'session'`; otherwise any learner could POST
+  their own attendance credit and hours.
+- **Session trainings never auto-issue a certificate.**
+  `CertificatesService.autoIssue` returns null when the completion snapshot
+  carries a `sessionId`. A session's single lesson is completed *for* the
+  learner, so auto-issue would mint a certificate for turning up. Admins issue
+  them by hand through `issueManually()`.
+
+`in_progress` is **derived, not stored**. `sessions.status` records only what a
+human decided (created upcoming, cancelled, marked completed); the API adds
+`display_status` from the scheduled start time
+(`modules/sessions/session-status.util.ts`). No scheduler to run, nothing to
+drift if the process is down at the moment a session begins, and no fifth value
+in the column for the admin form to round-trip. A session past its end time and
+still not marked completed keeps reading `in_progress` on purpose — completion
+is outstanding admin work, not something the clock should close.
+
+The course editor refuses to touch a session training (422 from
+`CoursesService`): renaming it would be overwritten on the next session save,
+and deleting its module or lesson — or adding a second one — would leave
+"completed" unable to mean 100%. It stays visible in the admin course list,
+badged, for tracking.
+
+Migration `0005_session_trainings.sql` adds the column and backfills every
+existing session, roster and completed-session attendance record as set-based
+`INSERT ... SELECT`s.
 
 ### 10.6 Handing over a clean install
 

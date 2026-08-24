@@ -24,6 +24,7 @@ import {
   CreateLessonDto,
   ModuleDto,
   UpdateLessonDto,
+  CreateResourceDto,
 } from './dto/course.dto';
 
 @Controller('admin/courses')
@@ -151,9 +152,39 @@ export class LessonsController {
     return this.courses.updateLesson(lessonId, dto);
   }
 
+  /* ── Supporting resources ──
+     Attached to a lesson alongside its primary content. Reference material —
+     they carry no duration and never reach learning hours. */
+
+  @Get(':lessonId/resources')
+  async listResources(@Param('lessonId', ParseIntPipe) lessonId: number) {
+    return this.courses.listResources(lessonId);
+  }
+
+  @Post(':lessonId/resources')
+  @HttpCode(HttpStatus.CREATED)
+  async createResource(
+    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Body() dto: CreateResourceDto,
+  ) {
+    return this.courses.createResource(lessonId, dto);
+  }
+
   @Delete(':lessonId')
   async remove(@Param('lessonId', ParseIntPipe) lessonId: number) {
     return this.courses.removeLesson(lessonId);
+  }
+}
+
+/** Its own base path so a resource id is never read as an assignment id. */
+@Controller('admin/resources')
+@Roles('admin')
+export class ResourcesController {
+  constructor(private readonly courses: CoursesService) {}
+
+  @Delete(':resourceId')
+  async remove(@Param('resourceId', ParseIntPipe) resourceId: number) {
+    return this.courses.removeResource(resourceId);
   }
 }
 

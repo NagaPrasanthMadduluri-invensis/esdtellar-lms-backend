@@ -160,9 +160,22 @@ export class LearnerRepository {
       passing_score: number | null;
       has_passed: number | null;
       assessment_count: number;
+      session_id: number | null;
+      session_type: string | null;
+      trainer: string | null;
+      venue_url: string | null;
+      session_department: string | null;
+      session_date: string | null;
+      session_start_time: string | null;
+      session_end_time: string | null;
+      session_status: string | null;
     }>(sql`
       SELECT uca.id AS enrollment_id, uca.assigned_at,
         c.id AS course_id, c.name, c.description, c.thumbnail_url,
+        c.session_id,
+        s.session_type, s.trainer, s.venue_url, s.department AS session_department,
+        s.date AS session_date, s.start_time AS session_start_time,
+        s.end_time AS session_end_time, s.status AS session_status,
         (SELECT COUNT(*) FROM lessons l
          JOIN course_modules cm ON cm.id = l.module_id
          WHERE cm.course_id = c.id AND l.is_active = 1
@@ -195,6 +208,7 @@ export class LearnerRepository {
          WHERE a.course_id = c.id AND a.is_active = 1) AS assessment_count
       FROM user_course_assignments uca
       JOIN courses c ON c.id = uca.course_id AND c.is_active = 1
+      LEFT JOIN sessions s ON s.id = c.session_id
       WHERE uca.user_id = ${userId}
       ORDER BY uca.assigned_at ASC
     `);
@@ -328,25 +342,72 @@ export class LearnerRepository {
       content_url: string | null;
       video_key: string | null;
       caption_key: string | null;
+      document_key: string | null;
+      document_name: string | null;
+      document_mime: string | null;
+      document_size_bytes: number | null;
       scorm_package_id: number | null;
       duration_minutes: number | null;
       sort_order: number;
       module_title: string;
       course_id: number;
       module_sort_order: number;
+      session_id: number | null;
+      session_type: string | null;
+      trainer: string | null;
+      venue_url: string | null;
+      session_date: string | null;
+      start_time: string | null;
+      end_time: string | null;
+      session_status: string | null;
     }>(sql`
       SELECT l.*, cm.title AS module_title, cm.course_id,
-             cm.sort_order AS module_sort_order
+             cm.sort_order AS module_sort_order,
+             s.id AS session_id, s.session_type, s.trainer, s.venue_url,
+             s.date AS session_date, s.start_time, s.end_time,
+             s.status AS session_status
       FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
+      LEFT JOIN courses c ON c.id = cm.course_id
+      LEFT JOIN sessions s ON s.id = c.session_id
       WHERE l.id = ${lessonId} AND l.is_active = 1
     `);
     return rows[0] ?? null;
   }
 
+  /**
+   * A lesson's supporting resources.
+   *
+   * `file_key` is deliberately NOT selected: the learner never sees a storage
+   * key. Opening an uploaded resource goes through
+   * `GET /learner/resources/:id/url`, which signs it per click.
+   */
+  async lessonResources(lessonId: number) {
+    return this.db.all<{
+      id: number;
+      title: string;
+      resource_type: string;
+      source: string;
+      file_name: string | null;
+      file_size_bytes: number | null;
+      mime_type: string | null;
+      url: string | null;
+    }>(sql`
+      SELECT id, title, resource_type, source, file_name, file_size_bytes,
+             mime_type, url
+      FROM lesson_resources
+      WHERE lesson_id = ${lessonId}
+      ORDER BY sort_order, id
+    `);
+  }
+
   async findLessonCourse(lessonId: number) {
-    const rows = await this.db.all<{ id: number; course_id: number }>(sql`
-      SELECT l.id, cm.course_id FROM lessons l
+    const rows = await this.db.all<{
+      id: number;
+      course_id: number;
+      content_type: string;
+    }>(sql`
+      SELECT l.id, l.content_type, cm.course_id FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.id = ${lessonId}
     `);

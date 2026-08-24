@@ -15,7 +15,11 @@ import { FileInterceptor } from '@nestjs/platform-express';
 
 import { Roles } from '@/common/decorators';
 
-import { ConfirmVideoDto, PresignVideoDto } from './dto/media.dto';
+import {
+  ConfirmVideoDto,
+  PresignDocumentDto,
+  PresignVideoDto,
+} from './dto/media.dto';
 import { MediaService } from './media.service';
 
 /**
@@ -42,6 +46,17 @@ export class AdminMediaUploadController {
   @HttpCode(HttpStatus.OK)
   async presignVideo(@Body() dto: PresignVideoDto) {
     return this.media.presignStandaloneVideoUpload(dto);
+  }
+
+  /**
+   * The same, for a document — a lesson's primary file or a supporting
+   * resource. One endpoint for both: the key is claimed by whichever row is
+   * saved next, so the upload does not need to know which it will become.
+   */
+  @Post('document/presign')
+  @HttpCode(HttpStatus.OK)
+  async presignDocument(@Body() dto: PresignDocumentDto) {
+    return this.media.presignDocumentUpload(dto);
   }
 }
 

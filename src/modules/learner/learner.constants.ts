@@ -27,6 +27,10 @@ export const POINTS_PER_PASSED_ASSESSMENT = 50;
  */
 export function modeOf(contentTypes: string[]): string {
   const types = new Set(contentTypes.map((t) => (t || '').toLowerCase()));
+  // A session training is checked first: it is the one content type the learner
+  // does not work through on their own, so it should never be described as
+  // self-paced even if the admin later adds material alongside it.
+  if (types.has('session')) return 'Instructor-led session';
   if (types.has('scorm')) return 'eLearning / SCORM';
   if (types.has('video')) return 'Video / Self-paced';
   if (types.has('pdf')) return 'Reading / Documents';
@@ -37,6 +41,7 @@ export function modeOf(contentTypes: string[]): string {
 /** The dominant content type for a course card, from the same source. */
 export function contentTypeOf(contentTypes: string[]): string {
   const types = new Set(contentTypes.map((t) => (t || '').toLowerCase()));
+  if (types.has('session')) return 'SESSION';
   if (types.has('scorm')) return 'SCORM';
   if (types.has('video')) return 'VIDEO';
   if (types.has('pdf')) return 'PDF';
