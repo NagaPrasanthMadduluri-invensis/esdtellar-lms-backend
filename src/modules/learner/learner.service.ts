@@ -329,7 +329,10 @@ export class LearnerService {
   async courseDetail(scope: OrgScope, userId: number, courseId: number) {
     const assignment = await this.repository.findAssignment(scope, userId, courseId);
     if (!assignment) {
-      throw new ForbiddenException('You are not enrolled in this course');
+      // 404, not 403. A 403 distinguishes "exists in another org but is not
+      // yours" from "does not exist", which is exactly the existence oracle
+      // §4.4 forbids — and the sibling lesson() path already returns 404.
+      throw new NotFoundException('Course not found');
     }
 
     const course = await this.repository.findActiveCourse(courseId);

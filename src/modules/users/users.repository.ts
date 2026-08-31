@@ -326,7 +326,7 @@ export class UsersRepository {
    * `scorm_packages.course_id`. Both are covered, and `DISTINCT` collapses a
    * package that is embedded in more than one lesson of the same course.
    */
-  async scormPackagesForAssignedCourses(userId: number) {
+  async scormPackagesForAssignedCourses(scope: OrgScope, userId: number) {
     return this.db.all<{
       id: number;
       course_id: number;
@@ -350,6 +350,11 @@ export class UsersRepository {
       JOIN lessons l ON l.scorm_package_id = sp.id AND l.is_active = 1
       JOIN course_modules cm ON cm.id = l.module_id AND cm.is_active = 1
       WHERE sp.is_active = 1
+        -- scorm_packages is a query ROOT here, reached over the
+        -- activity->content edge that no composite FK guards (§3.5). Without
+        -- this predicate another org's package title and version leak into
+        -- this response.
+        AND ${orgScope('sp', scope)}
         AND cm.course_id IN (
           SELECT course_id FROM user_course_assignments WHERE user_id = ${userId}
         )

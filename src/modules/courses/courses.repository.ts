@@ -505,7 +505,29 @@ export class CoursesRepository {
       JOIN lessons l ON l.scorm_package_id = st.package_id
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE cm.course_id = ${courseId} AND ${orgScope('cm', scope)}
+        -- Defence in depth: the activity->content edge has no composite FK, so
+        -- scope the package too rather than trusting the lesson link (§3.5).
+        AND ${orgScope('sp', scope)}
     `);
+  }
+
+  /**
+   * Narrows caller-supplied learner ids to this organization.
+   *
+   * The composite FK would reject a foreign id, but as a constraint violation:
+   * one bad id fails the whole batch and the admin gets "Internal server
+   * error" instead of a 404 that names the problem.
+   */
+  async filterLearnersInOrg(
+    scope: OrgScope,
+    userIds: number[],
+  ): Promise<number[]> {
+    if (userIds.length === 0) return [];
+    const rows = await this.db.all<{ id: number }>(sql`
+      SELECT id FROM users
+      WHERE id = ANY(${userIds}) AND role = 'learner' AND ${orgScope('users', scope)}
+    `);
+    return rows.map((r) => Number(r.id));
   }
 
   async findLearner(scope: OrgScope, userId: number) {

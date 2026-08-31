@@ -58,6 +58,7 @@ export const sessionRoster = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index('idx_session_roster_org_session').on(table.organizationId, table.sessionId),
     unique('session_roster_session_user_unique').on(
       table.sessionId,
       table.userId,
@@ -91,6 +92,7 @@ export const sessionAttendance = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index('idx_session_attendance_org_session').on(table.organizationId, table.sessionId),
     unique('session_attendance_session_user_unique').on(
       table.sessionId,
       table.userId,

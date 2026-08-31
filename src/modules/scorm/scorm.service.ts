@@ -168,13 +168,26 @@ export class ScormService {
 
     let targets = dto.user_ids ?? [];
     if (targets.length === 0 && dto.department) {
+      // Already scoped — a department query cannot reach another org.
       targets = await this.repository.learnerIdsInDepartment(scope, dto.department);
+    } else if (targets.length > 0) {
+      // user_ids come from the request body, so they are caller-supplied and
+      // must be filtered to this organization. The composite FK would reject
+      // a foreign id, but as a constraint violation — one bad id would fail
+      // the whole batch and answer the admin with "Internal server error"
+      // instead of a 404 naming the problem.
+      const inScope = await this.repository.filterLearnersInOrg(scope, targets);
+      if (inScope.length !== targets.length) {
+        throw new NotFoundException('One or more learners were not found');
+      }
+      targets = inScope;
     }
     if (targets.length === 0) {
       throw new UnprocessableEntityException('No learners specified');
     }
 
-    const assigned = await this.repository.assignLearners(scope, 
+    const assigned = await this.repository.assignLearners(
+      scope,
       packageId,
       targets,
       adminId,
@@ -213,6 +226,27 @@ export class ScormService {
       packageDir,
       isAdmin,
     );
+  }
+
+  /**
+   * Throws unless `packageId` is visible to this organization.
+   *
+   * `lessons.scorm_package_id` is a SINGLE-column foreign key: the composite
+   * set deliberately excludes the activity/content edge, because SQL cannot
+   * express "my org OR the platform org" (§3.5). So the database CANNOT catch
+   * a cross-org reference here, and this is the enforcement point the spec
+   * names (§3.4, §6.15).
+   *
+   * Without it an admin who cannot SEE another org's package can still
+   * REFERENCE it by guessing an id, and its title and version then surface
+   * through the learner-detail read.
+   */
+  async assertPackageInScope(
+    scope: OrgScope,
+    packageId: number,
+  ): Promise<void> {
+    const pkg = await this.repository.findPackage(scope, packageId);
+    if (!pkg) throw new NotFoundException('SCORM package not found');
   }
 
   /* ── Learner ── */

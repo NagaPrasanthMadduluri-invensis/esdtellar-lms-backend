@@ -91,6 +91,7 @@ export const lessonVideoProgress = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index('idx_video_progress_org_user').on(table.organizationId, table.userId),
     unique('lesson_video_progress_user_lesson_unique').on(
       table.userId,
       table.lessonId,

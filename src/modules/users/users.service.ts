@@ -136,7 +136,7 @@ export class UsersService {
       this.repository.lessonProgressByCourse(userId),
       this.repository.assessmentsForAssignedCourses(userId),
       this.repository.attemptsForAssignedCourses(userId),
-      this.repository.scormPackagesForAssignedCourses(userId),
+      this.repository.scormPackagesForAssignedCourses(scope, userId),
       this.repository.scormAttemptsForAssignedCourses(userId),
     ]);
 

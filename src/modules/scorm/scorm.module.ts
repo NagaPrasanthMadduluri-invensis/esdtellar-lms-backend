@@ -26,6 +26,6 @@ import { ScormStorageService } from './storage/scorm-storage.service';
     EntitlementCache,
     ScormContentMiddleware,
   ],
-  exports: [ScormStorageService, ScormContentMiddleware],
+  exports: [ScormStorageService, ScormContentMiddleware, ScormService],
 })
 export class ScormModule {}

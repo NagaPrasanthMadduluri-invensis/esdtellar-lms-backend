@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { ScormModule } from '../scorm/scorm.module';
 import { MediaModule } from '@/modules/media/media.module';
 
 import {
@@ -13,7 +14,7 @@ import { CoursesRepository } from './courses.repository';
 import { CoursesService } from './courses.service';
 
 @Module({
-  imports: [MediaModule],
+  imports: [MediaModule, ScormModule],
   controllers: [
     CoursesController,
     ModulesController,

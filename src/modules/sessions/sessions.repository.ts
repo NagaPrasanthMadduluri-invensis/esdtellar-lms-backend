@@ -243,25 +243,46 @@ export class SessionsRepository {
       notes?: string | null;
     }[],
   ): Promise<void> {
-    for (const record of records) {
-      await this.db.run(sql`
-        INSERT INTO session_attendance
-          (organization_id, session_id, user_id, status, join_time, notes,
-           marked_by, is_locked, marked_at)
-        SELECT u.organization_id, ${sessionId}, ${record.user_id},
-               ${record.status ?? null}, ${record.join_time ?? null},
-               ${record.notes ?? null}, ${adminId}, ${isLocked}, now()
-        FROM users u
-        WHERE u.id = ${record.user_id} AND ${orgScope('u', scope)}
-        ON CONFLICT(session_id, user_id) DO UPDATE SET
-          status    = excluded.status,
-          join_time = excluded.join_time,
-          notes     = excluded.notes,
-          marked_by = excluded.marked_by,
-          is_locked = excluded.is_locked,
-          marked_at = excluded.marked_at
-      `);
-    }
+    if (records.length === 0) return;
+
+    // One statement for the whole roster. This was a loop with an `await`
+    // inside — one round trip per learner, so a 200-person roster cost 200
+    // (§7.1).
+    //
+    // Built as a parameterised VALUES list via sql.join, NOT as
+    // `${array}::int[]`: Drizzle binds a JS array as a scalar, so the array
+    // form fails with `malformed array literal`. Every value here is still a
+    // bound parameter — nothing is interpolated as text.
+    //
+    // The org is taken from each learner's OWN row via the join, never from
+    // the caller, and the join is org-scoped — so a learner outside this
+    // organization simply produces no row rather than an error or a
+    // cross-tenant write.
+    const values = sql.join(
+      records.map(
+        (r) =>
+          sql`(${r.user_id}::int, ${r.status ?? null}::text, ${r.join_time ?? null}::text, ${r.notes ?? null}::text)`,
+      ),
+      sql`, `,
+    );
+
+    await this.db.run(sql`
+      INSERT INTO session_attendance
+        (organization_id, session_id, user_id, status, join_time, notes,
+         marked_by, is_locked, marked_at)
+      SELECT u.organization_id, ${sessionId}, v.user_id,
+             v.status, v.join_time, v.notes,
+             ${adminId}, ${isLocked}, now()
+      FROM (VALUES ${values}) AS v(user_id, status, join_time, notes)
+      JOIN users u ON u.id = v.user_id AND ${orgScope('u', scope)}
+      ON CONFLICT(session_id, user_id) DO UPDATE SET
+        status    = excluded.status,
+        join_time = excluded.join_time,
+        notes     = excluded.notes,
+        marked_by = excluded.marked_by,
+        is_locked = excluded.is_locked,
+        marked_at = excluded.marked_at
+    `);
   }
 
   /* ── Training course ───────────────────────────────────────────────────

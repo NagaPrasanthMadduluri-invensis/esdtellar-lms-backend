@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
+import { ScormService } from '../scorm/scorm.service';
 import { MediaService } from '@/modules/media/media.service';
 
 import { CoursesRepository } from './courses.repository';
@@ -34,6 +35,7 @@ export class CoursesService {
   constructor(
     private readonly repository: CoursesRepository,
     private readonly media: MediaService,
+    private readonly scorm: ScormService,
   ) {}
 
   /* ── Lesson content rules ── */
@@ -408,6 +410,15 @@ export class CoursesService {
       durationMinutes: dto.duration_minutes ?? null,
     });
 
+    // A SCORM package referenced from the body must belong to this
+    // organization. `lessons.scorm_package_id` is a single-column FK, so the
+    // database will happily accept another org's id (§3.5) — an admin who
+    // cannot see a package could otherwise embed it by guessing, and its title
+    // and version would surface through the learner-detail read (§3.4, §6.15).
+    if (isScorm && dto.scorm_package_id != null) {
+      await this.scorm.assertPackageInScope(scope, dto.scorm_package_id);
+    }
+
     const lesson = await this.repository.createLesson({
       organizationId: scope.organizationId,
       moduleId,
@@ -481,6 +492,14 @@ export class CoursesService {
         : null,
       durationMinutes,
     });
+
+    // Same guard as createLesson: an id arriving in the body is caller-supplied
+    // and the single-column FK cannot reject a foreign org's package (§3.4).
+    // Only checked when the request actually supplies one — an unchanged
+    // lesson keeps a package that was already validated on the way in.
+    if (isScorm && dto.scorm_package_id != null) {
+      await this.scorm.assertPackageInScope(scope, dto.scorm_package_id);
+    }
 
     const lesson = await this.repository.updateLesson(scope, lessonId, {
       title: dto.title ?? current.title,
@@ -585,9 +604,19 @@ export class CoursesService {
       throw new NotFoundException('Course not found');
     }
 
+    // user_ids are caller-supplied; narrow them to this org so a foreign id
+    // is a 404 rather than a constraint violation surfacing as a 500.
+    const inScope = await this.repository.filterLearnersInOrg(
+      scope,
+      dto.user_ids,
+    );
+    if (inScope.length !== dto.user_ids.length) {
+      throw new NotFoundException('One or more learners were not found');
+    }
+
     const assigned = await this.repository.createAssignments({
       organizationId: scope.organizationId,
-      userIds: dto.user_ids,
+      userIds: inScope,
       courseId,
       assignedBy: adminId,
       dueDate: dto.due_date ?? null,

@@ -169,6 +169,7 @@ export const lessonResources = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index('idx_lesson_resources_org_lesson').on(table.organizationId, table.lessonId),
     // Always read for one lesson, in display order.
     index('idx_lesson_resources_lesson').on(table.lessonId, table.sortOrder),
   ],

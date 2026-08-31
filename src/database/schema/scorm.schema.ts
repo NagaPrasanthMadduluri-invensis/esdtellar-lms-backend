@@ -41,7 +41,8 @@ export const scormPackages = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (table) => [index('idx_scorm_packages_active').on(table.isActive)],
+  (table) => [
+    index('idx_scorm_packages_org_active').on(table.organizationId, table.isActive),index('idx_scorm_packages_active').on(table.isActive)],
 );
 
 export const userScormAssignments = pgTable(
@@ -62,6 +63,7 @@ export const userScormAssignments = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index('idx_scorm_assignments_org_user').on(table.organizationId, table.userId),
     unique('user_scorm_assignments_user_package_unique').on(
       table.userId,
       table.packageId,
@@ -100,6 +102,7 @@ export const scormTracking = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index('idx_scorm_tracking_org_user').on(table.organizationId, table.userId),
     unique('scorm_tracking_user_package_unique').on(
       table.userId,
       table.packageId,
@@ -149,6 +152,7 @@ export const scormAttempts = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index('idx_scorm_attempts_org_user').on(table.organizationId, table.userId),
     index('idx_scorm_attempts_user_package').on(table.userId, table.packageId),
     index('idx_scorm_attempts_package').on(table.packageId),
   ],

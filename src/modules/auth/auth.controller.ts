@@ -1,5 +1,6 @@
 import {
   Body,
+  UnprocessableEntityException,
   Controller,
   Get,
   HttpCode,
@@ -50,15 +51,23 @@ export class AuthController {
   }
 
   @Public()
+  /**
+   * Retired with multi-tenancy, deliberately kept as an explicit refusal rather
+   * than deleted. A public signup form cannot know which organization a learner
+   * belongs to, and any default would place a stranger inside a real customer's
+   * tenant. Accounts are created by an organization's admin.
+   *
+   * The body is intentionally NOT bound to RegisterDto: the global
+   * ValidationPipe runs before the handler, so a DTO here would answer a
+   * caller with a field-validation error instead of the actual reason.
+   */
+  @Public()
   @Post('register')
-  @HttpCode(HttpStatus.CREATED)
-  async register(
-    @Body() dto: RegisterDto,
-    @Res({ passthrough: true }) response: Response,
-  ): Promise<{ user: PublicUser }> {
-    const { user, token } = await this.authService.register(dto);
-    this.setAuthCookie(response, token);
-    return { user };
+  @HttpCode(HttpStatus.UNPROCESSABLE_ENTITY)
+  register(): never {
+    throw new UnprocessableEntityException(
+      'Self-service registration is unavailable. Ask your organization admin to add your account.',
+    );
   }
 
   @Get('me')
