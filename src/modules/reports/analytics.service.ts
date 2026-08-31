@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
+import type { OrgScope } from '@/database/org-scope';
+
 import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
 
 import {
@@ -70,8 +72,8 @@ export class AnalyticsService {
    * their own dashboard. Both sides now read LearningHoursService, and there is
    * one definition of an hour rather than two.
    */
-  private async minutes() {
-    return this.hours.minutesByUser();
+  private async minutes(scope: OrgScope) {
+    return this.hours.minutesByUser(scope);
   }
 
   /** Shared status rule — identical across every analytics endpoint. */
@@ -82,15 +84,15 @@ export class AnalyticsService {
     return 'not-started';
   }
 
-  private stats() {
-    return this.repository.learnerStats(this.thisMonth, this.lastMonth);
+  private stats(scope: OrgScope) {
+    return this.repository.learnerStats(scope, this.thisMonth, this.lastMonth);
   }
 
-  async dashboard() {
+  async dashboard(scope: OrgScope) {
     const [counts, recentUsers, recentAttempts] = await Promise.all([
-      this.repository.dashboardCounts(),
-      this.repository.recentUsers(),
-      this.repository.recentAttempts(),
+      this.repository.dashboardCounts(scope),
+      this.repository.recentUsers(scope),
+      this.repository.recentAttempts(scope),
     ]);
 
     return {
@@ -105,12 +107,12 @@ export class AnalyticsService {
     };
   }
 
-  async reports() {
-    const minutesByUser = await this.minutes();
+  async reports(scope: OrgScope) {
+    const minutesByUser = await this.minutes(scope);
     const [rows, activeCourses, overdueCourses] = await Promise.all([
-      this.stats(),
-      this.repository.activeCourseCount(),
-      this.repository.overdueCourseCount(),
+      this.stats(scope),
+      this.repository.activeCourseCount(scope),
+      this.repository.overdueCourseCount(scope),
     ]);
 
     const learners = rows.map((row) => ({
@@ -233,8 +235,8 @@ export class AnalyticsService {
     };
   }
 
-  async departments() {
-    const rows = await this.stats();
+  async departments(scope: OrgScope) {
+    const rows = await this.stats(scope);
 
     const names = [
       ...new Set(rows.map((r) => r.department).filter(Boolean)),
@@ -289,11 +291,11 @@ export class AnalyticsService {
    * about who was first. Hours and completion are still shown as columns,
    * because they are useful to an admin, but they no longer decide the order.
    */
-  async leaderboard() {
+  async leaderboard(scope: OrgScope) {
     const [{ byPoints, recognition }, statRows, minutesByUser] = await Promise.all([
-      this.leaderboard_.standings(),
-      this.stats(),
-      this.minutes(),
+      this.leaderboard_.standings(scope),
+      this.stats(scope),
+      this.minutes(scope),
     ]);
 
     const statsById = new Map(statRows.map((r) => [Number(r.id), r]));
@@ -345,14 +347,14 @@ export class AnalyticsService {
     };
   }
 
-  async learningHours() {
+  async learningHours(scope: OrgScope) {
     const [rows, weeklyRaw, enrollmentRows, completionRows, minutesByUser] =
       await Promise.all([
-      this.stats(),
-      this.repository.weeklyHoursByDepartment(this.thisMonth),
-      this.repository.weeklyEnrollments(this.thisMonth),
-      this.repository.weeklyCompletions(this.thisMonth),
-      this.minutes(),
+      this.stats(scope),
+      this.repository.weeklyHoursByDepartment(scope, this.thisMonth),
+      this.repository.weeklyEnrollments(scope, this.thisMonth),
+      this.repository.weeklyCompletions(scope, this.thisMonth),
+      this.minutes(scope),
     ]);
 
     const learners = rows
@@ -442,15 +444,15 @@ export class AnalyticsService {
   }
 
   /** Row data for the four export sheets. */
-  async exportRows() {
+  async exportRows(scope: OrgScope) {
     const [rows, courseRows, topScorers, courseMinutes] = await Promise.all([
-      this.stats(),
-      this.repository.courseProgressPerLearner(),
-      this.repository.topScorers(20),
+      this.stats(scope),
+      this.repository.courseProgressPerLearner(scope),
+      this.repository.topScorers(scope, 20),
       // "Time Spent" was a literal em dash on every row. It comes from the same
       // calculation as every other hours figure, so the report agrees with the
       // dashboards instead of inventing a fourth number.
-      this.hours.minutesByUserAndCourse(),
+      this.hours.minutesByUserAndCourse(scope),
     ]);
 
     const byLearner = new Map<number, typeof courseRows>();

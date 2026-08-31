@@ -6,6 +6,8 @@ import type { NextFunction, Request, Response } from 'express';
 
 import { TokenService } from '@/modules/auth/token.service';
 
+import { createOrgScope } from '@/database/org-scope';
+
 import { EntitlementCache } from './entitlement-cache';
 import { ScormService } from './scorm.service';
 import { ScormStorageService } from './storage/scorm-storage.service';
@@ -114,7 +116,13 @@ export class ScormContentMiddleware {
     let entitled = this.entitlementCache.get(payload.userId, packageDir);
     if (entitled === null) {
       try {
+        // This middleware runs BEFORE the Nest guard chain, so there is no
+        // TenantContextGuard to have minted a scope and no @CurrentScope() to
+        // read. The organizationId comes from the same verified JWT the guard
+        // would have used — never from the URL, a header, or anything the
+        // caller controls.
         entitled = await this.scormService.isEntitledToPackageDir(
+          createOrgScope(payload.organizationId),
           payload.userId,
           packageDir,
           isAdmin,

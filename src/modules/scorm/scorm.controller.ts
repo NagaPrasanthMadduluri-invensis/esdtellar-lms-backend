@@ -13,10 +13,12 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import { AssignScormDto, SaveTrackingDto, UnassignScormDto } from './dto/scorm.dto';
+import type { OrgScope } from '@/database/org-scope';
+
 import { ScormService } from './scorm.service';
 
 @Controller('admin/scorm')
@@ -25,8 +27,8 @@ export class AdminScormController {
   constructor(private readonly scorm: ScormService) {}
 
   @Get()
-  async list() {
-    return this.scorm.listPackages();
+  async list(@CurrentScope() scope: OrgScope) {
+    return this.scorm.listPackages(scope);
   }
 
   /**
@@ -38,48 +40,58 @@ export class AdminScormController {
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('scorm_package'))
   async upload(
+    @CurrentScope() scope: OrgScope,
     @UploadedFile() file: Express.Multer.File,
     @Body() body: { title?: string; course_id?: string },
     @CurrentUser() admin: AuthenticatedUser,
   ) {
-    return this.scorm.upload(file, admin.userId, body);
+    return this.scorm.upload(scope, file, admin.userId, body);
   }
 
   @Get(':packageId')
-  async detail(@Param('packageId', ParseIntPipe) packageId: number) {
-    return this.scorm.packageDetail(packageId);
+  async detail(
+    @CurrentScope() scope: OrgScope,
+    @Param('packageId', ParseIntPipe) packageId: number,
+  ) {
+    return this.scorm.packageDetail(scope, packageId);
   }
 
   /** Attempt history + per-question breakdown for one learner. */
   @Get(':packageId/attempts/:userId')
   async learnerAttempts(
+    @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
     @Param('userId', ParseIntPipe) userId: number,
   ) {
-    return this.scorm.learnerAttempts(packageId, userId);
+    return this.scorm.learnerAttempts(scope, packageId, userId);
   }
 
   @Delete(':packageId')
-  async remove(@Param('packageId', ParseIntPipe) packageId: number) {
-    return this.scorm.deletePackage(packageId);
+  async remove(
+    @CurrentScope() scope: OrgScope,
+    @Param('packageId', ParseIntPipe) packageId: number,
+  ) {
+    return this.scorm.deletePackage(scope, packageId);
   }
 
   @Post(':packageId/assign')
   @HttpCode(HttpStatus.OK)
   async assign(
+    @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
     @Body() dto: AssignScormDto,
     @CurrentUser() admin: AuthenticatedUser,
   ) {
-    return this.scorm.assign(packageId, admin.userId, dto);
+    return this.scorm.assign(scope, packageId, admin.userId, dto);
   }
 
   @Delete(':packageId/assign')
   async unassign(
+    @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
     @Body() dto: UnassignScormDto,
   ) {
-    return this.scorm.unassign(packageId, dto.user_id);
+    return this.scorm.unassign(scope, packageId, dto.user_id);
   }
 }
 
@@ -92,33 +104,39 @@ export class LearnerScormController {
   constructor(private readonly scorm: ScormService) {}
 
   @Get()
-  async list(@CurrentUser() user: AuthenticatedUser) {
-    return this.scorm.listForLearner(user.userId);
+  async list(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.scorm.listForLearner(scope, user.userId);
   }
 
   @Get(':packageId')
   async detail(
+    @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.scorm.packageForLearner(user.userId, packageId);
+    return this.scorm.packageForLearner(scope, user.userId, packageId);
   }
 
   @Get(':packageId/tracking')
   async tracking(
+    @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.scorm.tracking(user.userId, packageId);
+    return this.scorm.tracking(scope, user.userId, packageId);
   }
 
   @Post(':packageId/tracking')
   @HttpCode(HttpStatus.OK)
   async saveTracking(
+    @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
     @Body() dto: SaveTrackingDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.scorm.saveTracking(user.userId, packageId, dto);
+    return this.scorm.saveTracking(scope, user.userId, packageId, dto);
   }
 }

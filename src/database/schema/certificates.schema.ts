@@ -11,8 +11,8 @@ export const certificates = pgTable(
   'certificates',
   {
     id: serial('id').primaryKey(),
-    /** Activity: the certified user's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Activity: the certified user's org. */
+    organizationId: integer('organization_id').notNull(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),

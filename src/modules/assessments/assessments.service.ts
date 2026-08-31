@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import type { OrgScope } from '@/database/org-scope';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
 
 import { AssessmentsRepository } from './assessments.repository';
@@ -23,8 +24,8 @@ export class AssessmentsService {
 
   /* ── Admin ── */
 
-  async listAll() {
-    const rows = (await this.repository.listAll()) as Record<string, unknown>[];
+  async listAll(scope: OrgScope) {
+    const rows = (await this.repository.listAll(scope)) as Record<string, unknown>[];
     return {
       assessments: rows.map((row) => ({
         ...row,
@@ -33,12 +34,19 @@ export class AssessmentsService {
     };
   }
 
-  async listByCourse(courseId: number) {
-    return { assessments: await this.repository.listByCourse(courseId) };
+  async listByCourse(scope: OrgScope, courseId: number) {
+    return { assessments: await this.repository.listByCourse(scope, courseId) };
   }
 
-  async create(courseId: number, dto: AssessmentDto) {
+  async create(scope: OrgScope, courseId: number, dto: AssessmentDto) {
+    // A foreign course id must 404 rather than let an assessment be created
+    // that claims this org while pointing at another org's course (§5.3).
+    if (!(await this.repository.courseExists(scope, courseId))) {
+      throw new NotFoundException('Course not found');
+    }
+
     const assessment = await this.repository.createAssessment({
+      organizationId: scope.organizationId,
       courseId,
       title: dto.title,
       description: dto.description ?? null,
@@ -53,17 +61,17 @@ export class AssessmentsService {
    * completion keys off attached assessments, detaching one can make a course
    * completable that was not before.
    */
-  async setAttached(assessmentId: number, attached: boolean) {
-    const assessment = await this.repository.setAttached(assessmentId, attached);
+  async setAttached(scope: OrgScope, assessmentId: number, attached: boolean) {
+    const assessment = await this.repository.setAttached(scope, assessmentId, attached);
     if (!assessment) throw new NotFoundException('Assessment not found');
     return { assessment, attached };
   }
 
-  async update(assessmentId: number, dto: AssessmentDto) {
-    const current = await this.repository.findById(assessmentId);
+  async update(scope: OrgScope, assessmentId: number, dto: AssessmentDto) {
+    const current = await this.repository.findById(scope, assessmentId);
     if (!current) throw new NotFoundException('Assessment not found');
 
-    const assessment = await this.repository.updateAssessment(assessmentId, {
+    const assessment = await this.repository.updateAssessment(scope, assessmentId, {
       title: dto.title,
       description: dto.description ?? null,
       passingScore: dto.passing_score ?? 60,
@@ -78,19 +86,19 @@ export class AssessmentsService {
     return { assessment };
   }
 
-  async remove(assessmentId: number) {
-    await this.repository.deleteAssessment(assessmentId);
+  async remove(scope: OrgScope, assessmentId: number) {
+    await this.repository.deleteAssessment(scope, assessmentId);
     return { message: 'Assessment deleted' };
   }
 
   /** Admin view — includes the answer key. */
-  async getForAdmin(assessmentId: number) {
-    const assessment = await this.repository.findById(assessmentId);
+  async getForAdmin(scope: OrgScope, assessmentId: number) {
+    const assessment = await this.repository.findById(scope, assessmentId);
     if (!assessment) throw new NotFoundException('Assessment not found');
 
     const [questions, options] = await Promise.all([
-      this.repository.listQuestions(assessmentId),
-      this.repository.listOptionsForAssessment(assessmentId, true),
+      this.repository.listQuestions(scope, assessmentId),
+      this.repository.listOptionsForAssessment(scope, assessmentId, true),
     ]);
 
     return {
@@ -99,57 +107,66 @@ export class AssessmentsService {
     };
   }
 
-  async addQuestion(assessmentId: number, dto: QuestionDto) {
+  async addQuestion(scope: OrgScope, assessmentId: number, dto: QuestionDto) {
+    // A foreign assessment id must 404 rather than let a question be created
+    // against it (§5.3).
+    const assessment = await this.repository.findById(scope, assessmentId);
+    if (!assessment) throw new NotFoundException('Assessment not found');
+
     this.assertHasCorrectOption(dto);
 
-    const sortOrder = await this.repository.nextQuestionSortOrder(assessmentId);
+    const sortOrder = await this.repository.nextQuestionSortOrder(
+      scope,
+      assessmentId,
+    );
     const question = await this.repository.createQuestion({
+      organizationId: scope.organizationId,
       assessmentId,
       questionText: dto.question_text,
       marks: dto.marks || 1,
       sortOrder,
     });
 
-    await this.repository.replaceOptions(question.id, dto.options);
+    await this.repository.replaceOptions(scope, question.id, dto.options);
 
     return {
       question: {
         ...question,
-        options: await this.repository.listOptionsForQuestion(question.id),
+        options: await this.repository.listOptionsForQuestion(scope, question.id),
       },
     };
   }
 
-  async updateQuestion(questionId: number, dto: QuestionDto) {
+  async updateQuestion(scope: OrgScope, questionId: number, dto: QuestionDto) {
     this.assertHasCorrectOption(dto);
 
-    const question = await this.repository.updateQuestion(questionId, {
+    const question = await this.repository.updateQuestion(scope, questionId, {
       questionText: dto.question_text,
       marks: dto.marks || 1,
     });
     if (!question) throw new NotFoundException('Question not found');
 
-    await this.repository.replaceOptions(questionId, dto.options);
+    await this.repository.replaceOptions(scope, questionId, dto.options);
 
     return {
       question: {
         ...question,
-        options: await this.repository.listOptionsForQuestion(questionId),
+        options: await this.repository.listOptionsForQuestion(scope, questionId),
       },
     };
   }
 
-  async removeQuestion(questionId: number) {
-    await this.repository.deleteQuestion(questionId);
+  async removeQuestion(scope: OrgScope, questionId: number) {
+    await this.repository.deleteQuestion(scope, questionId);
     return { message: 'Question deleted' };
   }
 
   /* ── Learner ── */
 
-  async listForLearner(userId: number) {
+  async listForLearner(scope: OrgScope, userId: number) {
     const [rows, attempts] = await Promise.all([
-      this.repository.listForLearner(userId),
-      this.repository.attemptsForLearner(userId),
+      this.repository.listForLearner(scope, userId),
+      this.repository.attemptsForLearner(scope, userId),
     ]);
 
     const attemptsByAssessment = new Map<number, typeof attempts>();
@@ -187,16 +204,19 @@ export class AssessmentsService {
   }
 
   /** Learner view — options are returned WITHOUT the answer key. */
-  async getForLearner(assessmentId: number, userId: number) {
-    const assessment = await this.repository.findActiveWithCourse(assessmentId);
+  async getForLearner(scope: OrgScope, assessmentId: number, userId: number) {
+    const assessment = await this.repository.findActiveWithCourse(
+      scope,
+      assessmentId,
+    );
     if (!assessment) throw new NotFoundException('Assessment not found');
 
-    await this.assertAssigned(userId, Number(assessment.course_id));
+    await this.assertAssigned(scope, userId, Number(assessment.course_id));
 
     const [questions, options, attemptCount] = await Promise.all([
-      this.repository.listQuestions(assessmentId),
-      this.repository.listOptionsForAssessment(assessmentId, false),
-      this.repository.countAttempts(userId, assessmentId),
+      this.repository.listQuestions(scope, assessmentId),
+      this.repository.listOptionsForAssessment(scope, assessmentId, false),
+      this.repository.countAttempts(scope, userId, assessmentId),
     ]);
 
     return {
@@ -206,23 +226,29 @@ export class AssessmentsService {
     };
   }
 
-  async listAttempts(assessmentId: number, userId: number) {
-    return { attempts: await this.repository.attemptsFor(userId, assessmentId) };
+  async listAttempts(scope: OrgScope, assessmentId: number, userId: number) {
+    return {
+      attempts: await this.repository.attemptsFor(scope, userId, assessmentId),
+    };
   }
 
   /** Grades server-side against the stored answer key. */
   async submitAttempt(
+    scope: OrgScope,
     assessmentId: number,
     userId: number,
     dto: SubmitAttemptDto,
   ) {
-    const assessment = await this.repository.findActiveWithCourse(assessmentId);
+    const assessment = await this.repository.findActiveWithCourse(
+      scope,
+      assessmentId,
+    );
     if (!assessment) throw new NotFoundException('Assessment not found');
 
     const courseId = Number(assessment.course_id);
-    await this.assertAssigned(userId, courseId);
+    await this.assertAssigned(scope, userId, courseId);
 
-    const key = await this.repository.answerKey(assessmentId);
+    const key = await this.repository.answerKey(scope, assessmentId);
 
     let score = 0;
     const scored = dto.answers.map((answer) => {
@@ -244,7 +270,7 @@ export class AssessmentsService {
     const passingScore = Number(assessment.passing_score);
     const isPassed = percentage >= passingScore ? 1 : 0;
 
-    const attemptId = await this.repository.recordAttempt({
+    const attemptId = await this.repository.recordAttempt(scope, {
       userId,
       assessmentId,
       score,
@@ -256,7 +282,7 @@ export class AssessmentsService {
 
     // Passing can complete the course. Best-effort — never breaks the attempt.
     if (isPassed === 1) {
-      await this.certificates.autoIssue(userId, courseId);
+      await this.certificates.autoIssue(scope, userId, courseId);
     }
 
     return {
@@ -309,8 +335,12 @@ export class AssessmentsService {
     }
   }
 
-  private async assertAssigned(userId: number, courseId: number): Promise<void> {
-    if (!(await this.repository.isAssignedToCourse(userId, courseId))) {
+  private async assertAssigned(
+    scope: OrgScope,
+    userId: number,
+    courseId: number,
+  ): Promise<void> {
+    if (!(await this.repository.isAssignedToCourse(scope, userId, courseId))) {
       throw new ForbiddenException('Access denied');
     }
   }

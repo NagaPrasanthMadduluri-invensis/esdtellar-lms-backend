@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+import type { OrgScope } from '@/database/org-scope';
+
 import { toWebVtt } from './captions.util';
 import { MediaRepository } from './media.repository';
 import { R2StorageService } from './storage/r2-storage.service';
@@ -157,8 +159,12 @@ export class MediaService {
    * The bytes never touch this process, so the only work here is authorising
    * the lesson, capping the size, and minting a key.
    */
-  async presignVideoUpload(lessonId: number, dto: PresignVideoDto) {
-    const lesson = await this.repository.findLesson(lessonId);
+  async presignVideoUpload(
+    scope: OrgScope,
+    lessonId: number,
+    dto: PresignVideoDto,
+  ) {
+    const lesson = await this.repository.findLesson(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
     const maxBytes = this.config.get<number>('media.videoMaxBytes') ?? 0;
@@ -229,8 +235,12 @@ export class MediaService {
    * required to sit under this lesson's prefix, so a confirm call cannot
    * repoint a lesson at some other lesson's object.
    */
-  async confirmVideoUpload(lessonId: number, dto: ConfirmVideoDto) {
-    const lesson = await this.repository.findLesson(lessonId);
+  async confirmVideoUpload(
+    scope: OrgScope,
+    lessonId: number,
+    dto: ConfirmVideoDto,
+  ) {
+    const lesson = await this.repository.findLesson(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
     // Either a key minted for this lesson, or one from the pre-creation upload
@@ -265,13 +275,14 @@ export class MediaService {
     }
 
     const previousKey = lesson.video_key;
-    await this.repository.setVideoKey(lessonId, dto.key);
+    await this.repository.setVideoKey(scope, lessonId, dto.key);
 
     // The browser reads this off the file's own metadata, so the stored length
     // is the video's real one rather than a number someone typed. Optional:
     // an older client that does not send it simply leaves the column alone.
     if (dto.durationSeconds !== undefined && dto.durationSeconds !== null) {
       await this.repository.setVideoDuration(
+        scope,
         lessonId,
         Math.round(dto.durationSeconds),
       );
@@ -286,12 +297,12 @@ export class MediaService {
     return { ok: true, key: dto.key, sizeBytes: stat.size };
   }
 
-  async removeVideo(lessonId: number) {
-    const lesson = await this.repository.findLesson(lessonId);
+  async removeVideo(scope: OrgScope, lessonId: number) {
+    const lesson = await this.repository.findLesson(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
     if (!lesson.video_key) return { ok: true };
 
-    await this.repository.setVideoKey(lessonId, null);
+    await this.repository.setVideoKey(scope, lessonId, null);
     await this.storage.deleteObject(lesson.video_key);
     return { ok: true };
   }
@@ -305,10 +316,14 @@ export class MediaService {
    * They are kilobytes, and routing them here is what lets an `.srt` be
    * converted to the WebVTT that `<track>` requires before it is ever stored.
    */
-  async uploadCaptions(lessonId: number, file?: Express.Multer.File) {
+  async uploadCaptions(
+    scope: OrgScope,
+    lessonId: number,
+    file: Express.Multer.File | undefined,
+  ) {
     if (!file) throw new BadRequestException('No caption file was uploaded.');
 
-    const lesson = await this.repository.findLesson(lessonId);
+    const lesson = await this.repository.findLesson(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
     const maxBytes = this.config.get<number>('media.captionMaxBytes') ?? 0;
@@ -331,7 +346,7 @@ export class MediaService {
     await this.storage.putObject(key, Buffer.from(vtt, 'utf8'), 'text/vtt');
 
     const previousKey = lesson.caption_key;
-    await this.repository.setCaptionKey(lessonId, key);
+    await this.repository.setCaptionKey(scope, lessonId, key);
     if (previousKey && previousKey !== key) {
       await this.storage.deleteObject(previousKey);
     }
@@ -339,12 +354,12 @@ export class MediaService {
     return { ok: true, key };
   }
 
-  async removeCaptions(lessonId: number) {
-    const lesson = await this.repository.findLesson(lessonId);
+  async removeCaptions(scope: OrgScope, lessonId: number) {
+    const lesson = await this.repository.findLesson(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
     if (!lesson.caption_key) return { ok: true };
 
-    await this.repository.setCaptionKey(lessonId, null);
+    await this.repository.setCaptionKey(scope, lessonId, null);
     await this.storage.deleteObject(lesson.caption_key);
     return { ok: true };
   }
@@ -357,9 +372,9 @@ export class MediaService {
    * admin from deleting a lesson (§8.4). A missing lesson is not an error here
    * either — the caller may be cleaning up something already gone.
    */
-  async releaseLessonMedia(lessonId: number): Promise<void> {
+  async releaseLessonMedia(scope: OrgScope, lessonId: number): Promise<void> {
     try {
-      const lesson = await this.repository.findLesson(lessonId);
+      const lesson = await this.repository.findLesson(scope, lessonId);
       if (!lesson) return;
 
       await Promise.all(
@@ -379,8 +394,8 @@ export class MediaService {
   }
 
   /** Admin-side view of what a lesson currently has attached. */
-  async adminLessonMedia(lessonId: number) {
-    const lesson = await this.repository.findLesson(lessonId);
+  async adminLessonMedia(scope: OrgScope, lessonId: number) {
+    const lesson = await this.repository.findLesson(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
     const ttl = this.config.get<number>('media.videoUrlTtlSeconds') ?? 900;
@@ -430,8 +445,9 @@ export class MediaService {
    * — the key never reaches the browser. A linked one is just its URL, but it
    * still goes through here so entitlement is checked the same way either way.
    */
-  async learnerResourceUrl(resourceId: number, userId: number) {
+  async learnerResourceUrl(scope: OrgScope, resourceId: number, userId: number) {
     const resource = await this.repository.findResourceForLearner(
+      scope,
       resourceId,
       userId,
     );
@@ -460,11 +476,16 @@ export class MediaService {
   }
 
   async saveVideoProgress(
+    scope: OrgScope,
     lessonId: number,
     userId: number,
     dto: VideoProgressDto,
   ) {
-    const lesson = await this.repository.findLessonForLearner(lessonId, userId);
+    const lesson = await this.repository.findLessonForLearner(
+      scope,
+      lessonId,
+      userId,
+    );
     if (!lesson) throw new NotFoundException('Lesson not found');
     if (!lesson.assigned && !lesson.is_preview) {
       throw new ForbiddenException('You are not enrolled in this course.');
@@ -476,7 +497,7 @@ export class MediaService {
         ? Math.min(dto.watchedSeconds, cap)
         : dto.watchedSeconds;
 
-    await this.repository.upsertVideoProgress({
+    await this.repository.upsertVideoProgress(scope, {
       userId,
       lessonId,
       watchedSeconds: Math.round(watched),
@@ -486,8 +507,12 @@ export class MediaService {
     return { ok: true, watchedSeconds: Math.round(watched) };
   }
 
-  async learnerLessonMedia(lessonId: number, userId: number) {
-    const lesson = await this.repository.findLessonForLearner(lessonId, userId);
+  async learnerLessonMedia(scope: OrgScope, lessonId: number, userId: number) {
+    const lesson = await this.repository.findLessonForLearner(
+      scope,
+      lessonId,
+      userId,
+    );
     if (!lesson) throw new NotFoundException('Lesson not found');
 
     if (!lesson.assigned && !lesson.is_preview) {
@@ -525,7 +550,7 @@ export class MediaService {
       lesson.caption_key
         ? this.storage.presignDownload(lesson.caption_key, ttl)
         : Promise.resolve(null),
-      this.repository.findVideoProgress(userId, lessonId),
+      this.repository.findVideoProgress(scope, userId, lessonId),
     ]);
 
     return {

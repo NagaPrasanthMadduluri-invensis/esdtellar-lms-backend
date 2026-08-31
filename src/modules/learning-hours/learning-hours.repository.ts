@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 
 /** Minutes per learner, split into the periods every hours view needs. */
 export interface MinutesRow {
@@ -68,7 +69,15 @@ export class LearningHoursRepository {
    *                                 for a document is mandatory precisely so
    *                                 this is never silently zero
    */
-  private get lessonSource() {
+  /**
+   * Scoped ONCE here rather than in every caller — `minutesByUser` and
+   * `lessonMinutesByCourse` both interpolate this fragment, and scoping it a
+   * second time in each of them is exactly the kind of drift §10.4 exists to
+   * prevent. `vp` and `c` (lesson_video_progress / user_lesson_completions)
+   * are activity tables, so this is a straight org match — no global-content
+   * IN-list, unlike a courses catalogue read.
+   */
+  private lessonSource(scope: OrgScope) {
     return sql`
       SELECT vp.user_id,
              cm.course_id,
@@ -78,6 +87,7 @@ export class LearningHoursRepository {
       JOIN lessons l ON l.id = vp.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.content_type <> 'scorm'
+        AND ${orgScope('vp', scope)}
 
       UNION ALL
 
@@ -89,6 +99,7 @@ export class LearningHoursRepository {
       JOIN lessons l ON l.id = c.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.content_type <> 'scorm'
+        AND ${orgScope('c', scope)}
         AND NOT EXISTS (
           SELECT 1 FROM lesson_video_progress vp
           WHERE vp.user_id = c.user_id AND vp.lesson_id = c.lesson_id
@@ -113,13 +124,14 @@ export class LearningHoursRepository {
    * regardless of how many learners or lessons exist.
    */
   async minutesByUser(
+    scope: OrgScope,
     thisMonth: string,
     lastMonth: string,
     weeks: readonly Week[],
   ): Promise<MinutesRow[]> {
     const [w1, w2, w3, w4] = weeks;
     return this.db.all<MinutesRow>(sql`
-      WITH source AS (${this.lessonSource})
+      WITH source AS (${this.lessonSource(scope)})
       SELECT u.id AS user_id,
         COALESCE(SUM(s.minutes), 0) AS all_time,
         COALESCE(SUM(CASE WHEN to_char(s.at, 'YYYY-MM') = ${thisMonth}
@@ -136,7 +148,7 @@ export class LearningHoursRepository {
                      THEN s.minutes ELSE 0 END), 0) AS w4
       FROM users u
       LEFT JOIN source s ON s.user_id = u.id
-      WHERE u.role = 'learner'
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
       GROUP BY u.id
     `);
   }
@@ -148,9 +160,9 @@ export class LearningHoursRepository {
    * always sum to their total — a second hand-written query would eventually
    * disagree with the first, which is the failure §10.4 was written after.
    */
-  async lessonMinutesByCourse(): Promise<CourseMinutesRow[]> {
+  async lessonMinutesByCourse(scope: OrgScope): Promise<CourseMinutesRow[]> {
     return this.db.all<CourseMinutesRow>(sql`
-      WITH source AS (${this.lessonSource})
+      WITH source AS (${this.lessonSource(scope)})
       SELECT user_id, course_id, COALESCE(SUM(minutes), 0) AS minutes
       FROM source
       GROUP BY user_id, course_id
@@ -164,7 +176,7 @@ export class LearningHoursRepository {
    * package as well as course so a course that uses the same package in two
    * lessons counts that sitting once — it was one sitting.
    */
-  async scormTimesByCourse(): Promise<CourseScormTimeRow[]> {
+  async scormTimesByCourse(scope: OrgScope): Promise<CourseScormTimeRow[]> {
     return this.db.all<CourseScormTimeRow>(sql`
       SELECT st.user_id, cm.course_id, MAX(st.total_time) AS total_time
       FROM scorm_tracking st
@@ -172,6 +184,7 @@ export class LearningHoursRepository {
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE st.total_time IS NOT NULL
         AND l.is_active = 1 AND cm.is_active = 1
+        AND ${orgScope('st', scope)}
       GROUP BY st.user_id, cm.course_id, st.package_id
     `);
   }
@@ -181,11 +194,12 @@ export class LearningHoursRepository {
    * `HHHH:MM:SS.SS` and 2004 uses an ISO 8601 duration — so the rows come back
    * raw and are parsed in the service.
    */
-  async scormTimes(): Promise<ScormTimeRow[]> {
+  async scormTimes(scope: OrgScope): Promise<ScormTimeRow[]> {
     return this.db.all<ScormTimeRow>(sql`
-      SELECT user_id, total_time, updated_at
-      FROM scorm_tracking
-      WHERE total_time IS NOT NULL
+      SELECT st.user_id, st.total_time, st.updated_at
+      FROM scorm_tracking st
+      WHERE st.total_time IS NOT NULL
+        AND ${orgScope('st', scope)}
     `);
   }
 }

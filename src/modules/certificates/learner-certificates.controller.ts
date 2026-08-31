@@ -1,7 +1,8 @@
 import { Controller, Get, Param, ParseIntPipe } from '@nestjs/common';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import type { OrgScope } from '@/database/org-scope';
 
 import { CertificatesService } from './certificates.service';
 
@@ -16,8 +17,13 @@ export class LearnerCertificatesController {
   constructor(private readonly certificates: CertificatesService) {}
 
   @Get()
-  async list(@CurrentUser() user: AuthenticatedUser) {
-    return { certificates: await this.certificates.listForLearner(user.userId) };
+  async list(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return {
+      certificates: await this.certificates.listForLearner(scope, user.userId),
+    };
   }
 
   /** 403 when the certificate belongs to another learner, 404 when missing. */
@@ -25,9 +31,14 @@ export class LearnerCertificatesController {
   async detail(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
     return {
-      certificate: await this.certificates.getForLearner(id, user.userId),
+      certificate: await this.certificates.getForLearner(
+        scope,
+        id,
+        user.userId,
+      ),
     };
   }
 }

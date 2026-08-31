@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 
 export interface LeaderboardRow {
   id: number;
@@ -41,6 +42,7 @@ export class LeaderboardRepository {
    *    admin saw two different totals.
    */
   async standings(
+    scope: OrgScope,
     thisMonth: string,
   ): Promise<LeaderboardRow[]> {
     return this.db.all<LeaderboardRow>(sql`
@@ -66,7 +68,7 @@ export class LeaderboardRepository {
          WHERE c.user_id = u.id
            AND to_char(c.completed_at, 'YYYY-MM') = ${thisMonth}) AS courses_month
       FROM users u
-      WHERE u.role = 'learner' AND u.is_active = 1
+      WHERE u.role = 'learner' AND u.is_active = 1 AND ${orgScope('u', scope)}
     `);
   }
 }

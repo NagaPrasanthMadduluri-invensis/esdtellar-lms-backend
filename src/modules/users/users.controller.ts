@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-import { Roles } from '@/common/decorators';
+import { CurrentScope, Roles } from '@/common/decorators';
 import { SpreadsheetService } from '@/modules/reports/spreadsheet.service';
 
 import {
@@ -23,6 +23,8 @@ import {
   ToggleActiveDto,
   UpdateUserDto,
 } from './dto/user.dto';
+import type { OrgScope } from '@/database/org-scope';
+
 import { UsersService } from './users.service';
 
 @Controller('admin/users')
@@ -34,14 +36,14 @@ export class UsersController {
   ) {}
 
   @Get()
-  async list() {
-    return this.users.listLearners();
+  async list(@CurrentScope() scope: OrgScope) {
+    return this.users.listLearners(scope);
   }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async create(@Body() dto: CreateUserDto) {
-    return this.users.create(dto);
+  async create(@CurrentScope() scope: OrgScope, @Body() dto: CreateUserDto) {
+    return this.users.create(scope, dto);
   }
 
   /**
@@ -56,8 +58,12 @@ export class UsersController {
   }
 
   @Post('bulk')
-  async bulk(@Body() dto: BulkCreateUsersDto, @Res() response: Response) {
-    const result = await this.users.bulkCreate(dto);
+  async bulk(
+    @CurrentScope() scope: OrgScope,
+    @Body() dto: BulkCreateUsersDto,
+    @Res() response: Response,
+  ) {
+    const result = await this.users.bulkCreate(scope, dto);
     // Preserves the legacy contract: 201 when anything was created, otherwise
     // 422 to signal that the whole upload failed validation.
     response
@@ -66,29 +72,37 @@ export class UsersController {
   }
 
   @Get(':userId')
-  async detail(@Param('userId', ParseIntPipe) userId: number) {
-    return this.users.getLearnerDetail(userId);
+  async detail(
+    @CurrentScope() scope: OrgScope,
+    @Param('userId', ParseIntPipe) userId: number,
+  ) {
+    return this.users.getLearnerDetail(scope, userId);
   }
 
   @Put(':userId')
   async update(
+    @CurrentScope() scope: OrgScope,
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: UpdateUserDto,
   ) {
-    return this.users.update(userId, dto);
+    return this.users.update(scope, userId, dto);
   }
 
   @Patch(':userId')
   async toggle(
+    @CurrentScope() scope: OrgScope,
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: ToggleActiveDto,
   ) {
-    return this.users.setActive(userId, dto.is_active);
+    return this.users.setActive(scope, userId, dto.is_active);
   }
 
   @Delete(':userId')
-  async remove(@Param('userId', ParseIntPipe) userId: number) {
-    return this.users.remove(userId);
+  async remove(
+    @CurrentScope() scope: OrgScope,
+    @Param('userId', ParseIntPipe) userId: number,
+  ) {
+    return this.users.remove(scope, userId);
   }
 }
 
@@ -99,7 +113,7 @@ export class EmployeesController {
   constructor(private readonly users: UsersService) {}
 
   @Get()
-  async list() {
-    return this.users.listEmployees();
+  async list(@CurrentScope() scope: OrgScope) {
+    return this.users.listEmployees(scope);
   }
 }

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 import { sessionRoster, sessions } from '@/database/schema';
 
 export interface AttendanceRow {
@@ -27,7 +28,7 @@ export class SessionsRepository {
     return this.database.db;
   }
 
-  async list() {
+  async list(scope: OrgScope) {
     return this.db.all(sql`
       SELECT s.*, c.name AS course_name,
         tc.id AS training_course_id,
@@ -41,23 +42,24 @@ export class SessionsRepository {
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
       LEFT JOIN courses tc ON tc.session_id = s.id
+      WHERE ${orgScope('s', scope)}
       ORDER BY s.date DESC, s.start_time DESC
     `);
   }
 
-  async findWithCourse(sessionId: number) {
+  async findWithCourse(scope: OrgScope, sessionId: number) {
     const rows = await this.db.all(sql`
       SELECT s.*, c.name AS course_name, tc.id AS training_course_id
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
       LEFT JOIN courses tc ON tc.session_id = s.id
-      WHERE s.id = ${sessionId}
+      WHERE s.id = ${sessionId} AND ${orgScope('s', scope)}
     `);
     return rows[0] ?? null;
   }
 
   /** Status and schedule only — what the completion rules need, nothing more. */
-  async findStatus(sessionId: number) {
+  async findStatus(scope: OrgScope, sessionId: number) {
     const rows = await this.db.all<{
       id: number;
       status: string;
@@ -66,71 +68,121 @@ export class SessionsRepository {
       end_time: string;
     }>(sql`
       SELECT id, status, date, start_time, end_time
-      FROM sessions WHERE id = ${sessionId}
+      FROM sessions WHERE id = ${sessionId} AND ${orgScope('sessions', scope)}
     `);
     return rows[0] ?? null;
   }
 
-  async createSession(values: typeof sessions.$inferInsert): Promise<number> {
+  /** `sessions` is content — it always takes the creating admin's org (§3.3). */
+  async createSession(
+    scope: OrgScope,
+    values: Omit<typeof sessions.$inferInsert, 'organizationId'>,
+  ): Promise<number> {
     const [created] = await this.db
       .insert(sessions)
-      .values(values)
+      .values({ ...values, organizationId: scope.organizationId })
       .returning({ id: sessions.id });
     return created.id;
   }
 
   async updateSession(
+    scope: OrgScope,
     sessionId: number,
     values: Partial<typeof sessions.$inferInsert>,
   ): Promise<void> {
-    await this.db.update(sessions).set(values).where(eq(sessions.id, sessionId));
+    await this.db
+      .update(sessions)
+      .set(values)
+      .where(
+        and(
+          eq(sessions.id, sessionId),
+          eq(sessions.organizationId, scope.organizationId),
+        ),
+      );
   }
 
-  async deleteSession(sessionId: number): Promise<void> {
-    await this.db.delete(sessions).where(eq(sessions.id, sessionId));
+  async deleteSession(scope: OrgScope, sessionId: number): Promise<void> {
+    await this.db
+      .delete(sessions)
+      .where(
+        and(
+          eq(sessions.id, sessionId),
+          eq(sessions.organizationId, scope.organizationId),
+        ),
+      );
   }
 
-  /* ── Roster ── */
+  /* ── Roster ──
+     Every method below takes `sessionId` as an already-untrusted route param.
+     Each re-anchors on `sessions s` filtered by `scope` (rather than trusting a
+     prior check elsewhere), and additionally restricts learners to the same
+     org — a session cannot roster a learner from another tenant. */
 
-  async enrolled(sessionId: number) {
+  async enrolled(scope: OrgScope, sessionId: number) {
     return this.db.all(sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department
       FROM session_roster sr
+      JOIN sessions s ON s.id = sr.session_id
       JOIN users u ON u.id = sr.user_id
       WHERE sr.session_id = ${sessionId} AND u.role = 'learner'
+        AND ${orgScope('s', scope)}
       ORDER BY u.first_name
     `);
   }
 
-  async available(sessionId: number) {
+  async available(scope: OrgScope, sessionId: number) {
     return this.db.all(sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department
       FROM users u
       WHERE u.role = 'learner' AND u.is_active = 1
+        AND ${orgScope('u', scope)}
         AND u.id NOT IN (
           SELECT user_id FROM session_roster WHERE session_id = ${sessionId}
+        )
+        AND EXISTS (
+          SELECT 1 FROM sessions s
+          WHERE s.id = ${sessionId} AND ${orgScope('s', scope)}
         )
       ORDER BY u.first_name
     `);
   }
 
-  async addToRoster(sessionId: number, userId: number): Promise<void> {
-    await this.db
-      .insert(sessionRoster)
-      .values({ sessionId, userId })
-      .onConflictDoNothing();
+  /**
+   * `session_roster` is activity — the row takes the enrolled LEARNER's own
+   * org, read from `users` rather than assumed to equal `scope`. Restricting
+   * the SELECT to `${orgScope('u', scope)}` means a learner from another org
+   * can never be added, so in practice the two coincide — but the value
+   * written is always the learner's own.
+   */
+  async addToRoster(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+  ): Promise<void> {
+    await this.db.run(sql`
+      INSERT INTO session_roster (organization_id, session_id, user_id)
+      SELECT u.organization_id, ${sessionId}, u.id
+      FROM users u
+      WHERE u.id = ${userId} AND u.role = 'learner' AND ${orgScope('u', scope)}
+      ON CONFLICT (session_id, user_id) DO NOTHING
+    `);
   }
 
   /**
    * Bulk department enrolment as ONE statement. The legacy handler selected the
    * matching learners and then inserted them one at a time in a loop.
    */
-  async enrollDepartment(sessionId: number, department: string): Promise<void> {
+  async enrollDepartment(
+    scope: OrgScope,
+    sessionId: number,
+    department: string,
+  ): Promise<void> {
     await this.db.run(sql`
-      INSERT INTO session_roster (session_id, user_id)
-      SELECT ${sessionId}, u.id FROM users u
+      INSERT INTO session_roster (organization_id, session_id, user_id)
+      SELECT u.organization_id, ${sessionId}, u.id FROM users u
       WHERE u.role = 'learner' AND u.is_active = 1
         AND u.department = ${department}
+        AND ${orgScope('u', scope)}
         AND u.id NOT IN (
           SELECT user_id FROM session_roster WHERE session_id = ${sessionId}
         )
@@ -138,35 +190,49 @@ export class SessionsRepository {
     `);
   }
 
-  async removeFromRoster(sessionId: number, userId: number): Promise<void> {
+  async removeFromRoster(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+  ): Promise<void> {
     await this.db
       .delete(sessionRoster)
       .where(
         and(
           eq(sessionRoster.sessionId, sessionId),
           eq(sessionRoster.userId, userId),
+          eq(sessionRoster.organizationId, scope.organizationId),
         ),
       );
   }
 
   /* ── Attendance ── */
 
-  async attendance(sessionId: number): Promise<AttendanceRow[]> {
+  async attendance(scope: OrgScope, sessionId: number): Promise<AttendanceRow[]> {
     return this.db.all<AttendanceRow>(sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department,
              sa.status, sa.join_time, sa.notes, sa.is_locked, sa.marked_by,
              mu.first_name AS marker_first, mu.last_name AS marker_last
       FROM session_roster sr
+      JOIN sessions s ON s.id = sr.session_id
       JOIN users u ON u.id = sr.user_id
       LEFT JOIN session_attendance sa
         ON sa.session_id = sr.session_id AND sa.user_id = sr.user_id
       LEFT JOIN users mu ON mu.id = sa.marked_by
-      WHERE sr.session_id = ${sessionId}
+      WHERE sr.session_id = ${sessionId} AND ${orgScope('s', scope)}
       ORDER BY u.first_name
     `);
   }
 
+  /**
+   * `session_attendance` is activity — the row takes the attending LEARNER's
+   * own org, read from `users` the same way `addToRoster` does. The
+   * `SELECT ... FROM users u WHERE u.id = ... AND scope` shape means marking
+   * attendance for a user outside `scope` silently inserts nothing for that
+   * record, rather than crediting a stranger's org.
+   */
   async upsertAttendance(
+    scope: OrgScope,
     sessionId: number,
     adminId: number,
     isLocked: number,
@@ -180,10 +246,13 @@ export class SessionsRepository {
     for (const record of records) {
       await this.db.run(sql`
         INSERT INTO session_attendance
-          (session_id, user_id, status, join_time, notes, marked_by, is_locked, marked_at)
-        VALUES (${sessionId}, ${record.user_id}, ${record.status ?? null},
-                ${record.join_time ?? null}, ${record.notes ?? null},
-                ${adminId}, ${isLocked}, now())
+          (organization_id, session_id, user_id, status, join_time, notes,
+           marked_by, is_locked, marked_at)
+        SELECT u.organization_id, ${sessionId}, ${record.user_id},
+               ${record.status ?? null}, ${record.join_time ?? null},
+               ${record.notes ?? null}, ${adminId}, ${isLocked}, now()
+        FROM users u
+        WHERE u.id = ${record.user_id} AND ${orgScope('u', scope)}
         ON CONFLICT(session_id, user_id) DO UPDATE SET
           status    = excluded.status,
           join_time = excluded.join_time,
@@ -200,10 +269,14 @@ export class SessionsRepository {
      content_type 'session'. Everything downstream (My Courses, progress,
      learning hours, dashboards, certificates) reads courses/assignments/
      completions, so keeping this in step is the whole integration.
+
+     The training (course + module + lesson) is CONTENT and takes the
+     SESSION's own org — `scope` here, since every caller has already
+     resolved the session within its own scope.
   ────────────────────────────────────────────────────────────────────────── */
 
   /** The session lesson's ids, or null when the training was never built. */
-  async findTraining(sessionId: number) {
+  async findTraining(scope: OrgScope, sessionId: number) {
     const rows = await this.db.all<{
       course_id: number;
       module_id: number;
@@ -213,7 +286,7 @@ export class SessionsRepository {
       FROM courses c
       JOIN course_modules cm ON cm.course_id = c.id
       JOIN lessons l ON l.module_id = cm.id AND l.content_type = 'session'
-      WHERE c.session_id = ${sessionId}
+      WHERE c.session_id = ${sessionId} AND ${orgScope('c', scope)}
       LIMIT 1
     `);
     return rows[0] ?? null;
@@ -227,6 +300,7 @@ export class SessionsRepository {
    * courses_session_unique refuses the second.
    */
   async createTraining(
+    scope: OrgScope,
     sessionId: number,
     values: {
       name: string;
@@ -239,20 +313,20 @@ export class SessionsRepository {
   ): Promise<void> {
     await this.db.run(sql`
       WITH new_course AS (
-        INSERT INTO courses (name, description, is_active, session_id)
-        VALUES (${values.name}, ${values.description}, ${values.isActive},
-                ${sessionId})
+        INSERT INTO courses (organization_id, name, description, is_active, session_id)
+        VALUES (${scope.organizationId}, ${values.name}, ${values.description},
+                ${values.isActive}, ${sessionId})
         ON CONFLICT (session_id) DO NOTHING
         RETURNING id
       ), new_module AS (
-        INSERT INTO course_modules (course_id, title, sort_order, is_active)
-        SELECT id, 'Live session', 0, 1 FROM new_course
+        INSERT INTO course_modules (organization_id, course_id, title, sort_order, is_active)
+        SELECT ${scope.organizationId}, id, 'Live session', 0, 1 FROM new_course
         RETURNING id
       )
-      INSERT INTO lessons (module_id, title, description, content_type,
+      INSERT INTO lessons (organization_id, module_id, title, description, content_type,
                            content_url, duration_minutes, sort_order,
                            is_preview, is_active)
-      SELECT id, ${values.lessonTitle}, ${values.description}, 'session',
+      SELECT ${scope.organizationId}, id, ${values.lessonTitle}, ${values.description}, 'session',
              ${values.contentUrl}, ${values.durationMinutes}, 0, 0, 1
       FROM new_module
     `);
@@ -260,6 +334,7 @@ export class SessionsRepository {
 
   /** Keeps the training in step after the session is edited. */
   async updateTraining(
+    scope: OrgScope,
     sessionId: number,
     values: {
       name: string;
@@ -276,7 +351,7 @@ export class SessionsRepository {
         description = ${values.description},
         is_active = ${values.isActive},
         updated_at = now()
-      WHERE session_id = ${sessionId}
+      WHERE session_id = ${sessionId} AND ${orgScope('courses', scope)}
     `);
 
     await this.db.run(sql`
@@ -289,7 +364,7 @@ export class SessionsRepository {
         AND module_id IN (
           SELECT cm.id FROM course_modules cm
           JOIN courses c ON c.id = cm.course_id
-          WHERE c.session_id = ${sessionId}
+          WHERE c.session_id = ${sessionId} AND ${orgScope('c', scope)}
         )
     `);
   }
@@ -298,25 +373,30 @@ export class SessionsRepository {
    * Roster membership becomes a course assignment — the whole roster in one
    * statement, so adding a department of 200 learners is still a single round
    * trip. Idempotent, so it can follow any roster change.
+   *
+   * `user_course_assignments` is activity — it takes the roster row's own org
+   * (`sr.organization_id`, the learner's), not `scope`.
    */
   async assignRosterToTraining(
+    scope: OrgScope,
     sessionId: number,
     adminId: number,
   ): Promise<void> {
     await this.db.run(sql`
       INSERT INTO user_course_assignments
-        (user_id, course_id, assigned_by, due_date)
-      SELECT sr.user_id, c.id, ${adminId}, s.date
+        (organization_id, user_id, course_id, assigned_by, due_date)
+      SELECT sr.organization_id, sr.user_id, c.id, ${adminId}, s.date
       FROM session_roster sr
       JOIN sessions s ON s.id = sr.session_id
       JOIN courses c ON c.session_id = sr.session_id
-      WHERE sr.session_id = ${sessionId}
+      WHERE sr.session_id = ${sessionId} AND ${orgScope('s', scope)}
       ON CONFLICT (user_id, course_id) DO NOTHING
     `);
   }
 
   /** Leaving the roster withdraws the training and any credit for it. */
   async unassignFromTraining(
+    scope: OrgScope,
     sessionId: number,
     userId: number,
   ): Promise<void> {
@@ -329,6 +409,7 @@ export class SessionsRepository {
         AND c.session_id = ${sessionId}
         AND l.content_type = 'session'
         AND ulc.user_id = ${userId}
+        AND ${orgScope('c', scope)}
     `);
 
     await this.db.run(sql`
@@ -337,19 +418,21 @@ export class SessionsRepository {
       WHERE uca.course_id = c.id
         AND c.session_id = ${sessionId}
         AND uca.user_id = ${userId}
+        AND ${orgScope('c', scope)}
     `);
   }
 
   /** Learners the attendance record credits: present, late or partial. */
-  async attendanceTally(sessionId: number) {
+  async attendanceTally(scope: OrgScope, sessionId: number) {
     const rows = await this.db.all<{ marked: number; credited: number }>(sql`
       SELECT
-        COUNT(*) FILTER (WHERE status IS NOT NULL) AS marked,
+        COUNT(*) FILTER (WHERE sa.status IS NOT NULL) AS marked,
         COUNT(*) FILTER (
-          WHERE status IN ('present', 'late', 'partial')
+          WHERE sa.status IN ('present', 'late', 'partial')
         ) AS credited
-      FROM session_attendance
-      WHERE session_id = ${sessionId}
+      FROM session_attendance sa
+      JOIN sessions s ON s.id = sa.session_id
+      WHERE sa.session_id = ${sessionId} AND ${orgScope('s', scope)}
     `);
     return {
       marked: Number(rows[0]?.marked ?? 0),
@@ -366,11 +449,14 @@ export class SessionsRepository {
    * `completed_at` is the session's own end time, not now(), so the hours land
    * in the month the training actually happened — capped at now() so marking a
    * future-dated session complete cannot post hours into the future.
+   *
+   * `user_lesson_completions` is activity — it takes the attendance row's own
+   * org (`sa.organization_id`, the learner's).
    */
-  async syncCompletions(sessionId: number): Promise<void> {
+  async syncCompletions(scope: OrgScope, sessionId: number): Promise<void> {
     await this.db.run(sql`
-      INSERT INTO user_lesson_completions (user_id, lesson_id, completed_at)
-      SELECT sa.user_id, l.id,
+      INSERT INTO user_lesson_completions (organization_id, user_id, lesson_id, completed_at)
+      SELECT sa.organization_id, sa.user_id, l.id,
              LEAST(now(), (s.date::date + s.end_time::time)::timestamptz)
       FROM session_attendance sa
       JOIN sessions s ON s.id = sa.session_id
@@ -379,6 +465,7 @@ export class SessionsRepository {
       JOIN lessons l ON l.module_id = cm.id AND l.content_type = 'session'
       WHERE sa.session_id = ${sessionId}
         AND sa.status IN ('present', 'late', 'partial')
+        AND ${orgScope('s', scope)}
       ON CONFLICT (user_id, lesson_id) DO NOTHING
     `);
 
@@ -390,6 +477,7 @@ export class SessionsRepository {
         AND cm.course_id = c.id
         AND c.session_id = ${sessionId}
         AND l.content_type = 'session'
+        AND ${orgScope('c', scope)}
         AND NOT EXISTS (
           SELECT 1 FROM session_attendance sa
           WHERE sa.session_id = ${sessionId}
@@ -400,7 +488,7 @@ export class SessionsRepository {
   }
 
   /** Reopening a completed session withdraws every learner's credit. */
-  async clearCompletions(sessionId: number): Promise<void> {
+  async clearCompletions(scope: OrgScope, sessionId: number): Promise<void> {
     await this.db.run(sql`
       DELETE FROM user_lesson_completions ulc
       USING lessons l, course_modules cm, courses c
@@ -409,12 +497,13 @@ export class SessionsRepository {
         AND cm.course_id = c.id
         AND c.session_id = ${sessionId}
         AND l.content_type = 'session'
+        AND ${orgScope('c', scope)}
     `);
   }
 
   /* ── Learner ── */
 
-  async listForLearner(userId: number) {
+  async listForLearner(scope: OrgScope, userId: number) {
     return this.db.all(sql`
       SELECT s.id, s.title, s.session_type, s.department, s.date,
              s.start_time, s.end_time, s.trainer, s.venue_url,
@@ -428,7 +517,7 @@ export class SessionsRepository {
       LEFT JOIN courses tc ON tc.session_id = s.id
       LEFT JOIN session_attendance sa
         ON sa.session_id = sr.session_id AND sa.user_id = sr.user_id
-      WHERE sr.user_id = ${userId}
+      WHERE sr.user_id = ${userId} AND ${orgScope('s', scope)}
       ORDER BY s.date ASC, s.start_time ASC
     `);
   }

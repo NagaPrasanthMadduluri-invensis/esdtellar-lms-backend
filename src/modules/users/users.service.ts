@@ -12,6 +12,8 @@ import type {
   CreateUserDto,
   UpdateUserDto,
 } from './dto/user.dto';
+import type { OrgScope } from '@/database/org-scope';
+
 import { UsersRepository } from './users.repository';
 
 /** Applied to bulk-imported learners who arrive without a password column. */
@@ -21,12 +23,12 @@ const DEFAULT_BULK_PASSWORD = 'Edstellar@123';
 export class UsersService {
   constructor(private readonly repository: UsersRepository) {}
 
-  async listLearners() {
-    return { users: await this.repository.listLearners() };
+  async listLearners(scope: OrgScope) {
+    return { users: await this.repository.listLearners(scope) };
   }
 
-  async listEmployees() {
-    const rows = await this.repository.listEmployeesWithProgress();
+  async listEmployees(scope: OrgScope) {
+    const rows = await this.repository.listEmployeesWithProgress(scope);
 
     return {
       employees: rows.map((row) => {
@@ -62,12 +64,12 @@ export class UsersService {
     };
   }
 
-  async create(dto: CreateUserDto) {
+  async create(scope: OrgScope, dto: CreateUserDto) {
     if (await this.repository.emailExists(dto.email)) {
       throw new ConflictException('Email already in use');
     }
 
-    const user = await this.repository.createLearner({
+    const user = await this.repository.createLearner(scope, {
       firstName: dto.first_name,
       lastName: dto.last_name,
       email: dto.email,
@@ -80,14 +82,14 @@ export class UsersService {
     return { user };
   }
 
-  async update(userId: number, dto: UpdateUserDto) {
-    await this.assertMutableLearner(userId);
+  async update(scope: OrgScope, userId: number, dto: UpdateUserDto) {
+    await this.assertMutableLearner(scope, userId);
 
     if (await this.repository.emailExists(dto.email, userId)) {
       throw new ConflictException('Email is already in use by another account');
     }
 
-    const updated = await this.repository.updateProfile(userId, {
+    const updated = await this.repository.updateProfile(scope, userId, {
       firstName: dto.first_name,
       lastName: dto.last_name,
       email: dto.email,
@@ -98,15 +100,15 @@ export class UsersService {
     return { user: { ...updated, is_active: updated.is_active === 1 } };
   }
 
-  async setActive(userId: number, isActive: boolean) {
-    await this.assertMutableLearner(userId);
-    const updated = await this.repository.setActive(userId, isActive);
+  async setActive(scope: OrgScope, userId: number, isActive: boolean) {
+    await this.assertMutableLearner(scope, userId);
+    const updated = await this.repository.setActive(scope, userId, isActive);
     return { user: { ...updated, is_active: updated.is_active === 1 } };
   }
 
-  async remove(userId: number) {
-    await this.assertMutableLearner(userId, 'Cannot delete admin accounts');
-    await this.repository.remove(userId);
+  async remove(scope: OrgScope, userId: number) {
+    await this.assertMutableLearner(scope, userId, 'Cannot delete admin accounts');
+    await this.repository.remove(scope, userId);
     return { message: 'User deleted' };
   }
 
@@ -114,8 +116,12 @@ export class UsersService {
    * Full learner report: assigned courses, per-course progress, assessments
    * and every attempt. Assembled from four set-based queries.
    */
-  async getLearnerDetail(userId: number) {
-    const user = await this.repository.findLearnerProfile(userId);
+  async getLearnerDetail(scope: OrgScope, userId: number) {
+    // Scoped: an id belonging to another organization resolves to null here and
+    // becomes a 404, so the six detail queries below never run for a foreign
+    // user. They are anchored on this validated userId and inherit its tenancy
+    // — scoping each of them again would be noise (spec §3.3).
+    const user = await this.repository.findLearnerProfile(scope, userId);
     if (!user) throw new NotFoundException('User not found');
 
     const [
@@ -267,7 +273,7 @@ export class UsersService {
    * Per-row validation, so one bad row never rejects the whole upload —
    * the caller gets a `failed` array naming the row number and reason.
    */
-  async bulkCreate(dto: BulkCreateUsersDto) {
+  async bulkCreate(scope: OrgScope, dto: BulkCreateUsersDto) {
     let created = 0;
     const failed: { row: number; email: string; reason: string }[] = [];
 
@@ -298,7 +304,7 @@ export class UsersService {
       }
 
       try {
-        await this.repository.createLearner({
+        await this.repository.createLearner(scope, {
           employeeId: row.employee_id ?? null,
           firstName: row.first_name,
           lastName: row.last_name,
@@ -319,10 +325,11 @@ export class UsersService {
 
   /** Admin accounts are not editable or deletable through this API. */
   private async assertMutableLearner(
+    scope: OrgScope,
     userId: number,
     message = 'Cannot modify admin accounts',
   ): Promise<void> {
-    const user = await this.repository.findRoleById(userId);
+    const user = await this.repository.findRoleById(scope, userId);
     if (!user) throw new NotFoundException('User not found');
     if (user.role === 'admin') throw new ForbiddenException(message);
   }

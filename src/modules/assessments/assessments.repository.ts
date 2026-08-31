@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 import {
   assessmentOptions,
   assessmentQuestions,
@@ -19,20 +20,27 @@ export class AssessmentsRepository {
     return this.database.db;
   }
 
+  /**
+   * `scope` is first on every method here (and across the sibling modules): it
+   * is required, security-relevant, reads like a context argument, and can
+   * never collide with an optional or defaulted parameter that follows it.
+   */
+
   /* ── Admin ── */
 
-  async listAll() {
+  async listAll(scope: OrgScope) {
     return this.db.all(sql`
       SELECT a.*, c.name AS course_name, COUNT(aq.id) AS question_count
       FROM assessments a
       JOIN courses c ON c.id = a.course_id
       LEFT JOIN assessment_questions aq ON aq.assessment_id = a.id
+      WHERE ${orgScope('a', scope)}
       GROUP BY a.id, c.name
       ORDER BY a.created_at DESC
     `);
   }
 
-  async listByCourse(courseId: number) {
+  async listByCourse(scope: OrgScope, courseId: number) {
     return this.db.all(sql`
       SELECT a.*,
         (SELECT COUNT(*) FROM assessment_questions
@@ -40,31 +48,46 @@ export class AssessmentsRepository {
         (SELECT COUNT(*) FROM user_assessment_attempts
          WHERE assessment_id = a.id) AS attempts_count
       FROM assessments a
-      WHERE a.course_id = ${courseId}
+      WHERE a.course_id = ${courseId} AND ${orgScope('a', scope)}
       ORDER BY a.created_at
     `);
   }
 
-  async findById(id: number) {
+  /** Existence + ownership check for a course id supplied by the caller. */
+  async courseExists(scope: OrgScope, courseId: number): Promise<boolean> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      SELECT id FROM courses
+      WHERE id = ${courseId} AND ${orgScope('courses', scope)}
+    `);
+    return rows.length > 0;
+  }
+
+  async findById(scope: OrgScope, id: number) {
     const rows = await this.db
       .select()
       .from(assessments)
-      .where(eq(assessments.id, id))
+      .where(
+        and(eq(assessments.id, id), eq(assessments.organizationId, scope.organizationId)),
+      )
       .limit(1);
     return rows[0] ?? null;
   }
 
-  async findActiveWithCourse(id: number) {
-    const rows = await this.db.all<Record<string, unknown> & { course_id: number; passing_score: number }>(sql`
+  async findActiveWithCourse(scope: OrgScope, id: number) {
+    const rows = await this.db.all<
+      Record<string, unknown> & { course_id: number; passing_score: number }
+    >(sql`
       SELECT a.*, c.name AS course_name
       FROM assessments a
       JOIN courses c ON c.id = a.course_id
-      WHERE a.id = ${id} AND a.is_active = 1
+      WHERE a.id = ${id} AND a.is_active = 1 AND ${orgScope('a', scope)}
     `);
     return rows[0] ?? null;
   }
 
+  /** Content: takes the OWNER's org — the owning course's org, `scope` here. */
   async createAssessment(input: {
+    organizationId: number;
     courseId: number;
     title: string;
     description: string | null;
@@ -73,6 +96,7 @@ export class AssessmentsRepository {
     const [created] = await this.db
       .insert(assessments)
       .values({
+        organizationId: input.organizationId,
         courseId: input.courseId,
         title: input.title,
         description: input.description,
@@ -87,6 +111,7 @@ export class AssessmentsRepository {
   }
 
   async updateAssessment(
+    scope: OrgScope,
     id: number,
     input: {
       title: string;
@@ -103,7 +128,9 @@ export class AssessmentsRepository {
         passingScore: input.passingScore,
         isActive: input.isActive ? 1 : 0,
       })
-      .where(eq(assessments.id, id))
+      .where(
+        and(eq(assessments.id, id), eq(assessments.organizationId, scope.organizationId)),
+      )
       .returning();
     return updated;
   }
@@ -116,26 +143,37 @@ export class AssessmentsRepository {
    * one column rather than a parallel concept those 22 queries would each have
    * to learn about.
    */
-  async setAttached(id: number, attached: boolean) {
+  async setAttached(scope: OrgScope, id: number, attached: boolean) {
     const [updated] = await this.db
       .update(assessments)
       .set({ isActive: attached ? 1 : 0 })
-      .where(eq(assessments.id, id))
+      .where(
+        and(eq(assessments.id, id), eq(assessments.organizationId, scope.organizationId)),
+      )
       .returning();
     return updated ?? null;
   }
 
-  async deleteAssessment(id: number): Promise<void> {
-    await this.db.delete(assessments).where(eq(assessments.id, id));
+  async deleteAssessment(scope: OrgScope, id: number): Promise<void> {
+    await this.db
+      .delete(assessments)
+      .where(
+        and(eq(assessments.id, id), eq(assessments.organizationId, scope.organizationId)),
+      );
   }
 
   /* ── Questions & options ── */
 
-  async listQuestions(assessmentId: number) {
+  async listQuestions(scope: OrgScope, assessmentId: number) {
     return this.db
       .select()
       .from(assessmentQuestions)
-      .where(eq(assessmentQuestions.assessmentId, assessmentId))
+      .where(
+        and(
+          eq(assessmentQuestions.assessmentId, assessmentId),
+          eq(assessmentQuestions.organizationId, scope.organizationId),
+        ),
+      )
       .orderBy(asc(assessmentQuestions.sortOrder));
   }
 
@@ -144,37 +182,49 @@ export class AssessmentsRepository {
    * learner-facing reads — `is_correct` must never reach the browser before the
    * attempt is submitted, or the quiz answers are in the page payload.
    */
-  async listOptionsForAssessment(assessmentId: number, includeAnswerKey: boolean) {
+  async listOptionsForAssessment(
+    scope: OrgScope,
+    assessmentId: number,
+    includeAnswerKey: boolean,
+  ) {
     if (includeAnswerKey) {
       return this.db.all<Record<string, unknown> & { question_id: number }>(sql`
         SELECT ao.* FROM assessment_options ao
         JOIN assessment_questions aq ON aq.id = ao.question_id
-        WHERE aq.assessment_id = ${assessmentId}
+        WHERE aq.assessment_id = ${assessmentId} AND ${orgScope('ao', scope)}
       `);
     }
     return this.db.all<Record<string, unknown> & { question_id: number }>(sql`
       SELECT ao.id, ao.option_text, ao.question_id FROM assessment_options ao
       JOIN assessment_questions aq ON aq.id = ao.question_id
-      WHERE aq.assessment_id = ${assessmentId}
+      WHERE aq.assessment_id = ${assessmentId} AND ${orgScope('ao', scope)}
     `);
   }
 
-  async listOptionsForQuestion(questionId: number) {
+  async listOptionsForQuestion(scope: OrgScope, questionId: number) {
     return this.db
       .select()
       .from(assessmentOptions)
-      .where(eq(assessmentOptions.questionId, questionId));
+      .where(
+        and(
+          eq(assessmentOptions.questionId, questionId),
+          eq(assessmentOptions.organizationId, scope.organizationId),
+        ),
+      );
   }
 
-  async nextQuestionSortOrder(assessmentId: number): Promise<number> {
+  async nextQuestionSortOrder(scope: OrgScope, assessmentId: number): Promise<number> {
     const rows = await this.db.all<{ m: number | null }>(sql`
       SELECT MAX(sort_order) AS m FROM assessment_questions
       WHERE assessment_id = ${assessmentId}
+        AND ${orgScope('assessment_questions', scope)}
     `);
     return Number(rows[0]?.m ?? 0) + 1;
   }
 
+  /** Content: takes the OWNER's org — the owning assessment's org, `scope` here. */
   async createQuestion(input: {
+    organizationId: number;
     assessmentId: number;
     questionText: string;
     marks: number;
@@ -183,6 +233,7 @@ export class AssessmentsRepository {
     const [created] = await this.db
       .insert(assessmentQuestions)
       .values({
+        organizationId: input.organizationId,
         assessmentId: input.assessmentId,
         questionText: input.questionText,
         marks: input.marks,
@@ -193,34 +244,59 @@ export class AssessmentsRepository {
   }
 
   async updateQuestion(
+    scope: OrgScope,
     id: number,
     input: { questionText: string; marks: number },
   ) {
     const [updated] = await this.db
       .update(assessmentQuestions)
       .set({ questionText: input.questionText, marks: input.marks })
-      .where(eq(assessmentQuestions.id, id))
+      .where(
+        and(
+          eq(assessmentQuestions.id, id),
+          eq(assessmentQuestions.organizationId, scope.organizationId),
+        ),
+      )
       .returning();
     return updated;
   }
 
-  async deleteQuestion(id: number): Promise<void> {
-    await this.db.delete(assessmentQuestions).where(eq(assessmentQuestions.id, id));
+  async deleteQuestion(scope: OrgScope, id: number): Promise<void> {
+    await this.db
+      .delete(assessmentQuestions)
+      .where(
+        and(
+          eq(assessmentQuestions.id, id),
+          eq(assessmentQuestions.organizationId, scope.organizationId),
+        ),
+      );
   }
 
-  /** Bulk insert — one statement instead of one round trip per option. */
+  /**
+   * Bulk insert — one statement instead of one round trip per option.
+   *
+   * Content: takes the OWNER's org, `scope` here — the same org as the
+   * question these options belong to (already verified by the caller).
+   */
   async replaceOptions(
+    scope: OrgScope,
     questionId: number,
     options: { option_text: string; is_correct?: boolean }[],
   ): Promise<void> {
     await this.db
       .delete(assessmentOptions)
-      .where(eq(assessmentOptions.questionId, questionId));
+      .where(
+        and(
+          eq(assessmentOptions.questionId, questionId),
+          eq(assessmentOptions.organizationId, scope.organizationId),
+        ),
+      );
 
     if (options.length === 0) return;
 
     await this.db.insert(assessmentOptions).values(
       options.map((option) => ({
+        organizationId: scope.organizationId,
         questionId,
         optionText: option.option_text.trim(),
         isCorrect: option.is_correct ? 1 : 0,
@@ -230,7 +306,7 @@ export class AssessmentsRepository {
 
   /* ── Learner ── */
 
-  async isAssignedToCourse(userId: number, courseId: number) {
+  async isAssignedToCourse(scope: OrgScope, userId: number, courseId: number) {
     const rows = await this.db
       .select({ id: userCourseAssignments.id })
       .from(userCourseAssignments)
@@ -238,6 +314,7 @@ export class AssessmentsRepository {
         and(
           eq(userCourseAssignments.userId, userId),
           eq(userCourseAssignments.courseId, courseId),
+          eq(userCourseAssignments.organizationId, scope.organizationId),
         ),
       )
       .limit(1);
@@ -248,8 +325,11 @@ export class AssessmentsRepository {
    * Every assessment across the learner's assigned courses, with lesson-unlock
    * state and their own attempt stats. The legacy handler looped over courses
    * and then over assessments, issuing a query at each level.
+   *
+   * `a` is the query root; the correlated subqueries below are all anchored on
+   * `a.id` / `a.course_id`, so they inherit tenancy from the outer predicate.
    */
-  async listForLearner(userId: number) {
+  async listForLearner(scope: OrgScope, userId: number) {
     return this.db.all<{
       id: number;
       title: string;
@@ -285,13 +365,13 @@ export class AssessmentsRepository {
       JOIN courses c ON c.id = a.course_id AND c.is_active = 1
       JOIN user_course_assignments uca
         ON uca.course_id = a.course_id AND uca.user_id = ${userId}
-      WHERE a.is_active = 1
+      WHERE a.is_active = 1 AND ${orgScope('a', scope)}
       ORDER BY a.created_at
     `);
   }
 
   /** All of a learner's attempts across their assigned courses, one query. */
-  async attemptsForLearner(userId: number) {
+  async attemptsForLearner(scope: OrgScope, userId: number) {
     return this.db.all<{
       id: number;
       assessment_id: number;
@@ -304,12 +384,12 @@ export class AssessmentsRepository {
       SELECT t.id, t.assessment_id, t.score, t.total_questions,
              t.percentage, t.is_passed, t.submitted_at
       FROM user_assessment_attempts t
-      WHERE t.user_id = ${userId}
+      WHERE t.user_id = ${userId} AND ${orgScope('t', scope)}
       ORDER BY t.submitted_at DESC
     `);
   }
 
-  async attemptsFor(userId: number, assessmentId: number) {
+  async attemptsFor(scope: OrgScope, userId: number, assessmentId: number) {
     return this.db
       .select()
       .from(userAssessmentAttempts)
@@ -317,21 +397,27 @@ export class AssessmentsRepository {
         and(
           eq(userAssessmentAttempts.userId, userId),
           eq(userAssessmentAttempts.assessmentId, assessmentId),
+          eq(userAssessmentAttempts.organizationId, scope.organizationId),
         ),
       )
       .orderBy(desc(userAssessmentAttempts.submittedAt));
   }
 
-  async countAttempts(userId: number, assessmentId: number): Promise<number> {
+  async countAttempts(
+    scope: OrgScope,
+    userId: number,
+    assessmentId: number,
+  ): Promise<number> {
     const rows = await this.db.all<{ c: number }>(sql`
       SELECT COUNT(*) AS c FROM user_assessment_attempts
       WHERE assessment_id = ${assessmentId} AND user_id = ${userId}
+        AND ${orgScope('user_assessment_attempts', scope)}
     `);
     return Number(rows[0]?.c ?? 0);
   }
 
   /** The answer key: one row per question with its correct option. */
-  async answerKey(assessmentId: number) {
+  async answerKey(scope: OrgScope, assessmentId: number) {
     return this.db.all<{
       id: number;
       question_text: string;
@@ -341,26 +427,37 @@ export class AssessmentsRepository {
       FROM assessment_questions aq
       JOIN assessment_options ao
         ON ao.question_id = aq.id AND ao.is_correct = 1
-      WHERE aq.assessment_id = ${assessmentId}
+      WHERE aq.assessment_id = ${assessmentId} AND ${orgScope('aq', scope)}
     `);
   }
 
-  async recordAttempt(input: {
-    userId: number;
-    assessmentId: number;
-    score: number;
-    totalQuestions: number;
-    percentage: number;
-    isPassed: number;
-    answers: {
-      question_id: number;
-      selected_option_id: number | null;
-      is_correct: number;
-    }[];
-  }): Promise<number> {
+  /**
+   * Records an attempt and its per-question answers.
+   *
+   * Both tables are activity: `scope` is the submitting learner's own org.
+   * `user_assessment_answers` carries no `user_id` of its own — its org comes
+   * through the attempt it belongs to, which is exactly this `scope` (§3.3).
+   */
+  async recordAttempt(
+    scope: OrgScope,
+    input: {
+      userId: number;
+      assessmentId: number;
+      score: number;
+      totalQuestions: number;
+      percentage: number;
+      isPassed: number;
+      answers: {
+        question_id: number;
+        selected_option_id: number | null;
+        is_correct: number;
+      }[];
+    },
+  ): Promise<number> {
     const [attempt] = await this.db
       .insert(userAssessmentAttempts)
       .values({
+        organizationId: scope.organizationId,
         userId: input.userId,
         assessmentId: input.assessmentId,
         score: input.score,
@@ -374,6 +471,7 @@ export class AssessmentsRepository {
       // Bulk insert — the legacy code inserted one answer per round trip.
       await this.db.insert(userAssessmentAnswers).values(
         input.answers.map((answer) => ({
+          organizationId: scope.organizationId,
           attemptId: attempt.id,
           questionId: answer.question_id,
           selectedOptionId: answer.selected_option_id,

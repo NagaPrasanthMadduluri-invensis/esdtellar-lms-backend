@@ -8,11 +8,8 @@ export const sessions = pgTable(
   'sessions',
   {
     id: serial('id').primaryKey(),
-    /**
-     * Always a real org — never the platform org (§3.3, §3.4). Nullable until
-     * wave 3's backfill + `SET NOT NULL` (§3.10).
-     */
-    organizationId: integer('organization_id'),
+    /** Always a real org — never the platform org (§3.3, §3.4). */
+    organizationId: integer('organization_id').notNull(),
     title: text('title').notNull(),
     sessionType: text('session_type', { enum: ['ILT', 'Virtual'] })
       .notNull()
@@ -48,8 +45,8 @@ export const sessionRoster = pgTable(
   'session_roster',
   {
     id: serial('id').primaryKey(),
-    /** Activity: the enrolled user's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Activity: the enrolled user's org. */
+    organizationId: integer('organization_id').notNull(),
     sessionId: integer('session_id')
       .notNull()
       .references(() => sessions.id, { onDelete: 'cascade' }),
@@ -74,8 +71,8 @@ export const sessionAttendance = pgTable(
   'session_attendance',
   {
     id: serial('id').primaryKey(),
-    /** Activity: the attending user's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Activity: the attending user's org. */
+    organizationId: integer('organization_id').notNull(),
     sessionId: integer('session_id')
       .notNull()
       .references(() => sessions.id, { onDelete: 'cascade' }),

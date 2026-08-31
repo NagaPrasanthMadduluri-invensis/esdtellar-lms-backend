@@ -11,8 +11,9 @@ import {
   Put,
 } from '@nestjs/common';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import type { OrgScope } from '@/database/org-scope';
 
 import { AssessmentsService } from './assessments.service';
 import {
@@ -28,8 +29,8 @@ export class AllAssessmentsController {
   constructor(private readonly assessments: AssessmentsService) {}
 
   @Get()
-  async list() {
-    return this.assessments.listAll();
+  async list(@CurrentScope() scope: OrgScope) {
+    return this.assessments.listAll(scope);
   }
 }
 
@@ -39,8 +40,11 @@ export class CourseAssessmentsController {
   constructor(private readonly assessments: AssessmentsService) {}
 
   @Get()
-  async list(@Param('courseId', ParseIntPipe) courseId: number) {
-    return this.assessments.listByCourse(courseId);
+  async list(
+    @Param('courseId', ParseIntPipe) courseId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.assessments.listByCourse(scope, courseId);
   }
 
   @Post()
@@ -48,8 +52,9 @@ export class CourseAssessmentsController {
   async create(
     @Param('courseId', ParseIntPipe) courseId: number,
     @Body() dto: AssessmentDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.assessments.create(courseId, dto);
+    return this.assessments.create(scope, courseId, dto);
   }
 }
 
@@ -59,16 +64,20 @@ export class AdminAssessmentsController {
   constructor(private readonly assessments: AssessmentsService) {}
 
   @Get(':assessmentId')
-  async get(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
-    return this.assessments.getForAdmin(assessmentId);
+  async get(
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.assessments.getForAdmin(scope, assessmentId);
   }
 
   @Put(':assessmentId')
   async update(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @Body() dto: AssessmentDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.assessments.update(assessmentId, dto);
+    return this.assessments.update(scope, assessmentId, dto);
   }
 
   /**
@@ -78,18 +87,27 @@ export class AdminAssessmentsController {
    */
   @Post(':assessmentId/attach')
   @HttpCode(HttpStatus.OK)
-  async attach(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
-    return this.assessments.setAttached(assessmentId, true);
+  async attach(
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.assessments.setAttached(scope, assessmentId, true);
   }
 
   @Delete(':assessmentId/attach')
-  async detach(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
-    return this.assessments.setAttached(assessmentId, false);
+  async detach(
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.assessments.setAttached(scope, assessmentId, false);
   }
 
   @Delete(':assessmentId')
-  async remove(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
-    return this.assessments.remove(assessmentId);
+  async remove(
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.assessments.remove(scope, assessmentId);
   }
 
   @Post(':assessmentId/questions')
@@ -97,8 +115,9 @@ export class AdminAssessmentsController {
   async addQuestion(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @Body() dto: QuestionDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.assessments.addQuestion(assessmentId, dto);
+    return this.assessments.addQuestion(scope, assessmentId, dto);
   }
 }
 
@@ -111,13 +130,17 @@ export class QuestionsController {
   async update(
     @Param('questionId', ParseIntPipe) questionId: number,
     @Body() dto: QuestionDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.assessments.updateQuestion(questionId, dto);
+    return this.assessments.updateQuestion(scope, questionId, dto);
   }
 
   @Delete(':questionId')
-  async remove(@Param('questionId', ParseIntPipe) questionId: number) {
-    return this.assessments.removeQuestion(questionId);
+  async remove(
+    @Param('questionId', ParseIntPipe) questionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.assessments.removeQuestion(scope, questionId);
   }
 }
 
@@ -127,24 +150,29 @@ export class LearnerAssessmentsController {
   constructor(private readonly assessments: AssessmentsService) {}
 
   @Get()
-  async list(@CurrentUser() user: AuthenticatedUser) {
-    return this.assessments.listForLearner(user.userId);
+  async list(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.assessments.listForLearner(scope, user.userId);
   }
 
   @Get(':assessmentId')
   async get(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.assessments.getForLearner(assessmentId, user.userId);
+    return this.assessments.getForLearner(scope, assessmentId, user.userId);
   }
 
   @Get(':assessmentId/attempts')
   async attempts(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.assessments.listAttempts(assessmentId, user.userId);
+    return this.assessments.listAttempts(scope, assessmentId, user.userId);
   }
 
   @Post(':assessmentId/attempt')
@@ -153,7 +181,8 @@ export class LearnerAssessmentsController {
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @Body() dto: SubmitAttemptDto,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.assessments.submitAttempt(assessmentId, user.userId, dto);
+    return this.assessments.submitAttempt(scope, assessmentId, user.userId, dto);
   }
 }

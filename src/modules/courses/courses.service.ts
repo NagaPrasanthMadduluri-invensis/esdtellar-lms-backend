@@ -4,6 +4,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 
+import type { OrgScope } from '@/database/org-scope';
 import { MediaService } from '@/modules/media/media.service';
 
 import { CoursesRepository } from './courses.repository';
@@ -107,14 +108,14 @@ export class CoursesService {
      exactly one number per lesson counting, the point of §10.4.
   ────────────────────────────────────────────────────────────────────────── */
 
-  async listResources(lessonId: number) {
-    const lesson = await this.repository.findLessonById(lessonId);
+  async listResources(scope: OrgScope, lessonId: number) {
+    const lesson = await this.repository.findLessonById(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
-    return { resources: await this.repository.listResources(lessonId) };
+    return { resources: await this.repository.listResources(scope, lessonId) };
   }
 
-  async createResource(lessonId: number, dto: CreateResourceDto) {
-    const lesson = await this.repository.findLessonById(lessonId);
+  async createResource(scope: OrgScope, lessonId: number, dto: CreateResourceDto) {
+    const lesson = await this.repository.findLessonById(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
     const isUpload = dto.source === 'upload';
@@ -134,7 +135,9 @@ export class CoursesService {
       ? await this.media.verifyUploadedDocument(dto.file_key as string)
       : null;
 
+    // Content: the owning lesson's org, which is `scope` here.
     const resource = await this.repository.createResource({
+      organizationId: scope.organizationId,
       lessonId,
       title: dto.title,
       resourceType:
@@ -147,21 +150,22 @@ export class CoursesService {
       mimeType: isUpload ? (dto.mime_type ?? verified?.contentType ?? null) : null,
       url: isUpload ? null : (dto.url as string),
       sortOrder:
-        dto.sort_order ?? (await this.repository.nextResourceSortOrder(lessonId)),
+        dto.sort_order ??
+        (await this.repository.nextResourceSortOrder(scope, lessonId)),
     });
 
     return { resource };
   }
 
-  async removeResource(resourceId: number) {
-    const resource = await this.repository.findResourceById(resourceId);
+  async removeResource(scope: OrgScope, resourceId: number) {
+    const resource = await this.repository.findResourceById(scope, resourceId);
     if (!resource) throw new NotFoundException('Resource not found');
 
     this.assertNotSessionTraining(
-      await this.repository.findSessionIdForLesson(resource.lessonId),
+      await this.repository.findSessionIdForLesson(scope, resource.lessonId),
     );
 
-    await this.repository.deleteResource(resourceId);
+    await this.repository.deleteResource(scope, resourceId);
     // After the row, so nothing can leave a live row pointing at a dead object.
     await this.media.discardObject(resource.fileKey);
 
@@ -192,8 +196,8 @@ export class CoursesService {
 
   /* ── Courses ── */
 
-  async list() {
-    const rows = (await this.repository.listWithStats()) as Record<
+  async list(scope: OrgScope) {
+    const rows = (await this.repository.listWithStats(scope)) as Record<
       string,
       unknown
     >[];
@@ -220,14 +224,16 @@ export class CoursesService {
     };
   }
 
-  async get(courseId: number) {
-    const course = await this.repository.findById(courseId);
+  async get(scope: OrgScope, courseId: number) {
+    const course = await this.repository.findById(scope, courseId);
     if (!course) throw new NotFoundException('Course not found');
     return { course };
   }
 
-  async create(dto: CourseDto) {
+  /** Content: takes the OWNER's org — `scope.organizationId` for the admin creating it. */
+  async create(scope: OrgScope, dto: CourseDto) {
     const course = await this.repository.createCourse({
+      organizationId: scope.organizationId,
       name: dto.name,
       description: dto.description ?? null,
       thumbnailUrl: dto.thumbnail_url ?? null,
@@ -239,12 +245,12 @@ export class CoursesService {
     return { course };
   }
 
-  async update(courseId: number, dto: CourseDto) {
-    const existing = await this.repository.findById(courseId);
+  async update(scope: OrgScope, courseId: number, dto: CourseDto) {
+    const existing = await this.repository.findById(scope, courseId);
     if (!existing) throw new NotFoundException('Course not found');
     this.assertNotSessionTraining(existing.sessionId);
 
-    const course = await this.repository.updateCourse(courseId, {
+    const course = await this.repository.updateCourse(scope, courseId, {
       name: dto.name,
       description: dto.description ?? null,
       thumbnailUrl: dto.thumbnail_url ?? null,
@@ -255,11 +261,11 @@ export class CoursesService {
     return { course };
   }
 
-  async remove(courseId: number) {
+  async remove(scope: OrgScope, courseId: number) {
     this.assertNotSessionTraining(
-      await this.repository.findSessionIdForCourse(courseId),
+      await this.repository.findSessionIdForCourse(scope, courseId),
     );
-    await this.repository.deleteCourse(courseId);
+    await this.repository.deleteCourse(scope, courseId);
     return { message: 'Course deleted' };
   }
 
@@ -269,10 +275,10 @@ export class CoursesService {
    * Modules with their lessons nested. Two queries total — the modules and all
    * their lessons — then grouped in memory.
    */
-  async listModules(courseId: number) {
+  async listModules(scope: OrgScope, courseId: number) {
     const [modules, allLessons] = await Promise.all([
-      this.repository.listModules(courseId),
-      this.repository.listLessonsForCourse(courseId),
+      this.repository.listModules(scope, courseId),
+      this.repository.listLessonsForCourse(scope, courseId),
     ]);
 
     const lessonsByModule = new Map<number, unknown[]>();
@@ -291,12 +297,16 @@ export class CoursesService {
     };
   }
 
-  async createModule(courseId: number, dto: ModuleDto) {
-    this.assertNotSessionTraining(
-      await this.repository.findSessionIdForCourse(courseId),
-    );
-    const sortOrder = await this.repository.nextModuleSortOrder(courseId);
+  async createModule(scope: OrgScope, courseId: number, dto: ModuleDto) {
+    // Existence AND ownership in one read — a foreign course id must 404
+    // rather than let a cross-org module get created against it (§5.3).
+    const course = await this.repository.findById(scope, courseId);
+    if (!course) throw new NotFoundException('Course not found');
+    this.assertNotSessionTraining(course.sessionId);
+
+    const sortOrder = await this.repository.nextModuleSortOrder(scope, courseId);
     const module = await this.repository.createModule({
+      organizationId: scope.organizationId,
       courseId,
       title: dto.title,
       description: dto.description ?? null,
@@ -305,14 +315,14 @@ export class CoursesService {
     return { module };
   }
 
-  async updateModule(moduleId: number, dto: ModuleDto) {
-    const current = await this.repository.findModuleById(moduleId);
+  async updateModule(scope: OrgScope, moduleId: number, dto: ModuleDto) {
+    const current = await this.repository.findModuleById(scope, moduleId);
     if (!current) throw new NotFoundException('Module not found');
     this.assertNotSessionTraining(
-      await this.repository.findSessionIdForModule(moduleId),
+      await this.repository.findSessionIdForModule(scope, moduleId),
     );
 
-    const module = await this.repository.updateModule(moduleId, {
+    const module = await this.repository.updateModule(scope, moduleId, {
       title: dto.title,
       description: dto.description ?? null,
       isActive: dto.is_active ?? current.isActive === 1,
@@ -321,19 +331,19 @@ export class CoursesService {
     return { module };
   }
 
-  async removeModule(moduleId: number) {
+  async removeModule(scope: OrgScope, moduleId: number) {
     this.assertNotSessionTraining(
-      await this.repository.findSessionIdForModule(moduleId),
+      await this.repository.findSessionIdForModule(scope, moduleId),
     );
-    await this.repository.deleteModule(moduleId);
+    await this.repository.deleteModule(scope, moduleId);
     return { message: 'Module deleted' };
   }
 
   /* ── Lessons ── */
 
-  async listLessons(moduleId: number) {
-    const lessons = await this.repository.listLessonsByModule(moduleId);
-    return { lessons: await this.withResources(lessons) };
+  async listLessons(scope: OrgScope, moduleId: number) {
+    const lessons = await this.repository.listLessonsByModule(scope, moduleId);
+    return { lessons: await this.withResources(scope, lessons) };
   }
 
   /**
@@ -343,8 +353,12 @@ export class CoursesService {
    * every lesson in a module at once, and a query per row is the N+1 §7.1 exists
    * to stop.
    */
-  private async withResources<T extends { id: number }>(lessons: T[]) {
+  private async withResources<T extends { id: number }>(
+    scope: OrgScope,
+    lessons: T[],
+  ) {
     const rows = await this.repository.listResourcesForLessons(
+      scope,
       lessons.map((lesson) => Number(lesson.id)),
     );
 
@@ -362,15 +376,21 @@ export class CoursesService {
     }));
   }
 
-  async createLesson(moduleId: number, dto: CreateLessonDto) {
+  async createLesson(scope: OrgScope, moduleId: number, dto: CreateLessonDto) {
+    // Existence AND ownership in one read — a foreign module id must 404
+    // rather than let a cross-org lesson get created against it (§5.3).
+    const module = await this.repository.findModuleById(scope, moduleId);
+    if (!module) throw new NotFoundException('Module not found');
     this.assertNotSessionTraining(
-      await this.repository.findSessionIdForModule(moduleId),
+      await this.repository.findSessionIdForModule(scope, moduleId),
     );
+
     const contentType = dto.content_type || 'video';
     const isScorm = contentType === 'scorm';
     const isDocument = isDocumentType(contentType);
     const sortOrder =
-      dto.sort_order ?? (await this.repository.nextLessonSortOrder(moduleId));
+      dto.sort_order ??
+      (await this.repository.nextLessonSortOrder(scope, moduleId));
 
     const documentKey = isDocument ? (dto.document_key ?? null) : null;
     // Proven to exist in storage before the row records it: otherwise a failed
@@ -389,6 +409,7 @@ export class CoursesService {
     });
 
     const lesson = await this.repository.createLesson({
+      organizationId: scope.organizationId,
       moduleId,
       title: dto.title,
       description: dto.description ?? null,
@@ -409,11 +430,11 @@ export class CoursesService {
     return { lesson };
   }
 
-  async updateLesson(lessonId: number, dto: UpdateLessonDto) {
-    const current = await this.repository.findLessonById(lessonId);
+  async updateLesson(scope: OrgScope, lessonId: number, dto: UpdateLessonDto) {
+    const current = await this.repository.findLessonById(scope, lessonId);
     if (!current) throw new NotFoundException('Lesson not found');
     this.assertNotSessionTraining(
-      await this.repository.findSessionIdForLesson(lessonId),
+      await this.repository.findSessionIdForLesson(scope, lessonId),
     );
 
     const contentType = dto.content_type ?? current.contentType;
@@ -461,7 +482,7 @@ export class CoursesService {
       durationMinutes,
     });
 
-    const lesson = await this.repository.updateLesson(lessonId, {
+    const lesson = await this.repository.updateLesson(scope, lessonId, {
       title: dto.title ?? current.title,
       description:
         dto.description !== undefined ? dto.description : current.description,
@@ -503,30 +524,30 @@ export class CoursesService {
     return { lesson };
   }
 
-  async removeLesson(lessonId: number) {
+  async removeLesson(scope: OrgScope, lessonId: number) {
     this.assertNotSessionTraining(
-      await this.repository.findSessionIdForLesson(lessonId),
+      await this.repository.findSessionIdForLesson(scope, lessonId),
     );
     // Drop the R2 objects before the row that names them disappears —
     // afterwards there is nothing left to say which keys were this lesson's.
     // Best-effort: a storage hiccup must not block deleting the lesson (§8.4).
-    await this.media.releaseLessonMedia(lessonId);
+    await this.media.releaseLessonMedia(scope, lessonId);
     // Resources cascade with the row, but their stored objects do not — and
     // once the rows are gone nothing records which keys were theirs.
-    const resources = await this.repository.listResourcesForKeys(lessonId);
+    const resources = await this.repository.listResourcesForKeys(scope, lessonId);
     await Promise.all(
       resources.map((r) => this.media.discardObject(r.file_key)),
     );
-    await this.repository.deleteLesson(lessonId);
+    await this.repository.deleteLesson(scope, lessonId);
     return { message: 'Lesson deleted' };
   }
 
   /* ── Assignments ── */
 
-  async listAssignments(courseId: number) {
+  async listAssignments(scope: OrgScope, courseId: number) {
     const [assignments, scormRows] = await Promise.all([
-      this.repository.listAssignments(courseId),
-      this.repository.listScormResultsForCourse(courseId),
+      this.repository.listAssignments(scope, courseId),
+      this.repository.listScormResultsForCourse(scope, courseId),
     ]);
 
     const scormByUser = new Map<number, unknown[]>();
@@ -553,11 +574,19 @@ export class CoursesService {
    * instead of implying it enrolled everyone it was handed.
    */
   async createAssignments(
+    scope: OrgScope,
     courseId: number,
     dto: BulkAssignmentDto,
     adminId: number,
   ) {
+    // A foreign course id must 404 rather than create activity rows that
+    // point at another org's course under this org's organization_id (§5.3).
+    if (!(await this.repository.findById(scope, courseId))) {
+      throw new NotFoundException('Course not found');
+    }
+
     const assigned = await this.repository.createAssignments({
+      organizationId: scope.organizationId,
       userIds: dto.user_ids,
       courseId,
       assignedBy: adminId,
@@ -571,14 +600,30 @@ export class CoursesService {
    * date and reports "Assignment updated", which is what the assign-learning
    * screen expects when an admin re-submits.
    */
-  async assign(courseId: number, adminId: number, dto: CreateAssignmentDto) {
-    const learner = await this.repository.findLearner(dto.user_id);
+  async assign(
+    scope: OrgScope,
+    courseId: number,
+    adminId: number,
+    dto: CreateAssignmentDto,
+  ) {
+    // A foreign course id must 404 rather than create an activity row that
+    // points at another org's course under this org's organization_id (§5.3).
+    if (!(await this.repository.findById(scope, courseId))) {
+      throw new NotFoundException('Course not found');
+    }
+
+    const learner = await this.repository.findLearner(scope, dto.user_id);
     if (!learner) throw new NotFoundException('Learner not found');
 
-    const existing = await this.repository.findAssignment(dto.user_id, courseId);
+    const existing = await this.repository.findAssignment(
+      scope,
+      dto.user_id,
+      courseId,
+    );
     if (existing) {
       if (dto.due_date) {
         await this.repository.updateAssignmentDueDate(
+          scope,
           dto.user_id,
           courseId,
           dto.due_date,
@@ -588,6 +633,7 @@ export class CoursesService {
     }
 
     await this.repository.createAssignment({
+      organizationId: scope.organizationId,
       userId: dto.user_id,
       courseId,
       assignedBy: adminId,
@@ -597,8 +643,8 @@ export class CoursesService {
     return { created: true, body: { message: 'User assigned successfully' } };
   }
 
-  async removeAssignment(assignmentId: number) {
-    await this.repository.deleteAssignment(assignmentId);
+  async removeAssignment(scope: OrgScope, assignmentId: number) {
+    await this.repository.deleteAssignment(scope, assignmentId);
     return { message: 'Assignment removed' };
   }
 }

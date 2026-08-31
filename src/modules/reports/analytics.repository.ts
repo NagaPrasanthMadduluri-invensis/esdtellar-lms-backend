@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 
 /**
  * One row per learner, carrying every aggregate the analytics endpoints need.
@@ -38,6 +39,7 @@ export class AnalyticsRepository {
   }
 
   async learnerStats(
+    scope: OrgScope,
     thisMonth: string,
     lastMonth: string,
   ): Promise<LearnerStatsRow[]> {
@@ -72,13 +74,13 @@ export class AnalyticsRepository {
               WHERE c.user_id = u.id
                 AND to_char(c.completed_at, 'YYYY-MM') = ${lastMonth}) AS last_month_minutes
       FROM users u
-      WHERE u.role = 'learner'
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
       ORDER BY u.first_name, u.last_name
     `);
   }
 
   /** Per-learner, per-course progress — powers the export's row-per-course sheet. */
-  async courseProgressPerLearner() {
+  async courseProgressPerLearner(scope: OrgScope) {
     return this.db.all<{
       user_id: number;
       course_id: number;
@@ -117,13 +119,19 @@ export class AnalyticsRepository {
               WHERE a.course_id = uca.course_id AND t.user_id = uca.user_id) AS attempt_count
       FROM user_course_assignments uca
       JOIN courses c ON c.id = uca.course_id AND c.is_active = 1
+      WHERE ${orgScope('uca', scope)}
       ORDER BY uca.user_id, uca.assigned_at
     `);
   }
 
   /* ── Admin dashboard ── */
 
-  async dashboardCounts() {
+  /**
+   * Four independent scalar subqueries with no shared FROM (§ same reasoning
+   * as `CertificatesRepository.getCompletionSnapshot`) — each has to re-anchor
+   * on `scope` itself rather than trust a driving row it does not have.
+   */
+  async dashboardCounts(scope: OrgScope) {
     const rows = await this.db.all<{
       total_courses: number;
       total_users: number;
@@ -131,12 +139,16 @@ export class AnalyticsRepository {
       total_completed: number;
     }>(sql`
       SELECT
-        (SELECT COUNT(*) FROM courses WHERE is_active = 1) AS total_courses,
+        (SELECT COUNT(*) FROM courses
+         WHERE is_active = 1 AND organization_id = ${scope.organizationId}) AS total_courses,
         (SELECT COUNT(*) FROM users
-         WHERE role = 'learner' AND is_active = 1) AS total_users,
-        (SELECT COUNT(*) FROM user_course_assignments) AS total_assigned,
+         WHERE role = 'learner' AND is_active = 1
+           AND organization_id = ${scope.organizationId}) AS total_users,
+        (SELECT COUNT(*) FROM user_course_assignments
+         WHERE organization_id = ${scope.organizationId}) AS total_assigned,
         (SELECT COUNT(*) FROM user_course_assignments uca
-         WHERE (SELECT COUNT(*) FROM lessons l
+         WHERE uca.organization_id = ${scope.organizationId}
+           AND (SELECT COUNT(*) FROM lessons l
                 JOIN course_modules cm ON cm.id = l.module_id
                 WHERE cm.course_id = uca.course_id
                   AND l.is_active = 1 AND cm.is_active = 1) > 0
@@ -153,7 +165,7 @@ export class AnalyticsRepository {
     return rows[0];
   }
 
-  async recentUsers() {
+  async recentUsers(scope: OrgScope) {
     return this.db.all<{
       id: number;
       first_name: string;
@@ -162,12 +174,12 @@ export class AnalyticsRepository {
       created_at: string;
     }>(sql`
       SELECT id, first_name, last_name, email, created_at
-      FROM users WHERE role = 'learner'
+      FROM users u WHERE role = 'learner' AND ${orgScope('u', scope)}
       ORDER BY created_at DESC LIMIT 5
     `);
   }
 
-  async recentAttempts() {
+  async recentAttempts(scope: OrgScope) {
     return this.db.all(sql`
       SELECT ua.*, u.first_name, u.last_name,
              a.title AS assessment_title, c.name AS course_name
@@ -175,25 +187,28 @@ export class AnalyticsRepository {
       JOIN users u ON u.id = ua.user_id
       JOIN assessments a ON a.id = ua.assessment_id
       JOIN courses c ON c.id = a.course_id
+      WHERE ${orgScope('ua', scope)}
       ORDER BY ua.submitted_at DESC LIMIT 5
     `);
   }
 
   /* ── Reports extras ── */
 
-  async activeCourseCount(): Promise<number> {
+  async activeCourseCount(scope: OrgScope): Promise<number> {
     const rows = await this.db.all<{ n: number }>(sql`
-      SELECT COUNT(DISTINCT course_id) AS n FROM user_course_assignments
+      SELECT COUNT(DISTINCT course_id) AS n FROM user_course_assignments uca
+      WHERE ${orgScope('uca', scope)}
     `);
     return Number(rows[0]?.n ?? 0);
   }
 
   /** Assignments due within two days whose lessons are not all complete. */
-  async overdueCourseCount(): Promise<number> {
+  async overdueCourseCount(scope: OrgScope): Promise<number> {
     const rows = await this.db.all<{ n: number }>(sql`
       SELECT COUNT(*) AS n FROM user_course_assignments uca
       WHERE uca.due_date IS NOT NULL
         AND uca.due_date::date <= CURRENT_DATE + 2
+        AND ${orgScope('uca', scope)}
         AND (SELECT COUNT(*) FROM user_lesson_completions ulc
              JOIN lessons l ON l.id = ulc.lesson_id
              JOIN course_modules cm ON cm.id = l.module_id
@@ -215,7 +230,7 @@ export class AnalyticsRepository {
     ELSE 'W4'
   END`);
 
-  async weeklyHoursByDepartment(month: string) {
+  async weeklyHoursByDepartment(scope: OrgScope, month: string) {
     return this.db.all<{ week: string; dept: string; hrs: number }>(sql`
       SELECT ${this.weekCase('ulc.completed_at')} AS week,
              u.department AS dept,
@@ -226,22 +241,24 @@ export class AnalyticsRepository {
       WHERE u.role = 'learner'
         AND to_char(ulc.completed_at, 'YYYY-MM') = ${month}
         AND u.department IS NOT NULL
+        AND ${orgScope('ulc', scope)}
       GROUP BY week, u.department
       ORDER BY week, u.department
     `);
   }
 
-  async weeklyEnrollments(month: string) {
+  async weeklyEnrollments(scope: OrgScope, month: string) {
     return this.db.all<{ week: string; cnt: number }>(sql`
       SELECT ${this.weekCase('uca.assigned_at')} AS week,
              COUNT(DISTINCT uca.user_id) AS cnt
       FROM user_course_assignments uca
       WHERE to_char(uca.assigned_at, 'YYYY-MM') = ${month}
+        AND ${orgScope('uca', scope)}
       GROUP BY week
     `);
   }
 
-  async weeklyCompletions(month: string) {
+  async weeklyCompletions(scope: OrgScope, month: string) {
     return this.db.all<{ week: string; cnt: number }>(sql`
       SELECT ${this.weekCase('sub.last_completion')} AS week,
              COUNT(DISTINCT sub.user_id) AS cnt
@@ -254,6 +271,7 @@ export class AnalyticsRepository {
         JOIN lessons l ON l.module_id = cm.id AND l.is_active = 1
         JOIN user_lesson_completions ulc
           ON ulc.lesson_id = l.id AND ulc.user_id = uca.user_id
+        WHERE ${orgScope('uca', scope)}
         GROUP BY uca.user_id, uca.course_id
         HAVING COUNT(ulc.id) = (
           SELECT COUNT(*) FROM lessons l2
@@ -268,7 +286,7 @@ export class AnalyticsRepository {
   }
 
   /** Top scorers for the export leaderboard sheet. */
-  async topScorers(limit: number) {
+  async topScorers(scope: OrgScope, limit: number) {
     return this.db.all<{
       id: number;
       first_name: string;
@@ -280,7 +298,7 @@ export class AnalyticsRepository {
              MAX(uaa.percentage) AS best_score
       FROM users u
       JOIN user_assessment_attempts uaa ON uaa.user_id = u.id
-      WHERE u.role = 'learner'
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
       GROUP BY u.id
       ORDER BY best_score DESC
       LIMIT ${limit}

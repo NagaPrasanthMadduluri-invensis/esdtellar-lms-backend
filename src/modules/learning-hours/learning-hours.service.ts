@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { parseScormDuration } from '@/common/scorm-duration.util';
+import type { OrgScope } from '@/database/org-scope';
 
 import { lastMonth, thisMonth, weeks } from './periods';
 import {
@@ -40,20 +41,22 @@ export class LearningHoursService {
    * SCORM deliberately excluded (it is counted from its own reported time).
    */
   async lessonMinutes(
+    scope: OrgScope,
     month: string = thisMonth(),
     previousMonth: string = lastMonth(),
     weekRanges: readonly Week[] = weeks(),
   ): Promise<MinutesRow[]> {
-    return this.repository.minutesByUser(month, previousMonth, weekRanges);
+    return this.repository.minutesByUser(scope, month, previousMonth, weekRanges);
   }
 
   /** SCORM minutes per learner, parsed from whichever format the package used. */
   async scormMinutes(
+    scope: OrgScope,
     month: string = thisMonth(),
     previousMonth: string = lastMonth(),
     weekRanges: readonly Week[] = weeks(),
   ): Promise<Map<number, LearnerMinutes>> {
-    const rows = await this.repository.scormTimes();
+    const rows = await this.repository.scormTimes(scope);
     const buckets = new Map<number, LearnerMinutes>();
 
     for (const row of rows) {
@@ -84,13 +87,14 @@ export class LearningHoursService {
    * needs the two halves separately.
    */
   async minutesByUser(
+    scope: OrgScope,
     month: string = thisMonth(),
     previousMonth: string = lastMonth(),
     weekRanges: readonly Week[] = weeks(),
   ): Promise<Map<number, LearnerMinutes>> {
     const [lessonRows, scorm] = await Promise.all([
-      this.lessonMinutes(month, previousMonth, weekRanges),
-      this.scormMinutes(month, previousMonth, weekRanges),
+      this.lessonMinutes(scope, month, previousMonth, weekRanges),
+      this.scormMinutes(scope, month, previousMonth, weekRanges),
     ]);
 
     const totals = new Map<number, LearnerMinutes>();
@@ -123,10 +127,10 @@ export class LearningHoursService {
    * halves as `minutesByUser` and combines them the same way, so a learner's
    * course rows add up to the total shown everywhere else.
    */
-  async minutesByUserAndCourse(): Promise<Map<string, number>> {
+  async minutesByUserAndCourse(scope: OrgScope): Promise<Map<string, number>> {
     const [lessonRows, scormRows] = await Promise.all([
-      this.repository.lessonMinutesByCourse(),
-      this.repository.scormTimesByCourse(),
+      this.repository.lessonMinutesByCourse(scope),
+      this.repository.scormTimesByCourse(scope),
     ]);
 
     const totals = new Map<string, number>();

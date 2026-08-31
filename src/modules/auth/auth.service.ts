@@ -1,11 +1,11 @@
 import {
-  ConflictException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 
-import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
+import { verifyPassword } from '@/common/crypto/password.util';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import { AuthRepository } from './auth.repository';
@@ -22,6 +22,7 @@ export interface PublicUser {
   department: string | null;
   role: 'admin' | 'learner';
   is_active: boolean;
+  organization_id: number;
 }
 
 export interface AuthResult {
@@ -53,31 +54,24 @@ export class AuthService {
       department: user.department,
       role: user.role,
       is_active: user.isActive === 1,
+      organization_id: user.organizationId,
     });
   }
 
-  async register(dto: RegisterDto): Promise<AuthResult> {
-    if (await this.repository.emailExists(dto.email)) {
-      throw new ConflictException('An account with this email already exists');
-    }
-
-    const created = await this.repository.createLearner({
-      firstName: dto.first_name,
-      lastName: dto.last_name,
-      email: dto.email,
-      passwordHash: hashPassword(dto.password),
-      department: dto.department,
-    });
-
-    return this.issue({
-      id: created.id,
-      first_name: created.firstName,
-      last_name: created.lastName,
-      email: created.email,
-      department: created.department,
-      role: created.role,
-      is_active: created.isActive === 1,
-    });
+  /**
+   * Self-service signup has no way to know which organization a new learner
+   * belongs to — decision 1 (`spec/multi-tenancy.md` §3.1) keeps login
+   * per-email rather than per-org-subdomain, and self-service ORGANIZATION
+   * signup is explicitly out of scope (§2). There is deliberately no
+   * "default" org to fall back to: guessing one would put a stranger's
+   * account inside a real tenant's data. An org admin adds learners within
+   * their own `OrgScope` instead. This is a product decision this phase had
+   * to make, not one the spec stated outright — flagged for review.
+   */
+  async register(_dto: RegisterDto): Promise<AuthResult> {
+    throw new UnprocessableEntityException(
+      'Self-service registration is unavailable. Ask your organization admin to add your account.',
+    );
   }
 
   /** Re-reads from the database so a deactivated account loses access at once. */
@@ -93,6 +87,7 @@ export class AuthService {
       department: user.department,
       role: user.role,
       is_active: user.isActive === 1,
+      organization_id: user.organizationId,
     };
   }
 
@@ -105,6 +100,7 @@ export class AuthService {
       // name without a second round trip on every navigation.
       firstName: user.first_name,
       lastName: user.last_name,
+      organizationId: user.organization_id,
     };
 
     return { user, token: this.tokenService.sign(claims) };

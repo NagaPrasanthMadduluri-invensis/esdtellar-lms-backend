@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 import { users } from '@/database/schema';
 
 export interface LearnerListRow {
@@ -34,14 +35,14 @@ export class UsersRepository {
   }
 
   /** Learner list for the admin table. One query. */
-  async listLearners(): Promise<LearnerListRow[]> {
+  async listLearners(scope: OrgScope): Promise<LearnerListRow[]> {
     return this.db.all<LearnerListRow>(sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department,
              u.location, u.job_role, u.is_active, u.created_at,
              (SELECT COUNT(*) FROM user_course_assignments uca
               WHERE uca.user_id = u.id) AS assigned_courses
       FROM users u
-      WHERE u.role = 'learner'
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
       ORDER BY u.created_at DESC
     `);
   }
@@ -52,7 +53,9 @@ export class UsersRepository {
    * The legacy handler ran three follow-up queries per learner inside a loop —
    * 19 learners cost 58 round trips. Correlated subqueries make it one.
    */
-  async listEmployeesWithProgress(): Promise<EmployeeAggregateRow[]> {
+  async listEmployeesWithProgress(
+    scope: OrgScope,
+  ): Promise<EmployeeAggregateRow[]> {
     return this.db.all<EmployeeAggregateRow>(sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department,
              u.location, u.job_role, u.is_active, u.created_at,
@@ -78,21 +81,23 @@ export class UsersRepository {
              (SELECT COUNT(*) FROM user_assessment_attempts
               WHERE user_id = u.id) AS attempt_count
       FROM users u
-      WHERE u.role = 'learner'
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
       ORDER BY u.created_at DESC
     `);
   }
 
-  async findRoleById(id: number) {
+  async findRoleById(scope: OrgScope, id: number) {
     const rows = await this.db
       .select({ id: users.id, role: users.role })
       .from(users)
-      .where(eq(users.id, id))
+      .where(
+        and(eq(users.id, id), eq(users.organizationId, scope.organizationId)),
+      )
       .limit(1);
     return rows[0] ?? null;
   }
 
-  async findLearnerProfile(id: number) {
+  async findLearnerProfile(scope: OrgScope, id: number) {
     const rows = await this.db
       .select({
         id: users.id,
@@ -106,11 +111,24 @@ export class UsersRepository {
         created_at: users.createdAt,
       })
       .from(users)
-      .where(and(eq(users.id, id), eq(users.role, 'learner')))
+      .where(
+        and(
+          eq(users.id, id),
+          eq(users.role, 'learner'),
+          eq(users.organizationId, scope.organizationId),
+        ),
+      )
       .limit(1);
     return rows[0] ?? null;
   }
 
+  /**
+   * Deliberately NOT org-scoped. `users.email` is globally UNIQUE (spec
+   * decision 1: one email = one organization), so an address already taken in
+   * another organization is still unavailable here. Scoping this would let an
+   * admin pass the check and then hit the database's unique constraint — a 500
+   * where the caller expects a clean 409.
+   */
   async emailExists(email: string, excludeId?: number): Promise<boolean> {
     const where = excludeId
       ? and(eq(users.email, email), ne(users.id, excludeId))
@@ -124,19 +142,26 @@ export class UsersRepository {
     return rows.length > 0;
   }
 
-  async createLearner(input: {
-    employeeId?: string | null;
-    firstName: string;
-    lastName: string;
-    email: string;
-    passwordHash: string;
-    department: string | null;
-    location: string | null;
-    jobRole: string | null;
-  }) {
+  async createLearner(
+    scope: OrgScope,
+    input: {
+      employeeId?: string | null;
+      firstName: string;
+      lastName: string;
+      email: string;
+      passwordHash: string;
+      department: string | null;
+      location: string | null;
+      jobRole: string | null;
+    },
+  ) {
     const [created] = await this.db
       .insert(users)
       .values({
+        // A learner is created in the org of the admin creating them. There is
+        // no other org an admin could legitimately place a user into: their
+        // OrgScope is the only organization they can see.
+        organizationId: scope.organizationId,
         employeeId: input.employeeId ?? null,
         firstName: input.firstName,
         lastName: input.lastName,
@@ -159,6 +184,7 @@ export class UsersRepository {
   }
 
   async updateProfile(
+    scope: OrgScope,
     id: number,
     input: {
       firstName: string;
@@ -177,7 +203,9 @@ export class UsersRepository {
         location: input.location,
         jobRole: input.jobRole,
       })
-      .where(eq(users.id, id))
+      .where(
+        and(eq(users.id, id), eq(users.organizationId, scope.organizationId)),
+      )
       .returning({
         id: users.id,
         first_name: users.firstName,
@@ -190,11 +218,13 @@ export class UsersRepository {
     return updated;
   }
 
-  async setActive(id: number, isActive: boolean) {
+  async setActive(scope: OrgScope, id: number, isActive: boolean) {
     const [updated] = await this.db
       .update(users)
       .set({ isActive: isActive ? 1 : 0 })
-      .where(eq(users.id, id))
+      .where(
+        and(eq(users.id, id), eq(users.organizationId, scope.organizationId)),
+      )
       .returning({
         id: users.id,
         first_name: users.firstName,
@@ -205,8 +235,12 @@ export class UsersRepository {
     return updated;
   }
 
-  async remove(id: number): Promise<void> {
-    await this.db.delete(users).where(eq(users.id, id));
+  async remove(scope: OrgScope, id: number): Promise<void> {
+    await this.db
+      .delete(users)
+      .where(
+        and(eq(users.id, id), eq(users.organizationId, scope.organizationId)),
+      );
   }
 
   /* ── Learner detail: assignments + progress + assessments ──

@@ -8,6 +8,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import type { OrgScope } from '@/database/org-scope';
+
 import {
   CertificatesRepository,
   type CompletionSnapshot,
@@ -92,15 +94,21 @@ export class CertificatesService {
    *
    * Returns the new certificate id, or null when nothing was issued.
    */
-  async autoIssue(userId: number, courseId: number): Promise<number | null> {
+  async autoIssue(
+    scope: OrgScope,
+    userId: number,
+    courseId: number,
+  ): Promise<number | null> {
     try {
       const existing = await this.repository.findByUserAndCourse(
+        scope,
         userId,
         courseId,
       );
       if (existing) return null;
 
       const snapshot = await this.repository.getCompletionSnapshot(
+        scope,
         userId,
         courseId,
       );
@@ -114,7 +122,10 @@ export class CertificatesService {
       const verdict = this.evaluate(snapshot);
       if (!verdict.complete) return null;
 
-      return await this.repository.insert({
+      // `certificates` is an activity table — it takes the learner's org,
+      // which is exactly what `scope` is here: the caller is the learner
+      // completing their own lesson/assessment.
+      return await this.repository.insert(scope, {
         userId,
         courseId,
         certificateCode: this.generateCode(courseId, userId),
@@ -150,28 +161,41 @@ export class CertificatesService {
    * This is also the ONLY route to a certificate for a session's training:
    * auto-issue declines those on purpose (see autoIssue).
    */
-  async issueManually(userId: number, courseId: number, adminId: number) {
-    const learner = await this.repository.findLearner(userId);
+  async issueManually(
+    scope: OrgScope,
+    userId: number,
+    courseId: number,
+    adminId: number,
+  ) {
+    const learner = await this.repository.findLearner(scope, userId);
     if (!learner) throw new NotFoundException('Learner not found');
 
-    const course = await this.repository.findCourse(courseId);
+    const course = await this.repository.findCourse(scope, courseId);
     if (!course) throw new NotFoundException('Course not found');
 
-    const snapshot = await this.repository.getCompletionSnapshot(userId, courseId);
+    const snapshot = await this.repository.getCompletionSnapshot(
+      scope,
+      userId,
+      courseId,
+    );
     const verdict = this.evaluate(snapshot);
 
-    const existing = await this.repository.findByUserAndCourse(userId, courseId);
+    const existing = await this.repository.findByUserAndCourse(
+      scope,
+      userId,
+      courseId,
+    );
     if (existing) {
       if (existing.isRevoked === 0) {
         throw new ConflictException(
           'This learner already has a certificate for this course.',
         );
       }
-      const reinstated = await this.reinstate(existing.id);
+      const reinstated = await this.reinstate(scope, existing.id);
       return { ...reinstated, reinstated: true, hadCompleted: verdict.complete };
     }
 
-    const id = await this.repository.insert({
+    const id = await this.repository.insert(scope, {
       userId,
       courseId,
       certificateCode: this.generateCode(courseId, userId),
@@ -196,8 +220,8 @@ export class CertificatesService {
     };
   }
 
-  async listForLearner(userId: number) {
-    const rows = await this.repository.listForLearner(userId);
+  async listForLearner(scope: OrgScope, userId: number) {
+    const rows = await this.repository.listForLearner(scope, userId);
     return rows.map((row) => ({
       id: row.id,
       certificateCode: row.certificateCode,
@@ -208,8 +232,8 @@ export class CertificatesService {
     }));
   }
 
-  async getForLearner(id: number, userId: number) {
-    const row = await this.repository.findDetailById(id);
+  async getForLearner(scope: OrgScope, id: number, userId: number) {
+    const row = await this.repository.findDetailById(scope, id);
     if (!row) throw new NotFoundException('Certificate not found');
     if (row.userId !== userId) throw new ForbiddenException('Forbidden');
 
@@ -224,8 +248,11 @@ export class CertificatesService {
     };
   }
 
-  async listForAdmin(filters: { userId?: number; courseId?: number }) {
-    const rows = await this.repository.listForAdmin(filters);
+  async listForAdmin(
+    scope: OrgScope,
+    filters: { userId?: number; courseId?: number },
+  ) {
+    const rows = await this.repository.listForAdmin(scope, filters);
     return rows.map((row) => ({
       id: row.id,
       learnerName: `${row.firstName} ${row.lastName}`,
@@ -237,15 +264,15 @@ export class CertificatesService {
     }));
   }
 
-  async revoke(id: number, adminId: number): Promise<void> {
-    const cert = await this.repository.findStatusById(id);
+  async revoke(scope: OrgScope, id: number, adminId: number): Promise<void> {
+    const cert = await this.repository.findStatusById(scope, id);
     if (!cert) throw new NotFoundException('Certificate not found');
-    await this.repository.revoke(id, adminId);
+    await this.repository.revoke(scope, id, adminId);
   }
 
   /** Re-stamps a revoked certificate with a fresh code and issue date. */
-  async reinstate(id: number) {
-    const cert = await this.repository.findStatusById(id);
+  async reinstate(scope: OrgScope, id: number) {
+    const cert = await this.repository.findStatusById(scope, id);
     if (!cert) throw new NotFoundException('Certificate not found');
     if (cert.isRevoked === 0) {
       throw new ConflictException('Certificate is not revoked');
@@ -253,7 +280,7 @@ export class CertificatesService {
 
     const certificateCode = this.generateCode(cert.courseId, cert.userId);
     const issuedAt = new Date().toISOString();
-    await this.repository.reinstate(id, certificateCode, issuedAt);
+    await this.repository.reinstate(scope, id, certificateCode, issuedAt);
 
     return { id, certificateCode, issuedAt, isRevoked: false };
   }

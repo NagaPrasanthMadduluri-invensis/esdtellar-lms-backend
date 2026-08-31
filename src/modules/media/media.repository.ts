@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 import { lessons } from '@/database/schema';
 
 /** A lesson's media state, as the admin side needs it. */
@@ -35,8 +36,17 @@ export class MediaRepository {
     return this.database.db;
   }
 
+  /**
+   * `scope` is first on every method here (and across the sibling modules):
+   * it is required, security-relevant, reads like a context argument, and
+   * can never collide with an optional or defaulted parameter that follows.
+   */
+
   /** Lesson + owning course, or null when it does not exist / is archived. */
-  async findLesson(lessonId: number): Promise<LessonMediaRow | null> {
+  async findLesson(
+    scope: OrgScope,
+    lessonId: number,
+  ): Promise<LessonMediaRow | null> {
     const rows = await this.db.all<LessonMediaRow>(sql`
       SELECT l.id, l.title, cm.course_id, l.content_type,
              l.video_key, l.caption_key, l.video_duration_seconds,
@@ -45,6 +55,7 @@ export class MediaRepository {
       FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.id = ${lessonId} AND l.is_active = 1 AND cm.is_active = 1
+        AND ${orgScope('l', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -57,7 +68,11 @@ export class MediaRepository {
    * `findLessonForLearner` uses, for the same reason — authorising a download
    * must not cost a second query (§7.1).
    */
-  async findResourceForLearner(resourceId: number, userId: number) {
+  async findResourceForLearner(
+    scope: OrgScope,
+    resourceId: number,
+    userId: number,
+  ) {
     const rows = await this.db.all<{
       id: number;
       lesson_id: number;
@@ -79,6 +94,7 @@ export class MediaRepository {
       JOIN lessons l ON l.id = r.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE r.id = ${resourceId} AND l.is_active = 1 AND cm.is_active = 1
+        AND ${orgScope('r', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -92,6 +108,7 @@ export class MediaRepository {
    * to turn that into a 403.
    */
   async findLessonForLearner(
+    scope: OrgScope,
     lessonId: number,
     userId: number,
   ): Promise<LearnerLessonMediaRow | null> {
@@ -105,6 +122,7 @@ export class MediaRepository {
       FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.id = ${lessonId} AND l.is_active = 1 AND cm.is_active = 1
+        AND ${orgScope('l', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -116,18 +134,25 @@ export class MediaRepository {
    * video, a late-arriving request, or a duplicate retry can only ever confirm
    * time already earned. `last_position_seconds` is free to move backwards
    * because it is a bookmark, not a measurement.
+   *
+   * `lesson_video_progress` is an activity table — the row takes the watching
+   * learner's org (§3.3).
    */
-  async upsertVideoProgress(values: {
-    userId: number;
-    lessonId: number;
-    watchedSeconds: number;
-    positionSeconds: number;
-  }): Promise<void> {
+  async upsertVideoProgress(
+    scope: OrgScope,
+    values: {
+      userId: number;
+      lessonId: number;
+      watchedSeconds: number;
+      positionSeconds: number;
+    },
+  ): Promise<void> {
     await this.db.run(sql`
       INSERT INTO lesson_video_progress
-        (user_id, lesson_id, watched_seconds, last_position_seconds, updated_at)
-      VALUES (${values.userId}, ${values.lessonId}, ${values.watchedSeconds},
-              ${values.positionSeconds}, now())
+        (organization_id, user_id, lesson_id, watched_seconds,
+         last_position_seconds, updated_at)
+      VALUES (${scope.organizationId}, ${values.userId}, ${values.lessonId},
+              ${values.watchedSeconds}, ${values.positionSeconds}, now())
       ON CONFLICT (user_id, lesson_id) DO UPDATE SET
         watched_seconds       = GREATEST(lesson_video_progress.watched_seconds,
                                          excluded.watched_seconds),
@@ -136,7 +161,7 @@ export class MediaRepository {
     `);
   }
 
-  async findVideoProgress(userId: number, lessonId: number) {
+  async findVideoProgress(scope: OrgScope, userId: number, lessonId: number) {
     const rows = await this.db.all<{
       watched_seconds: number;
       last_position_seconds: number;
@@ -144,29 +169,48 @@ export class MediaRepository {
       SELECT watched_seconds, last_position_seconds
       FROM lesson_video_progress
       WHERE user_id = ${userId} AND lesson_id = ${lessonId}
+        AND ${orgScope('lesson_video_progress', scope)}
     `);
     return rows[0] ?? null;
   }
 
   /** Real duration of the uploaded file, captured at upload time. */
-  async setVideoDuration(lessonId: number, seconds: number | null): Promise<void> {
+  async setVideoDuration(
+    scope: OrgScope,
+    lessonId: number,
+    seconds: number | null,
+  ): Promise<void> {
     await this.db
       .update(lessons)
       .set({ videoDurationSeconds: seconds })
-      .where(eq(lessons.id, lessonId));
+      .where(
+        and(eq(lessons.id, lessonId), eq(lessons.organizationId, scope.organizationId)),
+      );
   }
 
-  async setVideoKey(lessonId: number, key: string | null): Promise<void> {
+  async setVideoKey(
+    scope: OrgScope,
+    lessonId: number,
+    key: string | null,
+  ): Promise<void> {
     await this.db
       .update(lessons)
       .set({ videoKey: key })
-      .where(eq(lessons.id, lessonId));
+      .where(
+        and(eq(lessons.id, lessonId), eq(lessons.organizationId, scope.organizationId)),
+      );
   }
 
-  async setCaptionKey(lessonId: number, key: string | null): Promise<void> {
+  async setCaptionKey(
+    scope: OrgScope,
+    lessonId: number,
+    key: string | null,
+  ): Promise<void> {
     await this.db
       .update(lessons)
       .set({ captionKey: key })
-      .where(eq(lessons.id, lessonId));
+      .where(
+        and(eq(lessons.id, lessonId), eq(lessons.organizationId, scope.organizationId)),
+      );
   }
 }

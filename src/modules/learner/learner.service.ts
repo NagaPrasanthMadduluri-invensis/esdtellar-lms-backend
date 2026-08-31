@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
+import type { OrgScope } from '@/database/org-scope';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
 import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
@@ -78,10 +79,10 @@ export class LearnerService {
      GET /learner/courses
   ───────────────────────────────────────────── */
 
-  async courses(userId: number) {
+  async courses(scope: OrgScope, userId: number) {
     const [rows, contentRows] = await Promise.all([
-      this.repository.assignedCourses(userId),
-      this.repository.courseContentTypes(userId),
+      this.repository.assignedCourses(scope, userId),
+      this.repository.courseContentTypes(scope, userId),
     ]);
 
     // What each course actually holds, rather than a hard-coded assumption.
@@ -189,14 +190,14 @@ export class LearnerService {
      GET /learner/dashboard
   ───────────────────────────────────────────── */
 
-  async dashboard(userId: number) {
+  async dashboard(scope: OrgScope, userId: number) {
     const [rows, standings, lessonMinutes, scormBuckets, attempts] =
       await Promise.all([
-        this.repository.assignedCourses(userId),
-        this.leaderboard_.standings(),
-        this.hours.lessonMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
-        this.hours.scormMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
-        this.repository.recentAttempts(userId, 5),
+        this.repository.assignedCourses(scope, userId),
+        this.leaderboard_.standings(scope),
+        this.hours.lessonMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
+        this.hours.scormMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
+        this.repository.recentAttempts(scope, userId, 5),
       ]);
 
     const enrolled = rows.map((row) => {
@@ -234,9 +235,9 @@ export class LearnerService {
     const scorm = scormBuckets.get(userId);
 
     const [lessonEvents, assessmentEvents, assignmentEvents] = await Promise.all([
-      this.repository.lessonEvents(userId, 3),
-      this.repository.assessmentEvents(userId, 3),
-      this.repository.assignmentEvents(userId, 3),
+      this.repository.lessonEvents(scope, userId, 3),
+      this.repository.assessmentEvents(scope, userId, 3),
+      this.repository.assignmentEvents(scope, userId, 3),
     ]);
 
     const recentActivity = [
@@ -325,8 +326,8 @@ export class LearnerService {
      GET /learner/courses/:courseId
   ───────────────────────────────────────────── */
 
-  async courseDetail(userId: number, courseId: number) {
-    const assignment = await this.repository.findAssignment(userId, courseId);
+  async courseDetail(scope: OrgScope, userId: number, courseId: number) {
+    const assignment = await this.repository.findAssignment(scope, userId, courseId);
     if (!assignment) {
       throw new ForbiddenException('You are not enrolled in this course');
     }
@@ -424,11 +425,11 @@ export class LearnerService {
      GET /learner/lessons/:lessonId
   ───────────────────────────────────────────── */
 
-  async lesson(userId: number, lessonId: number) {
-    const lesson = await this.repository.findLessonWithModule(lessonId);
+  async lesson(scope: OrgScope, userId: number, lessonId: number) {
+    const lesson = await this.repository.findLessonWithModule(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
-    if (!(await this.repository.isAssigned(userId, Number(lesson.course_id)))) {
+    if (!(await this.repository.isAssigned(scope, userId, Number(lesson.course_id)))) {
       throw new ForbiddenException('Access denied');
     }
 
@@ -534,12 +535,12 @@ export class LearnerService {
     };
   }
 
-  async completeLesson(userId: number, lessonId: number) {
-    const lesson = await this.repository.findLessonCourse(lessonId);
+  async completeLesson(scope: OrgScope, userId: number, lessonId: number) {
+    const lesson = await this.repository.findLessonCourse(scope, lessonId);
     if (!lesson) throw new NotFoundException('Lesson not found');
 
     const courseId = Number(lesson.course_id);
-    if (!(await this.repository.isAssigned(userId, courseId))) {
+    if (!(await this.repository.isAssigned(scope, userId, courseId))) {
       throw new ForbiddenException('Access denied');
     }
 
@@ -554,9 +555,9 @@ export class LearnerService {
       );
     }
 
-    await this.repository.markLessonComplete(userId, lessonId);
+    await this.repository.markLessonComplete(scope, userId, lessonId);
     // Finishing the last lesson can complete the course. Best-effort.
-    await this.certificates.autoIssue(userId, courseId);
+    await this.certificates.autoIssue(scope, userId, courseId);
 
     return { message: 'Lesson marked as complete' };
   }
@@ -614,15 +615,15 @@ export class LearnerService {
      GET /learner/progress
   ───────────────────────────────────────────── */
 
-  async progress(userId: number) {
+  async progress(scope: OrgScope, userId: number) {
     const [assigned, lessonProgress, scormRows, minutes, scormBuckets, attempts] =
       await Promise.all([
-        this.repository.assignedCourses(userId),
-        this.repository.courseLessonProgress(userId),
-        this.repository.scormForAssignedCourses(userId),
-        this.hours.lessonMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
-        this.hours.scormMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
-        this.repository.allAttempts(userId),
+        this.repository.assignedCourses(scope, userId),
+        this.repository.courseLessonProgress(scope, userId),
+        this.repository.scormForAssignedCourses(scope, userId),
+        this.hours.lessonMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
+        this.hours.scormMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
+        this.repository.allAttempts(scope, userId),
       ]);
 
     const progressByCourse = new Map(
@@ -742,10 +743,10 @@ export class LearnerService {
 
     const [lessonEvents, assessEvents, assignEvents, scormEvents] =
       await Promise.all([
-        this.repository.lessonEvents(userId, 5),
-        this.repository.assessmentEvents(userId, 5),
-        this.repository.assignmentEvents(userId, 100),
-        this.repository.scormEvents(userId, 5),
+        this.repository.lessonEvents(scope, userId, 5),
+        this.repository.assessmentEvents(scope, userId, 5),
+        this.repository.assignmentEvents(scope, userId, 100),
+        this.repository.scormEvents(scope, userId, 5),
       ]);
 
     const timeline = [
@@ -830,14 +831,14 @@ export class LearnerService {
      GET /learner/achievements
   ───────────────────────────────────────────── */
 
-  async achievements(userId: number) {
+  async achievements(scope: OrgScope, userId: number) {
     const [standings, assigned, attempts, lessonEvents, passedEvents] =
       await Promise.all([
-        this.leaderboard_.standings(),
-        this.repository.assignedCourses(userId),
-        this.repository.allAttempts(userId),
-        this.repository.lessonEvents(userId, 10),
-        this.repository.assessmentEvents(userId, 100, true),
+        this.leaderboard_.standings(scope),
+        this.repository.assignedCourses(scope, userId),
+        this.repository.allAttempts(scope, userId),
+        this.repository.lessonEvents(scope, userId, 10),
+        this.repository.assessmentEvents(scope, userId, 100, true),
       ]);
 
     const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
@@ -942,8 +943,8 @@ export class LearnerService {
      GET /learner/leaderboard
   ───────────────────────────────────────────── */
 
-  async leaderboard(userId: number) {
-    const { byPoints, byMonth, recognition } = await this.leaderboard_.standings();
+  async leaderboard(scope: OrgScope, userId: number) {
+    const { byPoints, byMonth, recognition } = await this.leaderboard_.standings(scope);
 
     const decorate = (e: (typeof byPoints)[number]) => ({
       id: e.id,
@@ -993,15 +994,15 @@ export class LearnerService {
      GET /learner/learning-hours
   ───────────────────────────────────────────── */
 
-  async learningHours(userId: number) {
+  async learningHours(scope: OrgScope, userId: number) {
     const [me, profiles, minutes, scormBuckets, courseHours, contentRows] =
       await Promise.all([
-      this.repository.findUser(userId),
-      this.repository.allLearnerProfiles(),
-      this.hours.lessonMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
-      this.hours.scormMinutes(currentMonthKey(), previousMonthKey(), monthWeeks()),
-      this.repository.monthlyHoursByCourse(userId, currentMonthKey()),
-      this.repository.courseContentTypes(userId),
+      this.repository.findUser(scope, userId),
+      this.repository.allLearnerProfiles(scope),
+      this.hours.lessonMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
+      this.hours.scormMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
+      this.repository.monthlyHoursByCourse(scope, userId, currentMonthKey()),
+      this.repository.courseContentTypes(scope, userId),
     ]);
 
     const myDept = me?.department || 'Unknown';
@@ -1154,7 +1155,7 @@ export class LearnerService {
      POST /learner/change-password
   ───────────────────────────────────────────── */
 
-  async changePassword(userId: number, dto: ChangePasswordDto) {
+  async changePassword(scope: OrgScope, userId: number, dto: ChangePasswordDto) {
     const rules = {
       minLength: dto.newPassword.length >= 8,
       uppercase: /[A-Z]/.test(dto.newPassword),
@@ -1174,7 +1175,7 @@ export class LearnerService {
       });
     }
 
-    const user = await this.repository.findActiveWithPassword(userId);
+    const user = await this.repository.findActiveWithPassword(scope, userId);
     if (!user) throw new NotFoundException('User not found');
 
     if (!verifyPassword(dto.currentPassword, user.password)) {
@@ -1186,7 +1187,7 @@ export class LearnerService {
       );
     }
 
-    await this.repository.updatePassword(userId, hashPassword(dto.newPassword));
+    await this.repository.updatePassword(scope, userId, hashPassword(dto.newPassword));
     return { message: 'Password updated successfully' };
   }
 

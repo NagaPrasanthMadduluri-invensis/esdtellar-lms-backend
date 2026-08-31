@@ -12,8 +12,9 @@ import {
   Query,
 } from '@nestjs/common';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import type { OrgScope } from '@/database/org-scope';
 
 import { CertificatesService } from './certificates.service';
 import { IssueCertificateDto } from './dto/issue-certificate.dto';
@@ -25,9 +26,12 @@ export class AdminCertificatesController {
   constructor(private readonly certificates: CertificatesService) {}
 
   @Get()
-  async list(@Query() query: ListCertificatesQueryDto) {
+  async list(
+    @Query() query: ListCertificatesQueryDto,
+    @CurrentScope() scope: OrgScope,
+  ) {
     return {
-      certificates: await this.certificates.listForAdmin({
+      certificates: await this.certificates.listForAdmin(scope, {
         userId: query.userId,
         courseId: query.courseId,
       }),
@@ -43,10 +47,12 @@ export class AdminCertificatesController {
   async issue(
     @Body() dto: IssueCertificateDto,
     @CurrentUser() admin: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
     return {
       ok: true,
       certificate: await this.certificates.issueManually(
+        scope,
         dto.userId,
         dto.courseId,
         admin.userId,
@@ -59,14 +65,21 @@ export class AdminCertificatesController {
   async revoke(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() admin: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    await this.certificates.revoke(id, admin.userId);
+    await this.certificates.revoke(scope, id, admin.userId);
     return { ok: true };
   }
 
   /** Reinstate a revoked certificate. 409 when it is not currently revoked. */
   @Patch(':id')
-  async reinstate(@Param('id', ParseIntPipe) id: number) {
-    return { ok: true, certificate: await this.certificates.reinstate(id) };
+  async reinstate(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return {
+      ok: true,
+      certificate: await this.certificates.reinstate(scope, id),
+    };
   }
 }

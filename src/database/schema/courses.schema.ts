@@ -17,10 +17,8 @@ export const courses = pgTable(
     id: serial('id').primaryKey(),
     /**
      * The owner: a real org, or the platform org for global content (§3.4).
-     * Nullable until wave 3's backfill + `SET NOT NULL` — see the note on
-     * `users.organizationId` for why this is not `.notNull()` yet.
      */
-    organizationId: integer('organization_id'),
+    organizationId: integer('organization_id').notNull(),
     name: text('name').notNull(),
     description: text('description'),
     thumbnailUrl: text('thumbnail_url'),
@@ -59,8 +57,8 @@ export const courseModules = pgTable(
   'course_modules',
   {
     id: serial('id').primaryKey(),
-    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Content: the owning course's org. */
+    organizationId: integer('organization_id').notNull(),
     courseId: integer('course_id')
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
@@ -81,8 +79,8 @@ export const lessons = pgTable(
   'lessons',
   {
     id: serial('id').primaryKey(),
-    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Content: the owning course's org. */
+    organizationId: integer('organization_id').notNull(),
     moduleId: integer('module_id')
       .notNull()
       .references(() => courseModules.id, { onDelete: 'cascade' }),
@@ -151,8 +149,8 @@ export const lessonResources = pgTable(
   'lesson_resources',
   {
     id: serial('id').primaryKey(),
-    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Content: the owning course's org. */
+    organizationId: integer('organization_id').notNull(),
     lessonId: integer('lesson_id')
       .notNull()
       .references(() => lessons.id, { onDelete: 'cascade' }),

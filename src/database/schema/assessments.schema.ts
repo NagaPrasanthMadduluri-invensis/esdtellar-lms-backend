@@ -7,8 +7,8 @@ export const assessments = pgTable(
   'assessments',
   {
     id: serial('id').primaryKey(),
-    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Content: the owning course's org. */
+    organizationId: integer('organization_id').notNull(),
     courseId: integer('course_id')
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
@@ -29,8 +29,8 @@ export const assessmentQuestions = pgTable(
   'assessment_questions',
   {
     id: serial('id').primaryKey(),
-    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Content: the owning course's org. */
+    organizationId: integer('organization_id').notNull(),
     assessmentId: integer('assessment_id')
       .notNull()
       .references(() => assessments.id, { onDelete: 'cascade' }),
@@ -47,8 +47,8 @@ export const assessmentOptions = pgTable(
   'assessment_options',
   {
     id: serial('id').primaryKey(),
-    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Content: the owning course's org. */
+    organizationId: integer('organization_id').notNull(),
     questionId: integer('question_id')
       .notNull()
       .references(() => assessmentQuestions.id, { onDelete: 'cascade' }),
@@ -62,8 +62,8 @@ export const userAssessmentAttempts = pgTable(
   'user_assessment_attempts',
   {
     id: serial('id').primaryKey(),
-    /** Activity: the attempting user's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Activity: the attempting user's org. */
+    organizationId: integer('organization_id').notNull(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -93,10 +93,9 @@ export const userAssessmentAnswers = pgTable(
     /**
      * Activity: the learner's org, same exception noted in the migration —
      * this table has no `userId` column, so the org is reached through
-     * `attemptId` rather than a direct FK to `users` (§3.3). Nullable until
-     * wave 3 (§3.10).
+     * `attemptId` rather than a direct FK to `users` (§3.3).
      */
-    organizationId: integer('organization_id'),
+    organizationId: integer('organization_id').notNull(),
     attemptId: integer('attempt_id')
       .notNull()
       .references(() => userAssessmentAttempts.id, { onDelete: 'cascade' }),

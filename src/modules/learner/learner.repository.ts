@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
+import { orgScope, type OrgScope } from '@/database/org-scope';
 import { userCourseAssignments, userLessonCompletions, users } from '@/database/schema';
 
 import { lastMonth, thisMonth, weeks } from './learner.constants';
@@ -54,7 +55,7 @@ export class LearnerRepository {
   ───────────────────────────────────────────── */
 
   /** Lesson minutes per learner, bucketed by period — one query, seven buckets. */
-  async lessonMinutesByPeriod(): Promise<LessonMinutesRow[]> {
+  async lessonMinutesByPeriod(scope: OrgScope): Promise<LessonMinutesRow[]> {
     const [w1, w2, w3, w4] = weeks();
     return this.db.all<LessonMinutesRow>(sql`
       SELECT u.id AS user_id,
@@ -74,7 +75,7 @@ export class LearnerRepository {
       FROM users u
       LEFT JOIN user_lesson_completions c ON c.user_id = u.id
       LEFT JOIN lessons l ON l.id = c.lesson_id
-      WHERE u.role = 'learner'
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
       GROUP BY u.id
     `);
   }
@@ -84,23 +85,25 @@ export class LearnerRepository {
    * cannot be summed in SQL — one query fetches the rows and the service
    * buckets them, rather than querying per learner per period.
    */
-  async scormTimes(): Promise<ScormTimeRow[]> {
+  async scormTimes(scope: OrgScope): Promise<ScormTimeRow[]> {
     return this.db.all<ScormTimeRow>(sql`
-      SELECT user_id, total_time, updated_at
-      FROM scorm_tracking
-      WHERE total_time IS NOT NULL
+      SELECT st.user_id, st.total_time, st.updated_at
+      FROM scorm_tracking st
+      WHERE st.total_time IS NOT NULL
+        AND ${orgScope('st', scope)}
     `);
   }
 
-  async allLearnerProfiles() {
+  async allLearnerProfiles(scope: OrgScope) {
     return this.db.all<{
       id: number;
       first_name: string;
       last_name: string;
       department: string | null;
     }>(sql`
-      SELECT id, first_name, last_name, department
-      FROM users WHERE role = 'learner'
+      SELECT u.id, u.first_name, u.last_name, u.department
+      FROM users u
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
     `);
   }
 
@@ -112,19 +115,19 @@ export class LearnerRepository {
    * every lesson in it was video, and any course beyond id 4 fell off the map
    * entirely.
    */
-  async courseContentTypes(userId: number) {
+  async courseContentTypes(scope: OrgScope, userId: number) {
     return this.db.all<{ course_id: number; content_types: string }>(sql`
       SELECT cm.course_id,
              string_agg(DISTINCT l.content_type, ',') AS content_types
       FROM user_course_assignments uca
       JOIN course_modules cm ON cm.course_id = uca.course_id AND cm.is_active = 1
       JOIN lessons l ON l.module_id = cm.id AND l.is_active = 1
-      WHERE uca.user_id = ${userId}
+      WHERE uca.user_id = ${userId} AND ${orgScope('uca', scope)}
       GROUP BY cm.course_id
     `);
   }
 
-  async findUser(userId: number) {
+  async findUser(scope: OrgScope, userId: number) {
     const rows = await this.db
       .select({
         id: users.id,
@@ -133,7 +136,9 @@ export class LearnerRepository {
         department: users.department,
       })
       .from(users)
-      .where(eq(users.id, userId))
+      .where(
+        and(eq(users.id, userId), eq(users.organizationId, scope.organizationId)),
+      )
       .limit(1);
     return rows[0] ?? null;
   }
@@ -143,7 +148,7 @@ export class LearnerRepository {
   ───────────────────────────────────────────── */
 
   /** Assigned courses with lesson counts and last activity — one query. */
-  async assignedCourses(userId: number) {
+  async assignedCourses(scope: OrgScope, userId: number) {
     return this.db.all<{
       enrollment_id: number;
       assigned_at: string;
@@ -209,7 +214,7 @@ export class LearnerRepository {
       FROM user_course_assignments uca
       JOIN courses c ON c.id = uca.course_id AND c.is_active = 1
       LEFT JOIN sessions s ON s.id = c.session_id
-      WHERE uca.user_id = ${userId}
+      WHERE uca.user_id = ${userId} AND ${orgScope('uca', scope)}
       ORDER BY uca.assigned_at ASC
     `);
   }
@@ -218,7 +223,15 @@ export class LearnerRepository {
      Course detail
   ───────────────────────────────────────────── */
 
-  async isAssigned(userId: number, courseId: number): Promise<boolean> {
+  /**
+   * The entitlement check: this and `findAssignment` are the driving
+   * assignment row every later query in a course/lesson flow leans on. Once
+   * an assignment matching (scope, userId, courseId) is confirmed, the
+   * courseId is known to belong to this org and the rest of the flow
+   * (`findActiveCourse`, `activeModules`, `lessonsWithStatus`, ...) does not
+   * re-check it.
+   */
+  async isAssigned(scope: OrgScope, userId: number, courseId: number): Promise<boolean> {
     const rows = await this.db
       .select({ id: userCourseAssignments.id })
       .from(userCourseAssignments)
@@ -226,13 +239,14 @@ export class LearnerRepository {
         and(
           eq(userCourseAssignments.userId, userId),
           eq(userCourseAssignments.courseId, courseId),
+          eq(userCourseAssignments.organizationId, scope.organizationId),
         ),
       )
       .limit(1);
     return rows.length > 0;
   }
 
-  async findAssignment(userId: number, courseId: number) {
+  async findAssignment(scope: OrgScope, userId: number, courseId: number) {
     const rows = await this.db
       .select()
       .from(userCourseAssignments)
@@ -240,12 +254,18 @@ export class LearnerRepository {
         and(
           eq(userCourseAssignments.userId, userId),
           eq(userCourseAssignments.courseId, courseId),
+          eq(userCourseAssignments.organizationId, scope.organizationId),
         ),
       )
       .limit(1);
     return rows[0] ?? null;
   }
 
+  /**
+   * Deliberately NOT scoped: called only after `findAssignment` has already
+   * confirmed this courseId belongs to `scope` (the driving assignment row).
+   * Re-checking here would be a redundant predicate on an already-verified id.
+   */
   async findActiveCourse(courseId: number) {
     const rows = await this.db.all(sql`
       SELECT * FROM courses WHERE id = ${courseId} AND is_active = 1
@@ -253,6 +273,12 @@ export class LearnerRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * `activeModules`, `lessonsWithStatus`, `courseAssessments` and
+   * `latestAttemptsForCourse` all key off `courseId` alone, same reasoning as
+   * `findActiveCourse` above: the caller (`courseDetail`) only reaches them
+   * after `findAssignment` has verified this courseId is in `scope`.
+   */
   async activeModules(courseId: number) {
     return this.db.all<Record<string, unknown> & { id: number }>(sql`
       SELECT * FROM course_modules
@@ -332,7 +358,15 @@ export class LearnerRepository {
      Lesson detail
   ───────────────────────────────────────────── */
 
-  async findLessonWithModule(lessonId: number) {
+  /**
+   * The driving row for the lesson-detail flow — unlike `findActiveCourse`
+   * this runs BEFORE any assignment check, so it is the query root that has
+   * to enforce tenancy itself. Scoping directly on `lessons.organization_id`
+   * makes a lessonId from another org resolve to no rows, which the caller
+   * reads as 404 rather than the 403 it would otherwise throw for "not
+   * assigned" — the correct code per the cross-org access rule.
+   */
+  async findLessonWithModule(scope: OrgScope, lessonId: number) {
     const rows = await this.db.all<{
       id: number;
       module_id: number;
@@ -370,7 +404,7 @@ export class LearnerRepository {
       JOIN course_modules cm ON cm.id = l.module_id
       LEFT JOIN courses c ON c.id = cm.course_id
       LEFT JOIN sessions s ON s.id = c.session_id
-      WHERE l.id = ${lessonId} AND l.is_active = 1
+      WHERE l.id = ${lessonId} AND l.is_active = 1 AND ${orgScope('l', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -381,6 +415,9 @@ export class LearnerRepository {
    * `file_key` is deliberately NOT selected: the learner never sees a storage
    * key. Opening an uploaded resource goes through
    * `GET /learner/resources/:id/url`, which signs it per click.
+   *
+   * Not scoped: only reached after `findLessonWithModule` + `isAssigned` have
+   * already verified this lessonId is in `scope`.
    */
   async lessonResources(lessonId: number) {
     return this.db.all<{
@@ -401,7 +438,8 @@ export class LearnerRepository {
     `);
   }
 
-  async findLessonCourse(lessonId: number) {
+  /** Same reasoning as `findLessonWithModule`: the driving row for `completeLesson`. */
+  async findLessonCourse(scope: OrgScope, lessonId: number) {
     const rows = await this.db.all<{
       id: number;
       course_id: number;
@@ -409,15 +447,20 @@ export class LearnerRepository {
     }>(sql`
       SELECT l.id, l.content_type, cm.course_id FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
-      WHERE l.id = ${lessonId}
+      WHERE l.id = ${lessonId} AND ${orgScope('l', scope)}
     `);
     return rows[0] ?? null;
   }
 
-  async markLessonComplete(userId: number, lessonId: number): Promise<void> {
+  /** `user_lesson_completions` is an activity row — it takes the learner's org. */
+  async markLessonComplete(
+    scope: OrgScope,
+    userId: number,
+    lessonId: number,
+  ): Promise<void> {
     await this.db
       .insert(userLessonCompletions)
-      .values({ userId, lessonId })
+      .values({ organizationId: scope.organizationId, userId, lessonId })
       .onConflictDoNothing();
   }
 
@@ -425,7 +468,7 @@ export class LearnerRepository {
      Activity feeds
   ───────────────────────────────────────────── */
 
-  async lessonEvents(userId: number, limit: number) {
+  async lessonEvents(scope: OrgScope, userId: number, limit: number) {
     return this.db.all<{
       event_time: string;
       title: string;
@@ -436,12 +479,17 @@ export class LearnerRepository {
       JOIN lessons l ON l.id = ulc.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
       JOIN courses c ON c.id = cm.course_id
-      WHERE ulc.user_id = ${userId}
+      WHERE ulc.user_id = ${userId} AND ${orgScope('ulc', scope)}
       ORDER BY ulc.completed_at DESC LIMIT ${limit}
     `);
   }
 
-  async assessmentEvents(userId: number, limit: number, passedOnly = false) {
+  async assessmentEvents(
+    scope: OrgScope,
+    userId: number,
+    limit: number,
+    passedOnly = false,
+  ) {
     const passedFilter = passedOnly ? sql`AND t.is_passed = 1` : sql``;
     return this.db.all<{
       event_time: string;
@@ -453,22 +501,22 @@ export class LearnerRepository {
       FROM user_assessment_attempts t
       JOIN assessments a ON a.id = t.assessment_id
       JOIN courses c ON c.id = a.course_id
-      WHERE t.user_id = ${userId} ${passedFilter}
+      WHERE t.user_id = ${userId} AND ${orgScope('t', scope)} ${passedFilter}
       ORDER BY t.submitted_at DESC LIMIT ${limit}
     `);
   }
 
-  async assignmentEvents(userId: number, limit: number) {
+  async assignmentEvents(scope: OrgScope, userId: number, limit: number) {
     return this.db.all<{ event_time: string; title: string }>(sql`
       SELECT uca.assigned_at AS event_time, c.name AS title
       FROM user_course_assignments uca
       JOIN courses c ON c.id = uca.course_id
-      WHERE uca.user_id = ${userId}
+      WHERE uca.user_id = ${userId} AND ${orgScope('uca', scope)}
       ORDER BY uca.assigned_at DESC LIMIT ${limit}
     `);
   }
 
-  async scormEvents(userId: number, limit: number) {
+  async scormEvents(scope: OrgScope, userId: number, limit: number) {
     return this.db.all<{
       event_time: string;
       title: string;
@@ -482,23 +530,23 @@ export class LearnerRepository {
       FROM scorm_tracking st
       JOIN scorm_packages sp ON sp.id = st.package_id
       LEFT JOIN courses c ON c.id = sp.course_id
-      WHERE st.user_id = ${userId}
+      WHERE st.user_id = ${userId} AND ${orgScope('st', scope)}
       ORDER BY st.updated_at DESC LIMIT ${limit}
     `);
   }
 
-  async recentAttempts(userId: number, limit: number) {
+  async recentAttempts(scope: OrgScope, userId: number, limit: number) {
     return this.db.all(sql`
       SELECT t.*, a.title AS assessment_title, c.name AS course_name
       FROM user_assessment_attempts t
       JOIN assessments a ON a.id = t.assessment_id
       JOIN courses c ON c.id = a.course_id
-      WHERE t.user_id = ${userId}
+      WHERE t.user_id = ${userId} AND ${orgScope('t', scope)}
       ORDER BY t.submitted_at DESC LIMIT ${limit}
     `);
   }
 
-  async allAttempts(userId: number) {
+  async allAttempts(scope: OrgScope, userId: number) {
     return this.db.all<{
       assessment_title: string;
       course_name: string;
@@ -511,7 +559,7 @@ export class LearnerRepository {
       FROM user_assessment_attempts t
       JOIN assessments a ON a.id = t.assessment_id
       JOIN courses c ON c.id = a.course_id
-      WHERE t.user_id = ${userId}
+      WHERE t.user_id = ${userId} AND ${orgScope('t', scope)}
       ORDER BY t.submitted_at DESC
     `);
   }
@@ -521,7 +569,7 @@ export class LearnerRepository {
   ───────────────────────────────────────────── */
 
   /** SCORM tracking rows for the learner's assigned courses, with course id. */
-  async scormForAssignedCourses(userId: number) {
+  async scormForAssignedCourses(scope: OrgScope, userId: number) {
     return this.db.all<{
       course_id: number;
       lesson_status: string | null;
@@ -541,8 +589,10 @@ export class LearnerRepository {
         ON st.package_id = l.scorm_package_id AND st.user_id = ${userId}
       WHERE l.content_type = 'scorm' AND l.scorm_package_id IS NOT NULL
         AND l.is_active = 1 AND cm.is_active = 1
+        AND ${orgScope('l', scope)}
         AND cm.course_id IN (
-          SELECT course_id FROM user_course_assignments WHERE user_id = ${userId}
+          SELECT course_id FROM user_course_assignments
+          WHERE user_id = ${userId} AND organization_id = ${scope.organizationId}
         )
     `);
   }
@@ -551,7 +601,7 @@ export class LearnerRepository {
    * Per-course lesson totals counting SCORM completion as done — mirrors the
    * legacy progress query, for every assigned course at once.
    */
-  async courseLessonProgress(userId: number) {
+  async courseLessonProgress(scope: OrgScope, userId: number) {
     return this.db.all<{
       course_id: number;
       total: number;
@@ -572,22 +622,24 @@ export class LearnerRepository {
       FROM course_modules cm
       JOIN lessons l ON l.module_id = cm.id AND l.is_active = 1
       WHERE cm.is_active = 1
+        AND ${orgScope('cm', scope)}
         AND cm.course_id IN (
-          SELECT course_id FROM user_course_assignments WHERE user_id = ${userId}
+          SELECT course_id FROM user_course_assignments
+          WHERE user_id = ${userId} AND organization_id = ${scope.organizationId}
         )
       GROUP BY cm.course_id
     `);
   }
 
   /** Hours per course for this month — powers the training-mode breakdown. */
-  async monthlyHoursByCourse(userId: number, month: string) {
+  async monthlyHoursByCourse(scope: OrgScope, userId: number, month: string) {
     return this.db.all<{ course_id: number; hrs: number }>(sql`
       SELECT cm.course_id,
              COALESCE(ROUND(SUM(l.duration_minutes) / 60.0, 1), 0) AS hrs
       FROM user_lesson_completions ulc
       JOIN lessons l ON l.id = ulc.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
-      WHERE ulc.user_id = ${userId}
+      WHERE ulc.user_id = ${userId} AND ${orgScope('ulc', scope)}
         AND to_char(ulc.completed_at, 'YYYY-MM') = ${month}
       GROUP BY cm.course_id
     `);
@@ -597,17 +649,24 @@ export class LearnerRepository {
      Password
   ───────────────────────────────────────────── */
 
-  async findActiveWithPassword(userId: number) {
+  async findActiveWithPassword(scope: OrgScope, userId: number) {
     const rows = await this.db.all<{ id: number; password: string }>(sql`
-      SELECT id, password FROM users WHERE id = ${userId} AND is_active = 1
+      SELECT id, password FROM users u
+      WHERE id = ${userId} AND is_active = 1 AND ${orgScope('u', scope)}
     `);
     return rows[0] ?? null;
   }
 
-  async updatePassword(userId: number, passwordHash: string): Promise<void> {
+  async updatePassword(
+    scope: OrgScope,
+    userId: number,
+    passwordHash: string,
+  ): Promise<void> {
     await this.db
       .update(users)
       .set({ password: passwordHash })
-      .where(eq(users.id, userId));
+      .where(
+        and(eq(users.id, userId), eq(users.organizationId, scope.organizationId)),
+      );
   }
 }

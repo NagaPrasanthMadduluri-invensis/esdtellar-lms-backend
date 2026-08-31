@@ -9,8 +9,9 @@ import {
   Post,
 } from '@nestjs/common';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import type { OrgScope } from '@/database/org-scope';
 
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LearnerService } from './learner.service';
@@ -21,29 +22,37 @@ export class LearnerController {
   constructor(private readonly learner: LearnerService) {}
 
   @Get('dashboard')
-  async dashboard(@CurrentUser() user: AuthenticatedUser) {
-    return this.learner.dashboard(user.userId);
+  async dashboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.learner.dashboard(scope, user.userId);
   }
 
   @Get('courses')
-  async courses(@CurrentUser() user: AuthenticatedUser) {
-    return this.learner.courses(user.userId);
+  async courses(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.learner.courses(scope, user.userId);
   }
 
   @Get('courses/:courseId')
   async courseDetail(
     @Param('courseId', ParseIntPipe) courseId: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.learner.courseDetail(user.userId, courseId);
+    return this.learner.courseDetail(scope, user.userId, courseId);
   }
 
   @Get('lessons/:lessonId')
   async lesson(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.learner.lesson(user.userId, lessonId);
+    return this.learner.lesson(scope, user.userId, lessonId);
   }
 
   @Post('lessons/:lessonId/complete')
@@ -51,28 +60,41 @@ export class LearnerController {
   async complete(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.learner.completeLesson(user.userId, lessonId);
+    return this.learner.completeLesson(scope, user.userId, lessonId);
   }
 
   @Get('progress')
-  async progress(@CurrentUser() user: AuthenticatedUser) {
-    return this.learner.progress(user.userId);
+  async progress(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.learner.progress(scope, user.userId);
   }
 
   @Get('achievements')
-  async achievements(@CurrentUser() user: AuthenticatedUser) {
-    return this.learner.achievements(user.userId);
+  async achievements(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.learner.achievements(scope, user.userId);
   }
 
   @Get('leaderboard')
-  async leaderboard(@CurrentUser() user: AuthenticatedUser) {
-    return this.learner.leaderboard(user.userId);
+  async leaderboard(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.learner.leaderboard(scope, user.userId);
   }
 
   @Get('learning-hours')
-  async learningHours(@CurrentUser() user: AuthenticatedUser) {
-    return this.learner.learningHours(user.userId);
+  async learningHours(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.learner.learningHours(scope, user.userId);
   }
 
   @Post('change-password')
@@ -80,7 +102,8 @@ export class LearnerController {
   async changePassword(
     @Body() dto: ChangePasswordDto,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.learner.changePassword(user.userId, dto);
+    return this.learner.changePassword(scope, user.userId, dto);
   }
 }

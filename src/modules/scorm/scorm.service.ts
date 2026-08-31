@@ -13,6 +13,8 @@ import { CertificatesService } from '@/modules/certificates/certificates.service
 import type { AssignScormDto, SaveTrackingDto } from './dto/scorm.dto';
 import { parseInteractions } from './interactions.util';
 import { parseManifest } from './manifest.parser';
+import type { OrgScope } from '@/database/org-scope';
+
 import { ScormRepository } from './scorm.repository';
 import { ScormStorageService } from './storage/scorm-storage.service';
 
@@ -42,21 +44,22 @@ export class ScormService {
 
   /* ── Admin ── */
 
-  async listPackages() {
-    return { packages: await this.repository.listPackages() };
+  async listPackages(scope: OrgScope) {
+    return { packages: await this.repository.listPackages(scope) };
   }
 
-  async packageDetail(packageId: number) {
-    const pkg = await this.repository.findPackageWithCourse(packageId);
+  async packageDetail(scope: OrgScope, packageId: number) {
+    const pkg = await this.repository.findPackageWithCourse(scope, packageId);
     if (!pkg) throw new NotFoundException('Package not found');
 
     return {
       package: pkg,
-      assignments: await this.repository.packageAssignments(packageId),
+      assignments: await this.repository.packageAssignments(scope, packageId),
     };
   }
 
   async upload(
+    scope: OrgScope,
     file: Express.Multer.File | undefined,
     adminId: number,
     body: { title?: string; course_id?: string },
@@ -81,7 +84,7 @@ export class ScormService {
       }
 
       const parsed = parseManifest(manifest);
-      const created = await this.repository.createPackage({
+      const created = await this.repository.createPackage(scope, {
         title: body.title?.trim() || parsed.title,
         version: parsed.version,
         entryPoint: parsed.entryPoint,
@@ -110,14 +113,14 @@ export class ScormService {
    * tells the UI whether the package emits interactions at all, so it can say
    * so instead of rendering an empty table.
    */
-  async learnerAttempts(packageId: number, userId: number) {
-    const pkg = await this.repository.findPackageSummary(packageId);
+  async learnerAttempts(scope: OrgScope, packageId: number, userId: number) {
+    const pkg = await this.repository.findPackageSummary(scope, packageId);
     if (!pkg) throw new NotFoundException('Package not found');
 
-    const learner = await this.repository.findLearner(userId);
+    const learner = await this.repository.findLearner(scope, userId);
     if (!learner) throw new NotFoundException('Learner not found');
 
-    const rows = await this.repository.listAttempts(packageId, userId);
+    const rows = await this.repository.listAttempts(scope, packageId, userId);
 
     const attempts = rows.map((row) => {
       const interactions = parseInteractions(row.cmi_data);
@@ -148,30 +151,30 @@ export class ScormService {
     };
   }
 
-  async deletePackage(packageId: number) {
-    const pkg = await this.repository.findPackage(packageId);
+  async deletePackage(scope: OrgScope, packageId: number) {
+    const pkg = await this.repository.findPackage(scope, packageId);
     if (!pkg) throw new NotFoundException('Package not found');
 
     // Row first (cascades to assignments + tracking), then the files.
-    await this.repository.deletePackage(packageId);
+    await this.repository.deletePackage(scope, packageId);
     await this.storage.remove(pkg.packageDir);
 
     return { message: 'Package deleted' };
   }
 
-  async assign(packageId: number, adminId: number, dto: AssignScormDto) {
-    const pkg = await this.repository.findPackage(packageId);
+  async assign(scope: OrgScope, packageId: number, adminId: number, dto: AssignScormDto) {
+    const pkg = await this.repository.findPackage(scope, packageId);
     if (!pkg) throw new NotFoundException('Package not found');
 
     let targets = dto.user_ids ?? [];
     if (targets.length === 0 && dto.department) {
-      targets = await this.repository.learnerIdsInDepartment(dto.department);
+      targets = await this.repository.learnerIdsInDepartment(scope, dto.department);
     }
     if (targets.length === 0) {
       throw new UnprocessableEntityException('No learners specified');
     }
 
-    const assigned = await this.repository.assignLearners(
+    const assigned = await this.repository.assignLearners(scope, 
       packageId,
       targets,
       adminId,
@@ -179,8 +182,8 @@ export class ScormService {
     return { assigned, total: targets.length };
   }
 
-  async unassign(packageId: number, userId: number) {
-    await this.repository.unassignLearner(packageId, userId);
+  async unassign(scope: OrgScope, packageId: number, userId: number) {
+    await this.repository.unassignLearner(scope, packageId, userId);
     return { message: 'Learner removed from package' };
   }
 
@@ -192,29 +195,41 @@ export class ScormService {
    * (`BACKEND_STRUCTURE.md` §3: never skip a layer; this is a business
    * rule, not a raw query).
    */
+  /**
+   * Called by `ScormContentMiddleware`, which runs OUTSIDE the Nest guard
+   * chain and therefore has no `@CurrentScope()`. It mints the scope from the
+   * organizationId in the verified JWT instead — the same claim
+   * TenantContextGuard would have used.
+   */
   async isEntitledToPackageDir(
+    scope: OrgScope,
     userId: number,
     packageDir: string,
     isAdmin: boolean,
   ): Promise<boolean> {
-    return this.repository.isEntitledByPackageDir(userId, packageDir, isAdmin);
+    return this.repository.isEntitledByPackageDir(
+      scope,
+      userId,
+      packageDir,
+      isAdmin,
+    );
   }
 
   /* ── Learner ── */
 
-  async listForLearner(userId: number) {
-    return { packages: await this.repository.listForLearner(userId) };
+  async listForLearner(scope: OrgScope, userId: number) {
+    return { packages: await this.repository.listForLearner(scope, userId) };
   }
 
-  async packageForLearner(userId: number, packageId: number) {
-    const pkg = await this.repository.findAccessiblePackage(userId, packageId);
+  async packageForLearner(scope: OrgScope, userId: number, packageId: number) {
+    const pkg = await this.repository.findAccessiblePackage(scope, userId, packageId);
     if (!pkg) throw new NotFoundException('Package not found or not assigned');
     return { package: pkg };
   }
 
-  async tracking(userId: number, packageId: number) {
-    await this.assertAccess(userId, packageId);
-    return { tracking: await this.repository.findTracking(userId, packageId) };
+  async tracking(scope: OrgScope, userId: number, packageId: number) {
+    await this.assertAccess(scope, userId, packageId);
+    return { tracking: await this.repository.findTracking(scope, userId, packageId) };
   }
 
   /**
@@ -223,16 +238,17 @@ export class ScormService {
    * data is lost regardless of version.
    */
   async saveTracking(
+    scope: OrgScope,
     userId: number,
     packageId: number,
     dto: SaveTrackingDto,
   ) {
-    await this.assertAccess(userId, packageId);
+    await this.assertAccess(scope, userId, packageId);
 
     // Read before the upsert overwrites it: whether this commit is the moment
     // the learner *became* finished is the only signal available for closing an
     // attempt, and it is gone once the row is updated.
-    const previous = await this.repository.findTracking(userId, packageId);
+    const previous = await this.repository.findTracking(scope, userId, packageId);
 
     const cmi = dto.cmi_data as CmiPayload;
 
@@ -254,7 +270,7 @@ export class ScormService {
     const scoreRaw = cmi?.core?.score?.raw ?? cmi?.score?.raw ?? null;
     const scoreMax = cmi?.core?.score?.max ?? cmi?.score?.max ?? null;
 
-    await this.repository.upsertTracking({
+    await this.repository.upsertTracking(scope, {
       userId,
       packageId,
       lessonStatus,
@@ -319,7 +335,7 @@ export class ScormService {
             ? 0
             : null;
 
-      await this.repository.appendAttempt({
+      await this.repository.appendAttempt(scope, {
         userId,
         packageId,
         scoreRaw: scoreRaw !== null ? Number(scoreRaw) : null,
@@ -335,18 +351,22 @@ export class ScormService {
     }
 
     if (isDone) {
-      const lesson = await this.repository.findLinkedLesson(userId, packageId);
+      const lesson = await this.repository.findLinkedLesson(scope, userId, packageId);
       if (lesson) {
-        await this.repository.markLessonComplete(userId, Number(lesson.id));
-        await this.certificates.autoIssue(userId, Number(lesson.course_id));
+        await this.repository.markLessonComplete(scope, userId, Number(lesson.id));
+        await this.certificates.autoIssue(scope, userId, Number(lesson.course_id));
       }
     }
 
     return { message: 'Tracking saved' };
   }
 
-  private async assertAccess(userId: number, packageId: number): Promise<void> {
-    if (!(await this.repository.hasAccess(userId, packageId))) {
+  private async assertAccess(
+    scope: OrgScope,
+    userId: number,
+    packageId: number,
+  ): Promise<void> {
+    if (!(await this.repository.hasAccess(scope, userId, packageId))) {
       throw new ForbiddenException('Not enrolled in this package');
     }
   }

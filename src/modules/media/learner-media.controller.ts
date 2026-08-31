@@ -9,8 +9,9 @@ import {
   Post,
 } from '@nestjs/common';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import type { OrgScope } from '@/database/org-scope';
 
 import { VideoProgressDto } from './dto/media.dto';
 import { MediaService } from './media.service';
@@ -32,8 +33,9 @@ export class LearnerMediaController {
   async media_(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.media.learnerLessonMedia(lessonId, user.userId);
+    return this.media.learnerLessonMedia(scope, lessonId, user.userId);
   }
 
   /**
@@ -46,8 +48,9 @@ export class LearnerMediaController {
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @Body() dto: VideoProgressDto,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.media.saveVideoProgress(lessonId, user.userId, dto);
+    return this.media.saveVideoProgress(scope, lessonId, user.userId, dto);
   }
 }
 
@@ -70,7 +73,8 @@ export class LearnerResourcesController {
   async url(
     @Param('resourceId', ParseIntPipe) resourceId: number,
     @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.media.learnerResourceUrl(resourceId, user.userId);
+    return this.media.learnerResourceUrl(scope, resourceId, user.userId);
   }
 }

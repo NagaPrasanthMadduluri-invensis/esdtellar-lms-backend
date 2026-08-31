@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
+import type { OrgScope } from '@/database/org-scope';
 import {
   POINTS_PER_LESSON,
   POINTS_PER_PASSED_ASSESSMENT,
@@ -54,8 +55,8 @@ export interface Recognition {
 export class LeaderboardService {
   constructor(private readonly repository: LeaderboardRepository) {}
 
-  async standings(month: string = thisMonth()) {
-    const rows = await this.repository.standings(month);
+  async standings(scope: OrgScope, month: string = thisMonth()) {
+    const rows = await this.repository.standings(scope, month);
 
     const entries: LeaderboardEntry[] = rows.map((row) => {
       const passed = Number(row.passed);

@@ -1,7 +1,8 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import type { Response } from 'express';
 
-import { Roles } from '@/common/decorators';
+import { CurrentScope, Roles } from '@/common/decorators';
+import type { OrgScope } from '@/database/org-scope';
 
 import { AnalyticsService } from './analytics.service';
 import { SpreadsheetService } from './spreadsheet.service';
@@ -19,33 +20,36 @@ export class ReportsController {
   ) {}
 
   @Get('dashboard')
-  async dashboard() {
-    return this.analytics.dashboard();
+  async dashboard(@CurrentScope() scope: OrgScope) {
+    return this.analytics.dashboard(scope);
   }
 
   @Get('reports')
-  async reports() {
-    return this.analytics.reports();
+  async reports(@CurrentScope() scope: OrgScope) {
+    return this.analytics.reports(scope);
   }
 
   @Get('departments')
-  async departments() {
-    return this.analytics.departments();
+  async departments(@CurrentScope() scope: OrgScope) {
+    return this.analytics.departments(scope);
   }
 
   @Get('leaderboard')
-  async leaderboard() {
-    return this.analytics.leaderboard();
+  async leaderboard(@CurrentScope() scope: OrgScope) {
+    return this.analytics.leaderboard(scope);
   }
 
   @Get('learning-hours')
-  async learningHours() {
-    return this.analytics.learningHours();
+  async learningHours(@CurrentScope() scope: OrgScope) {
+    return this.analytics.learningHours(scope);
   }
 
   @Get('export')
-  async export(@Res() response: Response): Promise<void> {
-    const rows = await this.analytics.exportRows();
+  async export(
+    @CurrentScope() scope: OrgScope,
+    @Res() response: Response,
+  ): Promise<void> {
+    const rows = await this.analytics.exportRows(scope);
     const buffer = this.spreadsheets.buildReportWorkbook(rows);
     const today = new Date().toISOString().slice(0, 10);
     this.spreadsheets.send(response, buffer, `Edstellar_LMS_Report_${today}.xlsx`);

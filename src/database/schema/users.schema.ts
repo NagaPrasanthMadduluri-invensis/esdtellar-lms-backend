@@ -12,13 +12,12 @@ export const users = pgTable(
   {
     id: serial('id').primaryKey(),
     /**
-     * Nullable for now: every existing row predates tenancy. Wave 3's
-     * `scripts/migrate-tenancy.mjs` backfills every user into the first real
-     * organization and only then adds `NOT NULL` (spec §3.10). Do not add
-     * `.notNull()` here before that runs — it would make this type lie about
-     * the live column.
+     * The identity axis (spec §3.3): a user carries its own org. Backfilled
+     * and set `NOT NULL` in the live database by `scripts/migrate-tenancy.mjs`
+     * (spec §3.10) — this mirrors that, so an insert omitting it is now a
+     * compile error rather than a runtime constraint violation.
      */
-    organizationId: integer('organization_id'),
+    organizationId: integer('organization_id').notNull(),
     firstName: text('first_name').notNull(),
     lastName: text('last_name').notNull(),
     email: text('email').notNull().unique(),

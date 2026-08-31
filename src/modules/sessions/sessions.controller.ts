@@ -11,8 +11,9 @@ import {
   Put,
 } from '@nestjs/common';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import type { OrgScope } from '@/database/org-scope';
 
 import {
   RosterAddDto,
@@ -28,37 +29,47 @@ export class AdminSessionsController {
   constructor(private readonly sessions: SessionsService) {}
 
   @Get()
-  async list() {
-    return this.sessions.list();
+  async list(@CurrentScope() scope: OrgScope) {
+    return this.sessions.list(scope);
   }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async create(@Body() dto: SessionDto) {
-    return this.sessions.create(dto);
+  async create(@Body() dto: SessionDto, @CurrentScope() scope: OrgScope) {
+    return this.sessions.create(scope, dto);
   }
 
   @Get(':sessionId')
-  async get(@Param('sessionId', ParseIntPipe) sessionId: number) {
-    return this.sessions.get(sessionId);
+  async get(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.get(scope, sessionId);
   }
 
   @Put(':sessionId')
   async update(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: SessionDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.sessions.update(sessionId, dto);
+    return this.sessions.update(scope, sessionId, dto);
   }
 
   @Delete(':sessionId')
-  async remove(@Param('sessionId', ParseIntPipe) sessionId: number) {
-    return this.sessions.remove(sessionId);
+  async remove(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.remove(scope, sessionId);
   }
 
   @Get(':sessionId/roster')
-  async roster(@Param('sessionId', ParseIntPipe) sessionId: number) {
-    return this.sessions.roster(sessionId);
+  async roster(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.roster(scope, sessionId);
   }
 
   /**
@@ -69,8 +80,11 @@ export class AdminSessionsController {
    */
   @Post(':sessionId/complete')
   @HttpCode(HttpStatus.OK)
-  async complete(@Param('sessionId', ParseIntPipe) sessionId: number) {
-    return this.sessions.complete(sessionId);
+  async complete(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.complete(scope, sessionId);
   }
 
   @Post(':sessionId/roster')
@@ -79,21 +93,26 @@ export class AdminSessionsController {
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: RosterAddDto,
     @CurrentUser() admin: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.sessions.addToRoster(sessionId, admin.userId, dto);
+    return this.sessions.addToRoster(scope, sessionId, admin.userId, dto);
   }
 
   @Delete(':sessionId/roster')
   async removeFromRoster(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: RosterRemoveDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.sessions.removeFromRoster(sessionId, dto.user_id);
+    return this.sessions.removeFromRoster(scope, sessionId, dto.user_id);
   }
 
   @Get(':sessionId/attendance')
-  async attendance(@Param('sessionId', ParseIntPipe) sessionId: number) {
-    return this.sessions.attendance(sessionId);
+  async attendance(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.attendance(scope, sessionId);
   }
 
   @Put(':sessionId/attendance')
@@ -101,8 +120,9 @@ export class AdminSessionsController {
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: SaveAttendanceDto,
     @CurrentUser() admin: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.sessions.saveAttendance(sessionId, admin.userId, dto);
+    return this.sessions.saveAttendance(scope, sessionId, admin.userId, dto);
   }
 }
 
@@ -116,7 +136,10 @@ export class LearnerSessionsController {
   constructor(private readonly sessions: SessionsService) {}
 
   @Get()
-  async list(@CurrentUser() user: AuthenticatedUser) {
-    return this.sessions.listForLearner(user.userId);
+  async list(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.listForLearner(scope, user.userId);
   }
 }

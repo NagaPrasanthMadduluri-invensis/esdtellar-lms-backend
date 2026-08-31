@@ -13,7 +13,8 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
-import { Roles } from '@/common/decorators';
+import { CurrentScope, Roles } from '@/common/decorators';
+import type { OrgScope } from '@/database/org-scope';
 
 import {
   ConfirmVideoDto,
@@ -66,8 +67,11 @@ export class AdminMediaController {
   constructor(private readonly media: MediaService) {}
 
   @Get(':lessonId/media')
-  async media_(@Param('lessonId', ParseIntPipe) lessonId: number) {
-    return this.media.adminLessonMedia(lessonId);
+  async media_(
+    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.media.adminLessonMedia(scope, lessonId);
   }
 
   @Post(':lessonId/video/presign')
@@ -75,8 +79,9 @@ export class AdminMediaController {
   async presignVideo(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @Body() dto: PresignVideoDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.media.presignVideoUpload(lessonId, dto);
+    return this.media.presignVideoUpload(scope, lessonId, dto);
   }
 
   @Post(':lessonId/video/confirm')
@@ -84,13 +89,17 @@ export class AdminMediaController {
   async confirmVideo(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @Body() dto: ConfirmVideoDto,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.media.confirmVideoUpload(lessonId, dto);
+    return this.media.confirmVideoUpload(scope, lessonId, dto);
   }
 
   @Delete(':lessonId/video')
-  async removeVideo(@Param('lessonId', ParseIntPipe) lessonId: number) {
-    return this.media.removeVideo(lessonId);
+  async removeVideo(
+    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.media.removeVideo(scope, lessonId);
   }
 
   @Post(':lessonId/captions')
@@ -99,12 +108,16 @@ export class AdminMediaController {
   async uploadCaptions(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @UploadedFile() file: Express.Multer.File,
+    @CurrentScope() scope: OrgScope,
   ) {
-    return this.media.uploadCaptions(lessonId, file);
+    return this.media.uploadCaptions(scope, lessonId, file);
   }
 
   @Delete(':lessonId/captions')
-  async removeCaptions(@Param('lessonId', ParseIntPipe) lessonId: number) {
-    return this.media.removeCaptions(lessonId);
+  async removeCaptions(
+    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.media.removeCaptions(scope, lessonId);
   }
 }

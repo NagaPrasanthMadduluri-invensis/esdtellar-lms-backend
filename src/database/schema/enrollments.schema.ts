@@ -8,8 +8,8 @@ export const userCourseAssignments = pgTable(
   'user_course_assignments',
   {
     id: serial('id').primaryKey(),
-    /** Activity: the assigned user's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Activity: the assigned user's org. */
+    organizationId: integer('organization_id').notNull(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -37,8 +37,8 @@ export const userLessonCompletions = pgTable(
   'user_lesson_completions',
   {
     id: serial('id').primaryKey(),
-    /** Activity: the completing user's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Activity: the completing user's org. */
+    organizationId: integer('organization_id').notNull(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -74,8 +74,8 @@ export const lessonVideoProgress = pgTable(
   'lesson_video_progress',
   {
     id: serial('id').primaryKey(),
-    /** Activity: the watching user's org. Nullable until wave 3 (§3.10). */
-    organizationId: integer('organization_id'),
+    /** Activity: the watching user's org. */
+    organizationId: integer('organization_id').notNull(),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),

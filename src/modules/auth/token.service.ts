@@ -59,6 +59,14 @@ export class TokenService {
       if (typeof payload.exp !== 'number') return null;
       if (payload.exp < Math.floor(Date.now() / 1000)) return null;
 
+      // Every token minted since the multi-tenancy migration carries
+      // `organizationId` (spec §4.1). A token without it predates that
+      // migration and cannot be trusted with any org — there is no default
+      // that would not silently leak one tenant's data into another's
+      // session. Rejecting it here, rather than downstream, is what makes
+      // deploying this change sign every existing session out at once.
+      if (typeof payload.organizationId !== 'number') return null;
+
       return payload;
     } catch {
       return null;

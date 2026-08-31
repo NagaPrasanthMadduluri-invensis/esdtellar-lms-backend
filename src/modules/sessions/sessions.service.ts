@@ -5,6 +5,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 
+import type { OrgScope } from '@/database/org-scope';
+
 import type {
   RosterAddDto,
   SaveAttendanceDto,
@@ -32,13 +34,20 @@ const CREDITING_STATUSES = ['present', 'late', 'partial'] as const;
  * progress, the dashboards, the leaderboard and learning hours all read
  * assignments and lesson completions already, so they pick a session up through
  * the same definitions they use for everything else.
+ *
+ * `scope` is first on every method here, matching the certificates module: it
+ * is required, security-relevant, and every repository call below re-anchors
+ * on it rather than trusting that a sibling call already checked.
  */
 @Injectable()
 export class SessionsService {
   constructor(private readonly repository: SessionsRepository) {}
 
-  async list() {
-    const rows = (await this.repository.list()) as Record<string, unknown>[];
+  async list(scope: OrgScope) {
+    const rows = (await this.repository.list(scope)) as Record<
+      string,
+      unknown
+    >[];
     return {
       sessions: rows.map((row) => ({
         ...row,
@@ -55,23 +64,27 @@ export class SessionsService {
     };
   }
 
-  async get(sessionId: number) {
-    const session = await this.repository.findWithCourse(sessionId);
+  async get(scope: OrgScope, sessionId: number) {
+    const session = await this.repository.findWithCourse(scope, sessionId);
     if (!session) throw new NotFoundException('Session not found');
     return { session: this.withDisplayStatus(session) };
   }
 
-  async create(dto: SessionDto) {
-    const id = await this.repository.createSession(this.toRow(dto));
+  async create(scope: OrgScope, dto: SessionDto) {
+    const id = await this.repository.createSession(scope, this.toRow(dto));
     // The training course is part of creating a session, not a follow-up step:
     // a session with no training would show in the calendar and nowhere else,
     // which is the behaviour this replaces.
-    await this.repository.createTraining(id, this.trainingValues(dto));
-    return { session: this.withDisplayStatus(await this.repository.findWithCourse(id)) };
+    await this.repository.createTraining(scope, id, this.trainingValues(dto));
+    return {
+      session: this.withDisplayStatus(
+        await this.repository.findWithCourse(scope, id),
+      ),
+    };
   }
 
-  async update(sessionId: number, dto: SessionDto) {
-    const before = await this.repository.findStatus(sessionId);
+  async update(scope: OrgScope, sessionId: number, dto: SessionDto) {
+    const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
     const requested = dto.status ?? 'upcoming';
@@ -79,28 +92,32 @@ export class SessionsService {
       // Completing through the edit form has the same preconditions and the
       // same side effects as the Mark completed action. One rule, one place.
       this.assertAttendanceMarked(
-        await this.repository.attendanceTally(sessionId),
+        await this.repository.attendanceTally(scope, sessionId),
       );
     }
 
-    await this.repository.updateSession(sessionId, this.toRow(dto));
+    await this.repository.updateSession(scope, sessionId, this.toRow(dto));
     // ensureTraining before updateTraining: updating a training that was never
     // built is a silent no-op, and a session created before this feature that
     // the backfill somehow missed would then stay invisible everywhere but the
     // calendar — the exact failure this replaces.
-    await this.ensureTraining(sessionId);
-    await this.repository.updateTraining(sessionId, this.trainingValues(dto));
+    await this.ensureTraining(scope, sessionId);
+    await this.repository.updateTraining(
+      scope,
+      sessionId,
+      this.trainingValues(dto),
+    );
 
     if (requested === 'completed') {
-      await this.repository.syncCompletions(sessionId);
+      await this.repository.syncCompletions(scope, sessionId);
     } else if (before.status === 'completed') {
       // Reopened or cancelled after the fact: the training is no longer
       // finished, so the credit and its learning hours go back too. Leaving
       // them would make the completion metrics disagree with the session.
-      await this.repository.clearCompletions(sessionId);
+      await this.repository.clearCompletions(scope, sessionId);
     }
 
-    const session = await this.repository.findWithCourse(sessionId);
+    const session = await this.repository.findWithCourse(scope, sessionId);
     if (!session) throw new NotFoundException('Session not found');
     return { session: this.withDisplayStatus(session) };
   }
@@ -110,8 +127,8 @@ export class SessionsService {
    * ON DELETE CASCADE, which takes the module, lesson, assignments and
    * completions with it. No application-side cleanup to forget.
    */
-  async remove(sessionId: number) {
-    await this.repository.deleteSession(sessionId);
+  async remove(scope: OrgScope, sessionId: number) {
+    await this.repository.deleteSession(scope, sessionId);
     return { message: 'Session deleted' };
   }
 
@@ -123,8 +140,8 @@ export class SessionsService {
    * Absent and excused get nothing, and an unmarked attendance record credits
    * nobody, so the action refuses rather than silently doing nothing.
    */
-  async complete(sessionId: number) {
-    const before = await this.repository.findStatus(sessionId);
+  async complete(scope: OrgScope, sessionId: number) {
+    const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
     if (before.status === 'cancelled') {
@@ -133,13 +150,13 @@ export class SessionsService {
       );
     }
 
-    const tally = await this.repository.attendanceTally(sessionId);
+    const tally = await this.repository.attendanceTally(scope, sessionId);
     this.assertAttendanceMarked(tally);
 
-    await this.repository.updateSession(sessionId, { status: 'completed' });
-    await this.repository.syncCompletions(sessionId);
+    await this.repository.updateSession(scope, sessionId, { status: 'completed' });
+    await this.repository.syncCompletions(scope, sessionId);
 
-    const session = await this.repository.findWithCourse(sessionId);
+    const session = await this.repository.findWithCourse(scope, sessionId);
     return {
       session: this.withDisplayStatus(session),
       credited: tally.credited,
@@ -152,57 +169,74 @@ export class SessionsService {
 
   /* ── Roster ── */
 
-  async roster(sessionId: number) {
+  async roster(scope: OrgScope, sessionId: number) {
+    const before = await this.repository.findStatus(scope, sessionId);
+    if (!before) throw new NotFoundException('Session not found');
+
     const [enrolled, available] = await Promise.all([
-      this.repository.enrolled(sessionId),
-      this.repository.available(sessionId),
+      this.repository.enrolled(scope, sessionId),
+      this.repository.available(scope, sessionId),
     ]);
     return { enrolled, available };
   }
 
-  async addToRoster(sessionId: number, adminId: number, dto: RosterAddDto) {
+  async addToRoster(scope: OrgScope, sessionId: number, adminId: number, dto: RosterAddDto) {
+    const before = await this.repository.findStatus(scope, sessionId);
+    if (!before) throw new NotFoundException('Session not found');
+
     if (dto.enroll_all && dto.department) {
-      await this.repository.enrollDepartment(sessionId, dto.department);
+      await this.repository.enrollDepartment(scope, sessionId, dto.department);
     } else if (dto.user_id) {
-      await this.repository.addToRoster(sessionId, dto.user_id);
+      await this.repository.addToRoster(scope, sessionId, dto.user_id);
     } else {
       throw new BadRequestException('user_id or enroll_all+department required');
     }
 
     // Being on the roster IS being assigned the training — that is the point
     // of the feature, so the two are never written apart.
-    await this.ensureTraining(sessionId);
-    await this.repository.assignRosterToTraining(sessionId, adminId);
+    await this.ensureTraining(scope, sessionId);
+    await this.repository.assignRosterToTraining(scope, sessionId, adminId);
 
     // An admin who adds a learner after the session was completed and attended
     // is adding someone who did not attend: the assignment appears, the credit
     // does not. syncCompletions keeps that consistent either way.
-    const session = await this.repository.findStatus(sessionId);
+    const session = await this.repository.findStatus(scope, sessionId);
     if (session?.status === 'completed') {
-      await this.repository.syncCompletions(sessionId);
+      await this.repository.syncCompletions(scope, sessionId);
     }
 
-    return this.roster(sessionId);
+    return this.roster(scope, sessionId);
   }
 
-  async removeFromRoster(sessionId: number, userId: number) {
-    await this.repository.removeFromRoster(sessionId, userId);
-    await this.repository.unassignFromTraining(sessionId, userId);
-    return this.roster(sessionId);
+  async removeFromRoster(scope: OrgScope, sessionId: number, userId: number) {
+    const before = await this.repository.findStatus(scope, sessionId);
+    if (!before) throw new NotFoundException('Session not found');
+
+    await this.repository.removeFromRoster(scope, sessionId, userId);
+    await this.repository.unassignFromTraining(scope, sessionId, userId);
+    return this.roster(scope, sessionId);
   }
 
   /* ── Attendance ── */
 
-  async attendance(sessionId: number) {
-    return this.shapeAttendance(await this.repository.attendance(sessionId));
+  async attendance(scope: OrgScope, sessionId: number) {
+    const before = await this.repository.findStatus(scope, sessionId);
+    if (!before) throw new NotFoundException('Session not found');
+
+    return this.shapeAttendance(await this.repository.attendance(scope, sessionId));
   }
 
   async saveAttendance(
+    scope: OrgScope,
     sessionId: number,
     adminId: number,
     dto: SaveAttendanceDto,
   ) {
+    const before = await this.repository.findStatus(scope, sessionId);
+    if (!before) throw new NotFoundException('Session not found');
+
     await this.repository.upsertAttendance(
+      scope,
       sessionId,
       // The legacy handler passed `payload.id`, which does not exist on the JWT
       // (the claim is `userId`), so marked_by was always stored as null and the
@@ -215,18 +249,19 @@ export class SessionsService {
     // Correcting attendance on an already-completed session must move the
     // credit with it, in both directions — otherwise a learner marked absent by
     // mistake keeps the training, the hours and the completion for good.
-    const session = await this.repository.findStatus(sessionId);
+    const session = await this.repository.findStatus(scope, sessionId);
     if (session?.status === 'completed') {
-      await this.repository.syncCompletions(sessionId);
+      await this.repository.syncCompletions(scope, sessionId);
     }
 
-    return this.shapeAttendance(await this.repository.attendance(sessionId));
+    return this.shapeAttendance(await this.repository.attendance(scope, sessionId));
   }
 
   /* ── Learner ── */
 
-  async listForLearner(userId: number) {
+  async listForLearner(scope: OrgScope, userId: number) {
     const rows = (await this.repository.listForLearner(
+      scope,
       userId,
     )) as Record<string, unknown>[];
 
@@ -265,16 +300,16 @@ export class SessionsService {
   }
 
   /** Builds the training for a session that predates it, or lost it somehow. */
-  private async ensureTraining(sessionId: number): Promise<void> {
-    if (await this.repository.findTraining(sessionId)) return;
+  private async ensureTraining(scope: OrgScope, sessionId: number): Promise<void> {
+    if (await this.repository.findTraining(scope, sessionId)) return;
 
-    const session = (await this.repository.findWithCourse(sessionId)) as Record<
-      string,
-      unknown
-    > | null;
+    const session = (await this.repository.findWithCourse(
+      scope,
+      sessionId,
+    )) as Record<string, unknown> | null;
     if (!session) throw new NotFoundException('Session not found');
 
-    await this.repository.createTraining(sessionId, {
+    await this.repository.createTraining(scope, sessionId, {
       name: String(session.title ?? 'Live session'),
       description: this.trainingDescription(session),
       isActive: session.status === 'cancelled' ? 0 : 1,
