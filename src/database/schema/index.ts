@@ -8,6 +8,7 @@
  * introduces is the set of secondary indexes declared alongside each table —
  * see `database/migrations/` for how those are applied safely.
  */
+export * from './organizations.schema';
 export * from './users.schema';
 export * from './courses.schema';
 export * from './enrollments.schema';

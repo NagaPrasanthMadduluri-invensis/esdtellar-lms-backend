@@ -11,6 +11,11 @@ export const scormPackages = pgTable(
   'scorm_packages',
   {
     id: serial('id').primaryKey(),
+    /**
+     * The owner: a real org, or the platform org for a global package (§3.4).
+     * Nullable until wave 3's backfill + `SET NOT NULL` (§3.10).
+     */
+    organizationId: integer('organization_id'),
     title: text('title').notNull(),
     version: text('version', { enum: ['1.2', '2004'] })
       .notNull()
@@ -46,6 +51,8 @@ export const userScormAssignments = pgTable(
   'user_scorm_assignments',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the assigned user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -71,6 +78,8 @@ export const scormTracking = pgTable(
   'scorm_tracking',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the tracked user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -114,6 +123,8 @@ export const scormAttempts = pgTable(
   'scorm_attempts',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the attempting user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),

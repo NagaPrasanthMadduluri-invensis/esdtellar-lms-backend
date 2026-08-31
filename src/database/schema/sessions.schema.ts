@@ -8,6 +8,11 @@ export const sessions = pgTable(
   'sessions',
   {
     id: serial('id').primaryKey(),
+    /**
+     * Always a real org — never the platform org (§3.3, §3.4). Nullable until
+     * wave 3's backfill + `SET NOT NULL` (§3.10).
+     */
+    organizationId: integer('organization_id'),
     title: text('title').notNull(),
     sessionType: text('session_type', { enum: ['ILT', 'Virtual'] })
       .notNull()
@@ -35,6 +40,7 @@ export const sessions = pgTable(
     // Calendar views scan by date; the sessions list filters by status.
     index('idx_sessions_date').on(table.date),
     index('idx_sessions_status').on(table.status),
+    index('idx_sessions_org_date').on(table.organizationId, table.date),
   ],
 );
 
@@ -42,6 +48,8 @@ export const sessionRoster = pgTable(
   'session_roster',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the enrolled user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     sessionId: integer('session_id')
       .notNull()
       .references(() => sessions.id, { onDelete: 'cascade' }),
@@ -66,6 +74,8 @@ export const sessionAttendance = pgTable(
   'session_attendance',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the attending user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     sessionId: integer('session_id')
       .notNull()
       .references(() => sessions.id, { onDelete: 'cascade' }),

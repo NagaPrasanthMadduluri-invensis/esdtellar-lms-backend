@@ -8,6 +8,8 @@ export const userCourseAssignments = pgTable(
   'user_course_assignments',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the assigned user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -26,6 +28,7 @@ export const userCourseAssignments = pgTable(
       table.courseId,
     ),
     index('idx_assignments_course').on(table.courseId),
+    index('idx_uca_org_user').on(table.organizationId, table.userId),
   ],
 );
 
@@ -34,6 +37,8 @@ export const userLessonCompletions = pgTable(
   'user_lesson_completions',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the completing user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -50,6 +55,7 @@ export const userLessonCompletions = pgTable(
       table.lessonId,
     ),
     index('idx_completions_lesson').on(table.lessonId),
+    index('idx_ulc_org_user').on(table.organizationId, table.userId),
   ],
 );
 
@@ -68,6 +74,8 @@ export const lessonVideoProgress = pgTable(
   'lesson_video_progress',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the watching user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),

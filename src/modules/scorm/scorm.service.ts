@@ -184,6 +184,22 @@ export class ScormService {
     return { message: 'Learner removed from package' };
   }
 
+  /**
+   * Entitlement check for the SCORM static-content middleware
+   * (`multi-tenancy.md` §3.9). The middleware sits outside the Nest guard
+   * chain — it authenticates the token by hand — but must still route
+   * through this service rather than the repository directly
+   * (`BACKEND_STRUCTURE.md` §3: never skip a layer; this is a business
+   * rule, not a raw query).
+   */
+  async isEntitledToPackageDir(
+    userId: number,
+    packageDir: string,
+    isAdmin: boolean,
+  ): Promise<boolean> {
+    return this.repository.isEntitledByPackageDir(userId, packageDir, isAdmin);
+  }
+
   /* ── Learner ── */
 
   async listForLearner(userId: number) {

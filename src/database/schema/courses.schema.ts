@@ -15,6 +15,12 @@ export const courses = pgTable(
   'courses',
   {
     id: serial('id').primaryKey(),
+    /**
+     * The owner: a real org, or the platform org for global content (§3.4).
+     * Nullable until wave 3's backfill + `SET NOT NULL` — see the note on
+     * `users.organizationId` for why this is not `.notNull()` yet.
+     */
+    organizationId: integer('organization_id'),
     name: text('name').notNull(),
     description: text('description'),
     thumbnailUrl: text('thumbnail_url'),
@@ -43,6 +49,9 @@ export const courses = pgTable(
     // One training course per session, and the lookup for "is this course a
     // session training?" that the admin list and certificate guard both make.
     uniqueIndex('courses_session_unique').on(table.sessionId),
+    // Catalogue reads filter by org (or org + platform) and active status —
+    // this is the composite from spec §3.7.
+    index('idx_courses_org_active').on(table.organizationId, table.isActive),
   ],
 );
 
@@ -50,6 +59,8 @@ export const courseModules = pgTable(
   'course_modules',
   {
     id: serial('id').primaryKey(),
+    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     courseId: integer('course_id')
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
@@ -70,6 +81,8 @@ export const lessons = pgTable(
   'lessons',
   {
     id: serial('id').primaryKey(),
+    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     moduleId: integer('module_id')
       .notNull()
       .references(() => courseModules.id, { onDelete: 'cascade' }),
@@ -116,7 +129,13 @@ export const lessons = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (table) => [index('idx_lessons_module').on(table.moduleId, table.isActive)],
+  (table) => [
+    index('idx_lessons_module').on(table.moduleId, table.isActive),
+    // Joined by ScormRepository.hasAccess, findAccessiblePackage and the
+    // content middleware's entitlement UNION — the last of which runs on every
+    // package launch (§7.4).
+    index('idx_lessons_scorm_package').on(table.scormPackageId),
+  ],
 );
 
 /**
@@ -132,6 +151,8 @@ export const lessonResources = pgTable(
   'lesson_resources',
   {
     id: serial('id').primaryKey(),
+    /** Content: the owning course's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     lessonId: integer('lesson_id')
       .notNull()
       .references(() => lessons.id, { onDelete: 'cascade' }),

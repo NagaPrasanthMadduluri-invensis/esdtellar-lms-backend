@@ -347,6 +347,57 @@ export class ScormRepository {
     `);
   }
 
+  /**
+   * Entitlement check for authenticated SCORM static content
+   * (`multi-tenancy.md` §3.9), keyed on `package_dir` because that is the URL
+   * segment the request carries — not the numeric package id.
+   *
+   * Mirrors `hasAccess` above: a learner reaches a package two ways, a direct
+   * `user_scorm_assignments` row OR the package embedded as a lesson in a
+   * course they are assigned. `client/components/learner/lesson-content.jsx`
+   * always launches the player from a lesson, so checking assignments alone
+   * would 404 every course-embedded package. An admin previews without an
+   * assignment, entitled to any active package — kept as its own obvious
+   * branch rather than folded into the UNION.
+   *
+   * Deliberately tenancy-free for now: no `organization_id` predicate.
+   * `multi-tenancy.md` §3.9 defers the org scope to phase 5, once `OrgScope`
+   * and the platform-org provider exist. Adding it then is a further
+   * positional parameter on this method — a signature change, not a rewrite.
+   */
+  async isEntitledByPackageDir(
+    userId: number,
+    packageDir: string,
+    isAdmin: boolean,
+  ): Promise<boolean> {
+    if (isAdmin) {
+      const rows = await this.db.all<{ ok: number }>(sql`
+        SELECT 1 AS ok FROM scorm_packages
+        WHERE package_dir = ${packageDir} AND is_active = 1
+        LIMIT 1
+      `);
+      return rows.length > 0;
+    }
+
+    const rows = await this.db.all<{ ok: number }>(sql`
+      SELECT 1 AS ok
+      FROM scorm_packages p
+      JOIN user_scorm_assignments a
+        ON a.package_id = p.id AND a.user_id = ${userId}
+      WHERE p.package_dir = ${packageDir} AND p.is_active = 1
+      UNION
+      SELECT 1 AS ok
+      FROM scorm_packages p
+      JOIN lessons l                   ON l.scorm_package_id = p.id
+      JOIN course_modules cm           ON cm.id = l.module_id
+      JOIN user_course_assignments uca ON uca.course_id = cm.course_id
+      WHERE p.package_dir = ${packageDir} AND p.is_active = 1
+        AND uca.user_id = ${userId}
+      LIMIT 1
+    `);
+    return rows.length > 0;
+  }
+
   /** The lesson embedding this package for this learner, if any. */
   async findLinkedLesson(userId: number, packageId: number) {
     const rows = await this.db.all<{ id: number; course_id: number }>(sql`

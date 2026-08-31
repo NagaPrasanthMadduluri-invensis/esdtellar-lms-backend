@@ -9,6 +9,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { setReferenceDate } from './modules/learning-hours/periods';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { ScormContentMiddleware } from './modules/scorm/scorm-content.middleware';
 import { ScormStorageService } from './modules/scorm/storage/scorm-storage.service';
 
 async function bootstrap(): Promise<void> {
@@ -42,6 +43,23 @@ async function bootstrap(): Promise<void> {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
+
+  /**
+   * Authenticates every request under /scorm BEFORE useStaticAssets ever
+   * touches disk (multi-tenancy.md §3.9 / §7.4). `useStaticAssets` mounts
+   * outside the Nest guard chain — AuthGuard never sees these requests — so
+   * without this, any anonymous caller holding a package UUID could read the
+   * files directly.
+   *
+   * Registered with plain `app.use`, NOT a `MiddlewareConsumer`: consumer
+   * middleware is only applied during `app.init()`, which `app.listen()`
+   * runs internally — i.e. AFTER `useStaticAssets` below is already mounted.
+   * It would silently never run. This must stay:
+   *   - after cookieParser() above, or req.cookies is undefined;
+   *   - before useStaticAssets below, since Express dispatches middleware in
+   *     registration order and express.static terminates the request.
+   */
+  app.use('/scorm', app.get(ScormContentMiddleware).handler);
 
   /**
    * Extracted SCORM packages, served at /scorm/<uuid>/<entry>.

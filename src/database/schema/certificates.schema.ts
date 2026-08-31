@@ -11,6 +11,8 @@ export const certificates = pgTable(
   'certificates',
   {
     id: serial('id').primaryKey(),
+    /** Activity: the certified user's org. Nullable until wave 3 (§3.10). */
+    organizationId: integer('organization_id'),
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -34,6 +36,7 @@ export const certificates = pgTable(
     // Admin list filters by course; the (user_id, course_id) UNIQUE already
     // covers the learner-side lookup.
     index('idx_certificates_course').on(table.courseId),
+    index('idx_certs_org_user').on(table.organizationId, table.userId),
   ],
 );
 

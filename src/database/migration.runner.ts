@@ -50,15 +50,109 @@ export async function runMigrations(
 }
 
 /**
- * Drops whole-line `--` comments.
+ * Strips SQL comments so a semicolon inside one cannot silently truncate a
+ * statement mid-declaration.
  *
- * Note the remaining limitation: a semicolon inside a string literal would
- * still split a statement in two. No migration needs one today, and handling it
- * properly means a real tokeniser rather than a regex.
+ * A whole-line check is not enough: an inline trailing comment
+ * (`slug text UNIQUE, -- URL-safe; subdomains later`) that itself contains a
+ * semicolon slices the surrounding `CREATE TABLE` in two, and the tail is
+ * handed to Postgres as its own "statement" next — exactly what took down
+ * `0007_organizations.sql` on boot before this fix. Corrected by scanning
+ * character-by-character and tracking quoting state, rather than trusting
+ * `--` to only ever appear at the start of a line.
+ *
+ * Tracks, so none of these can be mistaken for a comment or have their own
+ * `;` / `--` mistaken for statement structure:
+ * - single-quoted string literals ('...', with '' as an escaped quote)
+ * - double-quoted identifiers ("...", with "" as an escaped quote)
+ * - dollar-quoted bodies ($$...$$ or $tag$...$tag$) — no migration here has
+ *   one yet, but a future function body must not be corrupted by this parser
+ *
+ * C-style block comments are intentionally not handled — none of these
+ * hand-written, additive migrations use one, and this function is
+ * deliberately proportionate to that, not a general SQL parser.
  */
-function stripComments(statement: string): string {
-  return statement
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('--'))
-    .join('\n');
+function stripComments(sql: string): string {
+  let result = '';
+  let i = 0;
+  const n = sql.length;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let dollarTag: string | null = null;
+
+  while (i < n) {
+    const ch = sql[i];
+
+    if (dollarTag) {
+      if (sql.startsWith(dollarTag, i)) {
+        result += dollarTag;
+        i += dollarTag.length;
+        dollarTag = null;
+      } else {
+        result += ch;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (inSingleQuote) {
+      result += ch;
+      if (ch === "'" && sql[i + 1] === "'") {
+        result += sql[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === "'") inSingleQuote = false;
+      i += 1;
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      result += ch;
+      if (ch === '"' && sql[i + 1] === '"') {
+        result += sql[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inDoubleQuote = false;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingleQuote = true;
+      result += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDoubleQuote = true;
+      result += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '$') {
+      const match = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
+      if (match) {
+        dollarTag = match[0];
+        result += dollarTag;
+        i += dollarTag.length;
+        continue;
+      }
+    }
+
+    if (ch === '-' && sql[i + 1] === '-') {
+      const newlineIndex = sql.indexOf('\n', i);
+      if (newlineIndex === -1) break; // comment runs to end of file
+      i = newlineIndex;
+      continue;
+    }
+
+    result += ch;
+    i += 1;
+  }
+
+  return result;
 }
