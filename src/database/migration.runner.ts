@@ -33,14 +33,15 @@ export async function runMigrations(
 
   for (const file of files) {
     const sql = await readFile(join(MIGRATIONS_DIR, file), 'utf8');
-    // Comments are stripped BEFORE splitting on `;`. Splitting first meant a
-    // semicolon inside a comment cut the file mid-sentence, and the prose after
-    // it — no longer starting with `--` — was handed to Postgres as a
-    // statement. That failed the boot of the whole API, from a comma splice.
-    const statements = stripComments(sql)
-      .split(';')
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0);
+    // Comments are stripped AND statements are split in the same character
+    // scan (see `splitStatements`). Splitting on a naive `sql.split(';')` —
+    // even after stripping comments — tears apart any statement that legally
+    // contains its own `;`, such as a `DO $$ ... END $$;` block: everything
+    // up to the block's first internal `;` becomes a "statement" on its own
+    // and Postgres rejects it as unterminated. Splitting has to share the
+    // same quote/dollar-quote state the comment stripper tracks, or it would
+    // just as happily cut a semicolon out of a string literal.
+    const statements = splitStatements(sql);
 
     for (const statement of statements) {
       await pool.query(statement);
@@ -50,30 +51,35 @@ export async function runMigrations(
 }
 
 /**
- * Strips SQL comments so a semicolon inside one cannot silently truncate a
- * statement mid-declaration.
+ * Strips SQL comments and splits the remainder into individual statements on
+ * `;`, in a single character-by-character scan.
  *
- * A whole-line check is not enough: an inline trailing comment
+ * A whole-line check is not enough for comments: an inline trailing comment
  * (`slug text UNIQUE, -- URL-safe; subdomains later`) that itself contains a
  * semicolon slices the surrounding `CREATE TABLE` in two, and the tail is
  * handed to Postgres as its own "statement" next — exactly what took down
- * `0007_organizations.sql` on boot before this fix. Corrected by scanning
+ * `0007_organizations.sql` on boot before this fix. And a naive `.split(';')`
+ * is not enough for statement splitting: it tears apart anything containing a
+ * legal internal `;`, such as a `DO $$ ... END $$;` block used to guard a
+ * conditionally-existing column. Both are corrected by scanning
  * character-by-character and tracking quoting state, rather than trusting
- * `--` to only ever appear at the start of a line.
+ * `--` to only ever appear at the start of a line or `;` to only ever appear
+ * at the end of a statement.
  *
  * Tracks, so none of these can be mistaken for a comment or have their own
  * `;` / `--` mistaken for statement structure:
  * - single-quoted string literals ('...', with '' as an escaped quote)
  * - double-quoted identifiers ("...", with "" as an escaped quote)
- * - dollar-quoted bodies ($$...$$ or $tag$...$tag$) — no migration here has
- *   one yet, but a future function body must not be corrupted by this parser
+ * - dollar-quoted bodies ($$...$$ or $tag$...$tag$) — including the `DO`
+ *   block bodies introduced for the conditional org-column logic
  *
  * C-style block comments are intentionally not handled — none of these
  * hand-written, additive migrations use one, and this function is
  * deliberately proportionate to that, not a general SQL parser.
  */
-function stripComments(sql: string): string {
-  let result = '';
+function splitStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
   let i = 0;
   const n = sql.length;
   let inSingleQuote = false;
@@ -85,20 +91,20 @@ function stripComments(sql: string): string {
 
     if (dollarTag) {
       if (sql.startsWith(dollarTag, i)) {
-        result += dollarTag;
+        current += dollarTag;
         i += dollarTag.length;
         dollarTag = null;
       } else {
-        result += ch;
+        current += ch;
         i += 1;
       }
       continue;
     }
 
     if (inSingleQuote) {
-      result += ch;
+      current += ch;
       if (ch === "'" && sql[i + 1] === "'") {
-        result += sql[i + 1];
+        current += sql[i + 1];
         i += 2;
         continue;
       }
@@ -108,9 +114,9 @@ function stripComments(sql: string): string {
     }
 
     if (inDoubleQuote) {
-      result += ch;
+      current += ch;
       if (ch === '"' && sql[i + 1] === '"') {
-        result += sql[i + 1];
+        current += sql[i + 1];
         i += 2;
         continue;
       }
@@ -121,14 +127,14 @@ function stripComments(sql: string): string {
 
     if (ch === "'") {
       inSingleQuote = true;
-      result += ch;
+      current += ch;
       i += 1;
       continue;
     }
 
     if (ch === '"') {
       inDoubleQuote = true;
-      result += ch;
+      current += ch;
       i += 1;
       continue;
     }
@@ -137,7 +143,7 @@ function stripComments(sql: string): string {
       const match = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
       if (match) {
         dollarTag = match[0];
-        result += dollarTag;
+        current += dollarTag;
         i += dollarTag.length;
         continue;
       }
@@ -150,9 +156,20 @@ function stripComments(sql: string): string {
       continue;
     }
 
-    result += ch;
+    if (ch === ';') {
+      statements.push(current);
+      current = '';
+      i += 1;
+      continue;
+    }
+
+    current += ch;
     i += 1;
   }
 
-  return result;
+  if (current.trim().length > 0) statements.push(current);
+
+  return statements
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
 }
