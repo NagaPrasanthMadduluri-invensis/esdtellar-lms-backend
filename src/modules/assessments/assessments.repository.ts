@@ -417,17 +417,26 @@ export class AssessmentsRepository {
   }
 
   /** The answer key: one row per question with its correct option. */
+  /**
+   * The scored answer key. `option_ids` is carried so the service can discard
+   * a submitted option that does not belong to its question: both ids arrive
+   * in the request body and are single-column FKs, so the database would
+   * otherwise accept another organization's (§3.5).
+   */
   async answerKey(scope: OrgScope, assessmentId: number) {
     return this.db.all<{
       id: number;
       question_text: string;
       correct_option_id: number;
+      option_ids: number[];
     }>(sql`
-      SELECT aq.id, aq.question_text, ao.id AS correct_option_id
+      SELECT aq.id, aq.question_text,
+             MAX(ao.id) FILTER (WHERE ao.is_correct = 1) AS correct_option_id,
+             array_agg(ao.id) AS option_ids
       FROM assessment_questions aq
-      JOIN assessment_options ao
-        ON ao.question_id = aq.id AND ao.is_correct = 1
+      JOIN assessment_options ao ON ao.question_id = aq.id
       WHERE aq.assessment_id = ${assessmentId} AND ${contentScope('aq', scope)}
+      GROUP BY aq.id, aq.question_text
     `);
   }
 

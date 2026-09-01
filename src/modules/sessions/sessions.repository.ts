@@ -297,6 +297,24 @@ export class SessionsRepository {
   ────────────────────────────────────────────────────────────────────────── */
 
   /** The session lesson's ids, or null when the training was never built. */
+  /**
+   * Does this course exist and belong to this organization? Used to turn a
+   * body-supplied `course_id` into a 404 instead of a foreign-key violation
+   * surfacing as a 500.
+   *
+   * Strict scope, not contentScope: a session links to a course a tenant
+   * OWNS. A platform-owned global course is shared read-only content and has
+   * no single owning session.
+   */
+  async findCourseInScope(scope: OrgScope, courseId: number) {
+    const rows = await this.db.all<{ id: number }>(sql`
+      SELECT c.id FROM courses c
+      WHERE c.id = ${courseId} AND ${orgScope('c', scope)}
+      LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
   async findTraining(scope: OrgScope, sessionId: number) {
     const rows = await this.db.all<{
       course_id: number;

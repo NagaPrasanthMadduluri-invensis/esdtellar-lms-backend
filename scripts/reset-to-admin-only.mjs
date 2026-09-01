@@ -52,10 +52,32 @@ try {
   }
 
   const { rows: admins } = await pool.query(
-    `SELECT id, email FROM users WHERE role = 'admin' ORDER BY id`,
+    `SELECT u.id, u.email, u.organization_id, o.name AS org_name, o.is_platform
+       FROM users u
+       JOIN organizations o ON o.id = u.organization_id
+      WHERE u.role = 'admin'
+      ORDER BY o.is_platform DESC, u.id`,
   );
   console.log(`\n${admins.length} admin account(s) will be KEPT:`);
-  for (const a of admins) console.log(`  [${a.id}] ${a.email}`);
+  for (const a of admins) {
+    console.log(
+      `  [${a.id}] ${a.email}  ->  ${a.org_name}${a.is_platform ? ' (platform)' : ''}`,
+    );
+  }
+
+  // Multi-tenancy guard (spec §7.7). Keeping "an admin" is no longer enough:
+  // every surviving organization needs one of its own, and the platform needs
+  // a platform admin, or the reset locks someone out of a tenant they own.
+  const { rows: orphanOrgs } = await pool.query(`
+    SELECT o.id, o.name, o.is_platform
+      FROM organizations o
+     WHERE NOT EXISTS (
+       SELECT 1 FROM users u
+        WHERE u.organization_id = o.id AND u.role = 'admin'
+     )
+     ORDER BY o.id
+  `);
+  const platformHasAdmin = admins.some((a) => a.is_platform);
 
   if (admins.length === 0) {
     console.error(
@@ -63,13 +85,40 @@ try {
         'everyone out of the application. Create an admin first.',
     );
     process.exitCode = 1;
+  } else if (!platformHasAdmin) {
+    console.error(
+      '\nREFUSING: the platform organization has no admin. After the reset ' +
+        'nobody could administer the platform or onboard an organization.',
+    );
+    process.exitCode = 1;
+  } else if (orphanOrgs.length > 0) {
+    console.error(
+      '\nREFUSING: these organizations would survive with no admin of their ' +
+        'own, locking their tenant:',
+    );
+    for (const o of orphanOrgs) console.error(`  [${o.id}] ${o.name}`);
+    console.error(
+      'Create an admin for each, or delete the organization, then re-run.',
+    );
+    process.exitCode = 1;
   } else if (!commit) {
     console.log(`\nDRY RUN — ${total} row(s) across ${names.length} tables would be removed.`);
     console.log('Re-run with --commit to apply.');
   } else {
-    // Truncate everything except users, then drop non-admin users. CASCADE
-    // handles the foreign keys; RESTART IDENTITY makes ids start from 1 again.
-    const wipe = names.filter((n) => n !== 'users');
+    // Truncate everything except users AND organizations, then drop non-admin
+    // users. CASCADE handles the foreign keys; RESTART IDENTITY makes ids
+    // start from 1 again.
+    //
+    // `organizations` MUST be excluded, not merely emptied last. `users`
+    // carries `fk_users_organization` -> `organizations(id)`, and TRUNCATE
+    // CASCADE "automatically truncates all tables that have foreign-key
+    // references to any of the named tables" — so truncating organizations
+    // reaches users and destroys the admin accounts this script exists to
+    // keep, leaving the platform org gone and the API unable to boot
+    // (OrganizationsService.onModuleInit throws when there is no platform
+    // org). Verified: TRUNCATE organizations CASCADE emits
+    // `NOTICE: truncate cascades to table "users"`.
+    const wipe = names.filter((n) => n !== 'users' && n !== 'organizations');
     await pool.query('BEGIN');
     if (wipe.length > 0) {
       await pool.query(
@@ -77,9 +126,19 @@ try {
       );
     }
     const del = await pool.query(`DELETE FROM users WHERE role <> 'admin'`);
+    // Organizations are kept, but any left with nobody in them is noise. The
+    // platform org always survives.
+    const orgs = await pool.query(`
+      DELETE FROM organizations o
+       WHERE NOT o.is_platform
+         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.organization_id = o.id)
+    `);
     await pool.query('COMMIT');
 
-    console.log(`\nWiped ${wipe.length} tables and ${del.rowCount} non-admin user(s).`);
+    console.log(
+      `\nWiped ${wipe.length} tables, ${del.rowCount} non-admin user(s) and ` +
+        `${orgs.rowCount} empty organization(s).`,
+    );
     console.log('Admin accounts and their passwords are unchanged.');
     console.log(
       '\nStill on disk / in object storage — remove separately if you want them gone:\n' +

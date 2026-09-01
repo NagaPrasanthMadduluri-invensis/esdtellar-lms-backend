@@ -237,9 +237,15 @@ in `main.ts` and `app.module.ts`. Do not re-implement any of it per route.
   `CLIENT_ORIGIN` must be an exact origin (a wildcard is illegal with credentials).
 - The JWT claim set is:
   ```json
-  { "userId": 5, "role": "learner", "email": "...",
+  { "userId": 5, "organizationId": 10, "role": "learner", "email": "...",
     "firstName": "Sneha", "lastName": "Kulkarni", "exp": 1788000000 }
   ```
+
+  `organizationId` was added by the multi-tenancy work and is **required**:
+  `TokenService.verify` rejects any token without it, because there is no
+  organization a stale token could safely default to. Deploying that change
+  signs every existing session out once, deliberately. See
+  `specs/multi-tenancy.md` §4.1.
   `userId` — not `id` — is the `users.id` primary key. The name claims exist so
   the server-rendered shell can show the user without an extra round trip.
 
@@ -482,6 +488,8 @@ lesson complete. Log the reason; do not propagate.
 | `CAPTION_MAX_BYTES` | no (2 MiB) | Caption uploads are proxied, so this is a real body cap |
 | `DOCUMENT_MAX_BYTES` | no (100 MiB) | Cap for an uploaded document — a slide deck, not a feature film |
 | `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
+| `ORG_NAME` | no (`Edstellar`) | Name of the first real organization created by `db:migrate:tenancy` |
+| `ORG_SLUG` | no (`edstellar`) | Organization `db:seed` seeds into |
 
 The R2 variables are **not** boot-required: without them the API starts, logs a
 warning, and returns 503 from the video routes only. `S3_API_ENDPOINT` from the
@@ -511,6 +519,9 @@ Update this table with every module you move.
 | manual certificate issue (admin) | 1 | `server/src/modules/certificates` |
 | session completion (admin) | 1 | `server/src/modules/sessions` |
 | document upload + lesson resources | 4 | `server/src/modules/media`, `server/src/modules/courses` |
+| organizations (platform org resolution) | 0 | `server/src/modules/organizations` |
+| leaderboard | 1 | `server/src/modules/leaderboard` |
+| learning-hours | 1 | `server/src/modules/learning-hours` |
 
 ### 10.8 Lesson content: video, SCORM, document — plus resources
 

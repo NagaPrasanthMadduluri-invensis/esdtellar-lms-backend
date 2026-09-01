@@ -71,6 +71,7 @@ export class SessionsService {
   }
 
   async create(scope: OrgScope, dto: SessionDto) {
+    await this.assertCourseInScope(scope, dto.course_id);
     const id = await this.repository.createSession(scope, this.toRow(dto));
     // The training course is part of creating a session, not a follow-up step:
     // a session with no training would show in the calendar and nowhere else,
@@ -84,6 +85,7 @@ export class SessionsService {
   }
 
   async update(scope: OrgScope, sessionId: number, dto: SessionDto) {
+    await this.assertCourseInScope(scope, dto.course_id);
     const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
@@ -413,6 +415,24 @@ export class SessionsService {
       })),
       is_locked: rows.some((row) => Number(row.is_locked) === 1),
     };
+  }
+
+  /**
+   * A session may be linked to a course, and course_id arrives in the request
+   * body. `fk_sessions_org_course` would reject another organization's id —
+   * but as a constraint violation, i.e. a 500. The caller deserves a 404 that
+   * names the problem, matching how user_ids are handled in assignment.
+   */
+  private async assertCourseInScope(
+    scope: OrgScope,
+    courseId: unknown,
+  ): Promise<void> {
+    if (courseId === undefined || courseId === null || courseId === '') return;
+    const found = await this.repository.findCourseInScope(
+      scope,
+      Number(courseId),
+    );
+    if (!found) throw new NotFoundException('Course not found');
   }
 
   private toRow(dto: SessionDto) {

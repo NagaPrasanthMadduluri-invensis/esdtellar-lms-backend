@@ -251,19 +251,36 @@ export class AssessmentsService {
     const key = await this.repository.answerKey(scope, assessmentId);
 
     let score = 0;
-    const scored = dto.answers.map((answer) => {
-      const question = key.find((q) => Number(q.id) === answer.question_id);
-      const isCorrect =
-        question && answer.selected_option_id === Number(question.correct_option_id)
-          ? 1
-          : 0;
-      if (isCorrect) score++;
-      return {
-        question_id: answer.question_id,
-        selected_option_id: answer.selected_option_id ?? null,
-        is_correct: isCorrect,
-      };
-    });
+    // question_id and selected_option_id arrive in the request body, and both
+    // are SINGLE-column foreign keys — the composite set deliberately excludes
+    // the activity/content edge (§3.5), so the database would accept another
+    // organization's ids and persist a cross-org reference inside this
+    // tenant's own answer rows. `key` is already scoped, so an id absent from
+    // it is either fabricated or someone else's: drop the answer rather than
+    // store it. Same class as the lessons.scorm_package_id fix.
+    const scored = dto.answers
+      .filter((answer) => key.some((q) => Number(q.id) === answer.question_id))
+      .map((answer) => {
+        const question = key.find((q) => Number(q.id) === answer.question_id)!;
+        // An option id must belong to the question it was submitted against,
+        // or it is discarded too — a foreign option would score as wrong
+        // anyway, but it would still be written.
+        const selectedOptionId =
+          answer.selected_option_id != null &&
+          question.option_ids.some(
+            (id) => Number(id) === answer.selected_option_id,
+          )
+            ? answer.selected_option_id
+            : null;
+        const isCorrect =
+          selectedOptionId === Number(question.correct_option_id) ? 1 : 0;
+        if (isCorrect) score++;
+        return {
+          question_id: answer.question_id,
+          selected_option_id: selectedOptionId,
+          is_correct: isCorrect,
+        };
+      });
 
     const total = key.length;
     const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
