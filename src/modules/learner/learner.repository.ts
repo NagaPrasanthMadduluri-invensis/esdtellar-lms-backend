@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import { userCourseAssignments, userLessonCompletions, users } from '@/database/schema';
 
 import { lastMonth, thisMonth, weeks } from './learner.constants';
@@ -404,7 +404,7 @@ export class LearnerRepository {
       JOIN course_modules cm ON cm.id = l.module_id
       LEFT JOIN courses c ON c.id = cm.course_id
       LEFT JOIN sessions s ON s.id = c.session_id
-      WHERE l.id = ${lessonId} AND l.is_active = 1 AND ${orgScope('l', scope)}
+      WHERE l.id = ${lessonId} AND l.is_active = 1 AND ${contentScope('l', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -447,7 +447,7 @@ export class LearnerRepository {
     }>(sql`
       SELECT l.id, l.content_type, cm.course_id FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
-      WHERE l.id = ${lessonId} AND ${orgScope('l', scope)}
+      WHERE l.id = ${lessonId} AND ${contentScope('l', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -589,7 +589,7 @@ export class LearnerRepository {
         ON st.package_id = l.scorm_package_id AND st.user_id = ${userId}
       WHERE l.content_type = 'scorm' AND l.scorm_package_id IS NOT NULL
         AND l.is_active = 1 AND cm.is_active = 1
-        AND ${orgScope('l', scope)}
+        AND ${contentScope('l', scope)}
         AND cm.course_id IN (
           SELECT course_id FROM user_course_assignments
           WHERE user_id = ${userId} AND organization_id = ${scope.organizationId}
@@ -622,7 +622,7 @@ export class LearnerRepository {
       FROM course_modules cm
       JOIN lessons l ON l.module_id = cm.id AND l.is_active = 1
       WHERE cm.is_active = 1
-        AND ${orgScope('cm', scope)}
+        AND ${contentScope('cm', scope)}
         AND cm.course_id IN (
           SELECT course_id FROM user_course_assignments
           WHERE user_id = ${userId} AND organization_id = ${scope.organizationId}

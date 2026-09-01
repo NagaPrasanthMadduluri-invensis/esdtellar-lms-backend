@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, max, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import {
   assessments,
   certificates,
@@ -181,7 +181,7 @@ export class CertificatesRepository {
   async findCourse(scope: OrgScope, courseId: number) {
     const rows = await this.db.all<{ id: number; name: string }>(sql`
       SELECT c.id, c.name FROM courses c
-      WHERE c.id = ${courseId} AND ${orgScope('c', scope)}
+      WHERE c.id = ${courseId} AND ${contentScope('c', scope)}
     `);
     return rows[0] ?? null;
   }

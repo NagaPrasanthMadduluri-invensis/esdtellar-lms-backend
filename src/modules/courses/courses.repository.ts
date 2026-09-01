@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import {
   courseModules,
   courses,
@@ -77,7 +77,7 @@ export class CoursesRepository {
                  WHERE cm4.course_id = c.id AND l4.is_active = 1)
         ) AS completed_enrollments
       FROM courses c
-      WHERE ${orgScope('c', scope)}
+      WHERE ${contentScope('c', scope)}
       ORDER BY c.created_at DESC
     `);
   }
@@ -134,7 +134,7 @@ export class CoursesRepository {
              file_name, file_size_bytes, mime_type, url, sort_order
       FROM lesson_resources
       WHERE lesson_id IN (${sql.join(lessonIds.map((id) => sql`${id}`), sql`, `)})
-        AND ${orgScope('lesson_resources', scope)}
+        AND ${contentScope('lesson_resources', scope)}
       ORDER BY lesson_id, sort_order, id
     `);
   }
@@ -162,7 +162,7 @@ export class CoursesRepository {
     const rows = await this.db.all<{ next: number }>(sql`
       SELECT COALESCE(MAX(sort_order) + 1, 0) AS next
       FROM lesson_resources
-      WHERE lesson_id = ${lessonId} AND ${orgScope('lesson_resources', scope)}
+      WHERE lesson_id = ${lessonId} AND ${contentScope('lesson_resources', scope)}
     `);
     return Number(rows[0]?.next ?? 0);
   }
@@ -181,7 +181,7 @@ export class CoursesRepository {
     return this.db.all<{ file_key: string | null }>(sql`
       SELECT file_key FROM lesson_resources
       WHERE lesson_id = ${lessonId} AND file_key IS NOT NULL
-        AND ${orgScope('lesson_resources', scope)}
+        AND ${contentScope('lesson_resources', scope)}
     `);
   }
 
@@ -208,7 +208,7 @@ export class CoursesRepository {
   ): Promise<number | null> {
     const rows = await this.db.all<{ session_id: number | null }>(sql`
       SELECT session_id FROM courses
-      WHERE id = ${courseId} AND ${orgScope('courses', scope)}
+      WHERE id = ${courseId} AND ${contentScope('courses', scope)}
     `);
     return rows[0]?.session_id ?? null;
   }
@@ -220,7 +220,7 @@ export class CoursesRepository {
     const rows = await this.db.all<{ session_id: number | null }>(sql`
       SELECT c.session_id FROM course_modules cm
       JOIN courses c ON c.id = cm.course_id
-      WHERE cm.id = ${moduleId} AND ${orgScope('cm', scope)}
+      WHERE cm.id = ${moduleId} AND ${contentScope('cm', scope)}
     `);
     return rows[0]?.session_id ?? null;
   }
@@ -233,16 +233,34 @@ export class CoursesRepository {
       SELECT c.session_id FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       JOIN courses c ON c.id = cm.course_id
-      WHERE l.id = ${lessonId} AND ${orgScope('l', scope)}
+      WHERE l.id = ${lessonId} AND ${contentScope('l', scope)}
     `);
     return rows[0]?.session_id ?? null;
   }
 
+  /**
+   * Reads a course visible to this organization — its own, OR a global one
+   * owned by the platform org (§3.4).
+   *
+   * Callers that MUTATE must follow this with
+   * `CoursesService.assertNotGlobalContent`, which turns a platform-owned row
+   * into a 422 explaining it is not theirs to edit. Returning 404 here instead
+   * would be simpler but wrong: the admin can legitimately see the course in
+   * their Content Library, so "not found" contradicts what is on their screen.
+   */
   async findById(scope: OrgScope, id: number) {
     const rows = await this.db
       .select()
       .from(courses)
-      .where(and(eq(courses.id, id), eq(courses.organizationId, scope.organizationId)))
+      .where(
+        and(
+          eq(courses.id, id),
+          inArray(courses.organizationId, [
+            scope.organizationId,
+            scope.platformOrganizationId,
+          ]),
+        ),
+      )
       .limit(1);
     return rows[0] ?? null;
   }
@@ -316,7 +334,7 @@ export class CoursesRepository {
         (SELECT COUNT(*) FROM lessons
          WHERE module_id = cm.id AND is_active = 1) AS lessons_count
       FROM course_modules cm
-      WHERE cm.course_id = ${courseId} AND ${orgScope('cm', scope)}
+      WHERE cm.course_id = ${courseId} AND ${contentScope('cm', scope)}
       ORDER BY cm.sort_order, cm.created_at
     `);
   }
@@ -330,7 +348,7 @@ export class CoursesRepository {
       SELECT l.* FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE cm.course_id = ${courseId} AND l.is_active = 1
-        AND ${orgScope('l', scope)}
+        AND ${contentScope('l', scope)}
       ORDER BY l.sort_order, l.created_at
     `);
   }
@@ -338,7 +356,7 @@ export class CoursesRepository {
   async nextModuleSortOrder(scope: OrgScope, courseId: number): Promise<number> {
     const rows = await this.db.all<{ m: number | null }>(sql`
       SELECT MAX(sort_order) AS m FROM course_modules
-      WHERE course_id = ${courseId} AND ${orgScope('course_modules', scope)}
+      WHERE course_id = ${courseId} AND ${contentScope('course_modules', scope)}
     `);
     return Number(rows[0]?.m ?? 0) + 1;
   }
@@ -439,7 +457,7 @@ export class CoursesRepository {
   async nextLessonSortOrder(scope: OrgScope, moduleId: number): Promise<number> {
     const rows = await this.db.all<{ m: number | null }>(sql`
       SELECT MAX(sort_order) AS m FROM lessons
-      WHERE module_id = ${moduleId} AND ${orgScope('lessons', scope)}
+      WHERE module_id = ${moduleId} AND ${contentScope('lessons', scope)}
     `);
     return Number(rows[0]?.m ?? 0) + 1;
   }
@@ -504,10 +522,10 @@ export class CoursesRepository {
       JOIN scorm_packages sp ON sp.id = st.package_id
       JOIN lessons l ON l.scorm_package_id = st.package_id
       JOIN course_modules cm ON cm.id = l.module_id
-      WHERE cm.course_id = ${courseId} AND ${orgScope('cm', scope)}
+      WHERE cm.course_id = ${courseId} AND ${contentScope('cm', scope)}
         -- Defence in depth: the activity->content edge has no composite FK, so
         -- scope the package too rather than trusting the lesson link (§3.5).
-        AND ${orgScope('sp', scope)}
+        AND ${contentScope('sp', scope)}
     `);
   }
 

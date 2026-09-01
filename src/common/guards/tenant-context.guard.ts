@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
 import { createOrgScope } from '@/database/org-scope';
+import { OrganizationsService } from '@/modules/organizations/organizations.service';
 
 import { IS_PUBLIC_KEY } from '../decorators';
 import type { AuthenticatedRequest } from '../types/authenticated-request';
@@ -18,7 +19,10 @@ import type { AuthenticatedRequest } from '../types/authenticated-request';
  */
 @Injectable()
 export class TenantContextGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly organizations: OrganizationsService,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
@@ -31,7 +35,10 @@ export class TenantContextGuard implements CanActivate {
     // AuthGuard already rejected the request if `user` were missing — this is
     // just narrowing, not a second auth check.
     if (request.user) {
-      request.orgScope = createOrgScope(request.user.organizationId);
+      request.orgScope = createOrgScope(
+        request.user.organizationId,
+        this.organizations.getPlatformOrganizationId(),
+      );
     }
     return true;
   }

@@ -187,6 +187,29 @@ export class CoursesService {
    * training short of 100%, and the completion metrics would disagree with the
    * session for good. All of it is managed from Sessions instead.
    */
+  /**
+   * Refuses a write to platform-owned (global) content with 422.
+   *
+   * Reads are widened to `IN (org, platform)` so an org admin can SEE and
+   * assign a global course — but editing one would be overwritten by the
+   * platform admin and would change what every other organization sees. Same
+   * shape as the session-training refusal below, and deliberately 422 rather
+   * than 404: the item is legitimately visible, so pretending it does not
+   * exist would be more confusing than saying it is not yours to edit
+   * (spec §3.4).
+   */
+  private assertNotGlobalContent(
+    scope: OrgScope,
+    organizationId: number,
+    what = 'content',
+  ): void {
+    if (organizationId !== scope.organizationId) {
+      throw new UnprocessableEntityException(
+        `This ${what} is published by the platform administrator and cannot be edited here.`,
+      );
+    }
+  }
+
   private assertNotSessionTraining(sessionId: number | null): void {
     if (sessionId) {
       throw new UnprocessableEntityException(
@@ -250,6 +273,7 @@ export class CoursesService {
   async update(scope: OrgScope, courseId: number, dto: CourseDto) {
     const existing = await this.repository.findById(scope, courseId);
     if (!existing) throw new NotFoundException('Course not found');
+    this.assertNotGlobalContent(scope, existing.organizationId, 'course');
     this.assertNotSessionTraining(existing.sessionId);
 
     const course = await this.repository.updateCourse(scope, courseId, {

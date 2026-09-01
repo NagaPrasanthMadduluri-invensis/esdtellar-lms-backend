@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { OrganizationsModule } from '../organizations/organizations.module';
 import { AuthModule } from '@/modules/auth/auth.module';
 import { CertificatesModule } from '@/modules/certificates/certificates.module';
 
@@ -17,7 +18,7 @@ import { ScormStorageService } from './storage/scorm-storage.service';
  * `useStaticAssets`, mounted right after it) serves from.
  */
 @Module({
-  imports: [AuthModule, CertificatesModule],
+  imports: [AuthModule, CertificatesModule, OrganizationsModule],
   controllers: [AdminScormController, LearnerScormController],
   providers: [
     ScormService,

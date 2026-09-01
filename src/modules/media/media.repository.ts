@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import { lessons } from '@/database/schema';
 
 /** A lesson's media state, as the admin side needs it. */
@@ -55,7 +55,7 @@ export class MediaRepository {
       FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.id = ${lessonId} AND l.is_active = 1 AND cm.is_active = 1
-        AND ${orgScope('l', scope)}
+        AND ${contentScope('l', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -94,7 +94,7 @@ export class MediaRepository {
       JOIN lessons l ON l.id = r.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE r.id = ${resourceId} AND l.is_active = 1 AND cm.is_active = 1
-        AND ${orgScope('r', scope)}
+        AND ${contentScope('r', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -122,7 +122,7 @@ export class MediaRepository {
       FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.id = ${lessonId} AND l.is_active = 1 AND cm.is_active = 1
-        AND ${orgScope('l', scope)}
+        AND ${contentScope('l', scope)}
     `);
     return rows[0] ?? null;
   }

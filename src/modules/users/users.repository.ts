@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import { users } from '@/database/schema';
 
 export interface LearnerListRow {
@@ -354,7 +354,7 @@ export class UsersRepository {
         -- activity->content edge that no composite FK guards (§3.5). Without
         -- this predicate another org's package title and version leak into
         -- this response.
-        AND ${orgScope('sp', scope)}
+        AND ${contentScope('sp', scope)}
         AND cm.course_id IN (
           SELECT course_id FROM user_course_assignments WHERE user_id = ${userId}
         )

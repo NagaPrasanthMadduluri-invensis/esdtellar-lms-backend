@@ -12,12 +12,22 @@ declare const brand: unique symbol;
  */
 export type OrgScope = {
   readonly organizationId: number;
+  /**
+   * The reserved platform organization. Carried on the scope rather than
+   * injected separately so that every repository can widen a CONTENT read to
+   * include global items without taking a dependency on OrganizationsService
+   * (spec §3.4).
+   */
+  readonly platformOrganizationId: number;
   readonly [brand]: true;
 };
 
 /** The one function allowed to mint an `OrgScope`. */
-export function createOrgScope(organizationId: number): OrgScope {
-  return { organizationId } as OrgScope;
+export function createOrgScope(
+  organizationId: number,
+  platformOrganizationId: number,
+): OrgScope {
+  return { organizationId, platformOrganizationId } as OrgScope;
 }
 
 // A conservative whitelist for a SQL identifier used as a table alias. Not a
@@ -40,4 +50,30 @@ export function orgScope(alias: string, scope: OrgScope): SQL {
     throw new Error(`orgScope: "${alias}" is not a safe SQL identifier`);
   }
   return sql`${sql.identifier(alias)}.organization_id = ${scope.organizationId}`;
+}
+
+/**
+ * The predicate for a CONTENT table — one that may be owned by the platform
+ * organization and shared with every tenant: courses, course_modules, lessons,
+ * lesson_resources, assessments, assessment_questions, assessment_options and
+ * scorm_packages (spec §3.4).
+ *
+ * Use `orgScope` for ACTIVITY tables instead. A learner's assignment,
+ * completion, attempt, tracking row, certificate, roster entry or attendance
+ * record always belongs to their own organization and is never global —
+ * widening one of those would be a genuine cross-tenant leak, not a feature.
+ *
+ * The two functions are deliberately named differently rather than sharing one
+ * with a boolean: which table is which is then greppable, and a reviewer can
+ * check the choice at every call site instead of tracing an argument.
+ *
+ * `IN (org, platform)` rather than `= org OR IS NULL`: the sentinel keeps
+ * organization_id NOT NULL everywhere, which is what makes the composite
+ * foreign keys in §3.5 possible at all. Measured at the same cost (§3.4).
+ */
+export function contentScope(alias: string, scope: OrgScope): SQL {
+  if (!SAFE_ALIAS.test(alias)) {
+    throw new Error(`contentScope: "${alias}" is not a safe SQL identifier`);
+  }
+  return sql`${sql.identifier(alias)}.organization_id IN (${scope.organizationId}, ${scope.platformOrganizationId})`;
 }

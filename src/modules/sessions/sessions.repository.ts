@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import { sessionRoster, sessions } from '@/database/schema';
 
 export interface AttendanceRow {
@@ -307,7 +307,7 @@ export class SessionsRepository {
       FROM courses c
       JOIN course_modules cm ON cm.course_id = c.id
       JOIN lessons l ON l.module_id = cm.id AND l.content_type = 'session'
-      WHERE c.session_id = ${sessionId} AND ${orgScope('c', scope)}
+      WHERE c.session_id = ${sessionId} AND ${contentScope('c', scope)}
       LIMIT 1
     `);
     return rows[0] ?? null;

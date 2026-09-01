@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import {
   assessmentOptions,
   assessmentQuestions,
@@ -34,7 +34,7 @@ export class AssessmentsRepository {
       FROM assessments a
       JOIN courses c ON c.id = a.course_id
       LEFT JOIN assessment_questions aq ON aq.assessment_id = a.id
-      WHERE ${orgScope('a', scope)}
+      WHERE ${contentScope('a', scope)}
       GROUP BY a.id, c.name
       ORDER BY a.created_at DESC
     `);
@@ -48,7 +48,7 @@ export class AssessmentsRepository {
         (SELECT COUNT(*) FROM user_assessment_attempts
          WHERE assessment_id = a.id) AS attempts_count
       FROM assessments a
-      WHERE a.course_id = ${courseId} AND ${orgScope('a', scope)}
+      WHERE a.course_id = ${courseId} AND ${contentScope('a', scope)}
       ORDER BY a.created_at
     `);
   }
@@ -57,7 +57,7 @@ export class AssessmentsRepository {
   async courseExists(scope: OrgScope, courseId: number): Promise<boolean> {
     const rows = await this.db.all<{ id: number }>(sql`
       SELECT id FROM courses
-      WHERE id = ${courseId} AND ${orgScope('courses', scope)}
+      WHERE id = ${courseId} AND ${contentScope('courses', scope)}
     `);
     return rows.length > 0;
   }
@@ -80,7 +80,7 @@ export class AssessmentsRepository {
       SELECT a.*, c.name AS course_name
       FROM assessments a
       JOIN courses c ON c.id = a.course_id
-      WHERE a.id = ${id} AND a.is_active = 1 AND ${orgScope('a', scope)}
+      WHERE a.id = ${id} AND a.is_active = 1 AND ${contentScope('a', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -191,13 +191,13 @@ export class AssessmentsRepository {
       return this.db.all<Record<string, unknown> & { question_id: number }>(sql`
         SELECT ao.* FROM assessment_options ao
         JOIN assessment_questions aq ON aq.id = ao.question_id
-        WHERE aq.assessment_id = ${assessmentId} AND ${orgScope('ao', scope)}
+        WHERE aq.assessment_id = ${assessmentId} AND ${contentScope('ao', scope)}
       `);
     }
     return this.db.all<Record<string, unknown> & { question_id: number }>(sql`
       SELECT ao.id, ao.option_text, ao.question_id FROM assessment_options ao
       JOIN assessment_questions aq ON aq.id = ao.question_id
-      WHERE aq.assessment_id = ${assessmentId} AND ${orgScope('ao', scope)}
+      WHERE aq.assessment_id = ${assessmentId} AND ${contentScope('ao', scope)}
     `);
   }
 
@@ -217,7 +217,7 @@ export class AssessmentsRepository {
     const rows = await this.db.all<{ m: number | null }>(sql`
       SELECT MAX(sort_order) AS m FROM assessment_questions
       WHERE assessment_id = ${assessmentId}
-        AND ${orgScope('assessment_questions', scope)}
+        AND ${contentScope('assessment_questions', scope)}
     `);
     return Number(rows[0]?.m ?? 0) + 1;
   }
@@ -365,7 +365,7 @@ export class AssessmentsRepository {
       JOIN courses c ON c.id = a.course_id AND c.is_active = 1
       JOIN user_course_assignments uca
         ON uca.course_id = a.course_id AND uca.user_id = ${userId}
-      WHERE a.is_active = 1 AND ${orgScope('a', scope)}
+      WHERE a.is_active = 1 AND ${contentScope('a', scope)}
       ORDER BY a.created_at
     `);
   }
@@ -427,7 +427,7 @@ export class AssessmentsRepository {
       FROM assessment_questions aq
       JOIN assessment_options ao
         ON ao.question_id = aq.id AND ao.is_correct = 1
-      WHERE aq.assessment_id = ${assessmentId} AND ${orgScope('aq', scope)}
+      WHERE aq.assessment_id = ${assessmentId} AND ${contentScope('aq', scope)}
     `);
   }
 

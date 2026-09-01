@@ -7,6 +7,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { TokenService } from '@/modules/auth/token.service';
 
 import { createOrgScope } from '@/database/org-scope';
+import { OrganizationsService } from '@/modules/organizations/organizations.service';
 
 import { EntitlementCache } from './entitlement-cache';
 import { ScormService } from './scorm.service';
@@ -55,6 +56,7 @@ export class ScormContentMiddleware {
   constructor(
     private readonly tokenService: TokenService,
     private readonly scormService: ScormService,
+    private readonly organizations: OrganizationsService,
     private readonly entitlementCache: EntitlementCache,
     storage: ScormStorageService,
     config: ConfigService,
@@ -122,7 +124,10 @@ export class ScormContentMiddleware {
         // would have used — never from the URL, a header, or anything the
         // caller controls.
         entitled = await this.scormService.isEntitledToPackageDir(
-          createOrgScope(payload.organizationId),
+          createOrgScope(
+            payload.organizationId,
+            this.organizations.getPlatformOrganizationId(),
+          ),
           payload.userId,
           packageDir,
           isAdmin,

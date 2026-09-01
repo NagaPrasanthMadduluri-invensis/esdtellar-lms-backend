@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 
-import { orgScope, type OrgScope } from '@/database/org-scope';
+import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import { DatabaseService } from '@/database/database.service';
 import {
   scormPackages,
@@ -31,7 +31,7 @@ export class ScormRepository {
         c.name AS course_name
       FROM scorm_packages sp
       LEFT JOIN courses c ON c.id = sp.course_id
-      WHERE ${orgScope('sp', scope)}
+      WHERE ${contentScope('sp', scope)}
       ORDER BY sp.created_at DESC
     `);
   }
@@ -41,7 +41,7 @@ export class ScormRepository {
       SELECT sp.*, c.name AS course_name
       FROM scorm_packages sp
       LEFT JOIN courses c ON c.id = sp.course_id
-      WHERE sp.id = ${packageId} AND ${orgScope('sp', scope)}
+      WHERE sp.id = ${packageId} AND ${contentScope('sp', scope)}
     `);
     return rows[0] ?? null;
   }
@@ -85,7 +85,7 @@ export class ScormRepository {
       JOIN users u ON u.id = usa.user_id
       LEFT JOIN scorm_tracking st
         ON st.user_id = usa.user_id AND st.package_id = usa.package_id
-      WHERE usa.package_id = ${packageId} AND ${orgScope('sp', scope)}
+      WHERE usa.package_id = ${packageId} AND ${contentScope('sp', scope)}
       ORDER BY usa.assigned_at DESC
     `);
   }
@@ -310,7 +310,7 @@ export class ScormRepository {
       LEFT JOIN courses c ON c.id = sp.course_id
       LEFT JOIN scorm_tracking st
         ON st.package_id = sp.id AND st.user_id = usa.user_id
-      WHERE usa.user_id = ${userId} AND ${orgScope('sp', scope)}
+      WHERE usa.user_id = ${userId} AND ${contentScope('sp', scope)}
       ORDER BY usa.assigned_at DESC
     `);
   }
@@ -350,7 +350,7 @@ export class ScormRepository {
       FROM scorm_packages sp
       LEFT JOIN courses c ON c.id = sp.course_id
       WHERE sp.id = ${packageId} AND sp.is_active = 1
-        AND ${orgScope('sp', scope)}
+        AND ${contentScope('sp', scope)}
         AND (
           EXISTS (SELECT 1 FROM user_scorm_assignments
                   WHERE user_id = ${userId} AND package_id = sp.id)
@@ -462,7 +462,7 @@ export class ScormRepository {
       const rows = await this.db.all<{ ok: number }>(sql`
         SELECT 1 AS ok FROM scorm_packages
         WHERE package_dir = ${packageDir} AND is_active = 1
-          AND ${orgScope('scorm_packages', scope)}
+          AND ${contentScope('scorm_packages', scope)}
         LIMIT 1
       `);
       return rows.length > 0;
@@ -474,7 +474,7 @@ export class ScormRepository {
       JOIN user_scorm_assignments a
         ON a.package_id = p.id AND a.user_id = ${userId}
       WHERE p.package_dir = ${packageDir} AND p.is_active = 1
-        AND ${orgScope('p', scope)}
+        AND ${contentScope('p', scope)}
       UNION
       SELECT 1 AS ok
       FROM scorm_packages p
@@ -483,7 +483,7 @@ export class ScormRepository {
       JOIN user_course_assignments uca ON uca.course_id = cm.course_id
       WHERE p.package_dir = ${packageDir} AND p.is_active = 1
         AND uca.user_id = ${userId}
-        AND ${orgScope('p', scope)}
+        AND ${contentScope('p', scope)}
       LIMIT 1
     `);
     return rows.length > 0;
