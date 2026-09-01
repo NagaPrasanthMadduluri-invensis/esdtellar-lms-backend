@@ -8,6 +8,7 @@ import {
 import { verifyPassword } from '@/common/crypto/password.util';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
+import { OrganizationsService } from '../organizations/organizations.service';
 import { AuthRepository } from './auth.repository';
 import type { LoginDto } from './dto/login.dto';
 import type { RegisterDto } from './dto/register.dto';
@@ -23,6 +24,17 @@ export interface PublicUser {
   role: 'admin' | 'learner';
   is_active: boolean;
   organization_id: number;
+  /**
+   * True when this user administers the PLATFORM organization rather than a
+   * customer's.
+   *
+   * Exposed here so the frontend can branch its shell without probing a
+   * protected endpoint and reading the 403 as a boolean — which is what it had
+   * to do before, costing an extra round trip on every admin page load and
+   * silently breaking if that endpoint ever moved. The platform org id itself
+   * is deliberately NOT sent: the client needs the answer, not the input.
+   */
+  is_platform_admin: boolean;
 }
 
 export interface AuthResult {
@@ -34,6 +46,7 @@ export interface AuthResult {
 export class AuthService {
   constructor(
     private readonly repository: AuthRepository,
+    private readonly organizations: OrganizationsService,
     private readonly tokenService: TokenService,
   ) {}
 
@@ -55,6 +68,9 @@ export class AuthService {
       role: user.role,
       is_active: user.isActive === 1,
       organization_id: user.organizationId,
+      is_platform_admin:
+        user.role === 'admin' &&
+        user.organizationId === this.organizations.getPlatformOrganizationId(),
     });
   }
 
@@ -88,6 +104,9 @@ export class AuthService {
       role: user.role,
       is_active: user.isActive === 1,
       organization_id: user.organizationId,
+      is_platform_admin:
+        user.role === 'admin' &&
+        user.organizationId === this.organizations.getPlatformOrganizationId(),
     };
   }
 
