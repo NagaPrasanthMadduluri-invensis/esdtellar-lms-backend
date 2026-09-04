@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import type { Readable } from 'node:stream';
 
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -19,6 +22,14 @@ import { ConfigService } from '@nestjs/config';
 export interface ObjectStat {
   size: number;
   contentType: string | null;
+}
+
+/** An object opened for streaming straight into an HTTP response. */
+export interface ObjectStream {
+  stream: Readable;
+  contentType: string | null;
+  contentLength: number | null;
+  etag: string | null;
 }
 
 /**
@@ -209,5 +220,126 @@ export class R2StorageService {
         }`,
       );
     }
+  }
+  /**
+   * Names (never values) of the absent variables. Exposed so another module's
+   * driver can report the same list in its own 503 without duplicating the
+   * check — `S3ScormStorageDriver` does exactly that.
+   */
+  get missingVariables(): string[] {
+    return [...this.missing];
+  }
+
+  /**
+   * Throws the 503 if credentials are absent, without performing a request.
+   *
+   * Callers that are about to do expensive local work first — decompressing a
+   * 100 MB SCORM archive, for instance — use this so a misconfigured server
+   * fails immediately instead of after the CPU has been spent.
+   */
+  requireConfigured(): void {
+    void this.s3;
+  }
+
+  /**
+   * Opens an object for streaming, or null when it does not exist.
+   *
+   * Distinguishes "absent" from "unreachable" deliberately: a genuine 404/
+   * NoSuchKey returns null so the caller can render its own not-found, while a
+   * credential, network or timeout failure propagates — masking that as an
+   * empty result would make a broken bucket look exactly like a package whose
+   * files were never uploaded (BACKEND_STRUCTURE.md §8.3).
+   */
+  async getObjectStream(key: string): Promise<ObjectStream | null> {
+    try {
+      const result = await this.s3.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      if (!result.Body) return null;
+      return {
+        stream: result.Body as Readable,
+        contentType: result.ContentType ?? null,
+        contentLength:
+          result.ContentLength === undefined ? null : Number(result.ContentLength),
+        etag: result.ETag ?? null,
+      };
+    } catch (error) {
+      if (this.isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  /** Every key under a prefix, paginated. */
+  async listPrefix(prefix: string): Promise<string[]> {
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const page = await this.s3.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }),
+      );
+      for (const item of page.Contents ?? []) {
+        if (item.Key) keys.push(item.Key);
+      }
+      continuationToken = page.IsTruncated
+        ? page.NextContinuationToken
+        : undefined;
+    } while (continuationToken);
+
+    return keys;
+  }
+
+  /**
+   * Best-effort delete of everything under a prefix, in batches of 1000 —
+   * the DeleteObjects hard limit.
+   *
+   * A SCORM package is hundreds of objects, so deleting them one at a time
+   * would be hundreds of round trips for a single admin action (§7.1 applies
+   * to object storage for the same reason it applies to Postgres). Like
+   * `deleteObject`, a failure is logged rather than thrown: an orphaned object
+   * costs storage, a thrown error costs the admin their deletion (§8.4).
+   */
+  async deletePrefix(prefix: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      const keys = await this.listPrefix(prefix);
+      for (let i = 0; i < keys.length; i += 1000) {
+        const batch = keys.slice(i, i + 1000);
+        await this.s3.send(
+          new DeleteObjectsCommand({
+            Bucket: this.bucket,
+            Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+          }),
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Could not delete R2 prefix ${prefix}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * A genuinely-absent object, as opposed to any other failure. The SDK
+   * reports this as NoSuchKey / NotFound, or a bare 404 status.
+   */
+  private isNotFound(error: unknown): boolean {
+    const candidate = error as {
+      name?: string;
+      Code?: string;
+      $metadata?: { httpStatusCode?: number };
+    };
+    return (
+      candidate?.name === 'NoSuchKey' ||
+      candidate?.name === 'NotFound' ||
+      candidate?.Code === 'NoSuchKey' ||
+      candidate?.$metadata?.httpStatusCode === 404
+    );
   }
 }

@@ -4,18 +4,25 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 
 import { CertificatesService } from '@/modules/certificates/certificates.service';
 
-import type { AssignScormDto, SaveTrackingDto } from './dto/scorm.dto';
+import type {
+  AssignScormDto,
+  SaveTrackingDto,
+  TrackDatamodelDto,
+} from './dto/scorm.dto';
 import { parseInteractions } from './interactions.util';
 import { parseManifest } from './manifest.parser';
 import type { OrgScope } from '@/database/org-scope';
 
 import { ScormRepository } from './scorm.repository';
+import { ScormDatamodelRepository } from './scorm-datamodel.repository';
 import { ScormStorageService } from './storage/scorm-storage.service';
 
 interface CmiPayload {
@@ -34,11 +41,24 @@ interface CmiPayload {
   location?: string;
 }
 
+/**
+ * How long a provisional package survives unclaimed.
+ *
+ * Hours, not minutes, on purpose: an admin who uploads a 100 MB package and
+ * then works through the rest of the lesson form must never have it deleted
+ * mid-edit. The fast path is the client's own rollback, which knows
+ * immediately that its save failed; this is only for the cases the client
+ * cannot cover — a closed tab, a dead network, a crashed browser.
+ */
+const PROVISIONAL_TTL_MINUTES = 12 * 60;
+
 @Injectable()
 export class ScormService {
+  private readonly logger = new Logger(ScormService.name);
   constructor(
     private readonly repository: ScormRepository,
     private readonly storage: ScormStorageService,
+    private readonly datamodel: ScormDatamodelRepository,
     private readonly certificates: CertificatesService,
   ) {}
 
@@ -62,7 +82,7 @@ export class ScormService {
     scope: OrgScope,
     file: Express.Multer.File | undefined,
     adminId: number,
-    body: { title?: string; course_id?: string },
+    body: { title?: string; course_id?: string; provisional?: string },
   ) {
     if (!file) {
       throw new UnprocessableEntityException('No SCORM package file received');
@@ -73,22 +93,69 @@ export class ScormService {
       );
     }
 
+    // Fail before decompressing: on the s3 driver a missing credential is a
+    // 503, and spending CPU unzipping 100 MB first only delays the same answer.
+    if (!this.storage.isReady) {
+      throw new ServiceUnavailableException(
+        `SCORM storage (driver "${this.storage.driverKind}") is not configured ` +
+          `on this server. Missing: ${this.storage.missingConfig.join(', ')}. ` +
+          'Set them on the API server and restart it — configuration is read ' +
+          'once at startup.',
+      );
+    }
+
+    /**
+     * Collect abandoned provisional uploads before adding another. No
+     * scheduler exists in this codebase, and adding one to run a query that is
+     * almost always empty would be disproportionate — an upload is exactly the
+     * moment debris from a previous upload is worth clearing, and it is the
+     * only moment this endpoint is reached. Failure here must never fail the
+     * upload (§8.4).
+     */
+    void this.sweepProvisional();
+
+    const isProvisional =
+      body.provisional === '1' ||
+      body.provisional === 'true';
+
     const packageDir = randomUUID();
+    // Captured so the catch block can clean up whichever storage was used.
+    // On s3 the prefix is only known after extract() returns, so the fallback
+    // is the driver's own reconstruction from packageDir.
+    let storagePrefix: string | null = null;
 
     try {
-      const manifest = await this.storage.extract(packageDir, file.buffer);
-      if (manifest === null) {
+      const extracted = await this.storage.extract(
+        packageDir,
+        file.buffer,
+        // The OWNER's org — this is what becomes the tenant segment of the key
+        // prefix, and it is taken from the verified scope, never the body.
+        scope.organizationId,
+      );
+      if (extracted === null) {
         throw new UnprocessableEntityException(
           'imsmanifest.xml not found — not a valid SCORM package',
         );
       }
+      storagePrefix = extracted.storagePrefix;
 
-      const parsed = parseManifest(manifest);
+      const parsed = parseManifest(extracted.manifestXml);
       const created = await this.repository.createPackage(scope, {
         title: body.title?.trim() || parsed.title,
         version: parsed.version,
         entryPoint: parsed.entryPoint,
         packageDir,
+        // Null on the local driver; the key prefix on s3. This is what makes
+        // the two drivers coexist per package rather than as a flag day.
+        storagePrefix,
+        /**
+         * The lesson editor sends `provisional` because it must upload before
+         * it can save the lesson, so its package is not real until that lesson
+         * lands. Every other caller (the SCORM library page) is claimed at
+         * once, which is why the flag is opt-IN rather than the default —
+         * an existing caller cannot accidentally create sweepable debris.
+         */
+        claimedAt: isProvisional ? null : new Date().toISOString(),
         courseId: body.course_id ? Number(body.course_id) : null,
         createdBy: adminId,
         // Null when the manifest declares no typicalLearningTime, which is the
@@ -98,8 +165,9 @@ export class ScormService {
 
       return { package: created };
     } catch (error) {
-      // Never leave an orphaned directory behind on a failed upload.
-      await this.storage.remove(packageDir);
+      // Never leave orphaned files behind on a failed upload — on s3 those are
+      // objects nothing references, billed forever.
+      await this.storage.remove({ packageDir, storagePrefix });
       throw error;
     }
   }
@@ -151,13 +219,158 @@ export class ScormService {
     };
   }
 
+
+  /**
+   * Persists a batch of SCORM data-model deltas.
+   *
+   * Access is re-checked on every batch rather than trusted from the launch:
+   * the player holds the tab open for as long as the learner leaves it open,
+   * and an assignment can be revoked in the meantime. Cheaper than it looks —
+   * one `hasAccess` query, and flushes are batched by the bridge rather than
+   * sent per SetValue.
+   *
+   * 404, not 403, for a package the learner cannot reach. A 403 would confirm
+   * the package exists, which is the one thing a caller probing package ids is
+   * trying to learn — the same reasoning as `ScormContentMiddleware`. Note the
+   * deliberate difference from §5.3's general rule: there, 403-vs-404 tells an
+   * owner something useful about their own resource; here the id space is
+   * guessable and the distinction leaks.
+   */
+  async trackDatamodel(
+    scope: OrgScope,
+    userId: number,
+    packageId: number,
+    dto: TrackDatamodelDto,
+  ) {
+    const pkg = await this.repository.findPackageSummary(scope, packageId);
+    if (!pkg) throw new NotFoundException('Package not found');
+
+    const allowed = await this.repository.hasAccess(scope, userId, packageId);
+    if (!allowed) throw new NotFoundException('Package not found');
+
+    const written = await this.datamodel.insertBatch(
+      scope,
+      userId,
+      packageId,
+      dto.deltas.map((delta) => ({
+        elementKey: delta.element_key,
+        // undefined (absent) and null (explicitly cleared) both store as NULL.
+        elementValue: delta.element_value ?? null,
+      })),
+    );
+
+    // The count is returned rather than a bare { ok: true } so the bridge can
+    // tell a partially-rejected batch from a delivered one instead of assuming.
+    return { tracked: written };
+  }
+
+  /** One learner's own runtime timeline, paginated (§7.6). */
+  async datamodelForLearner(
+    scope: OrgScope,
+    userId: number,
+    packageId: number,
+    limit: number,
+    offset: number,
+  ) {
+    const allowed = await this.repository.hasAccess(scope, userId, packageId);
+    if (!allowed) throw new NotFoundException('Package not found');
+
+    const [entries, total] = await Promise.all([
+      this.datamodel.listForLearner(scope, userId, packageId, limit, offset),
+      this.datamodel.countForLearner(scope, userId, packageId),
+    ]);
+    return { entries, total, limit, offset };
+  }
+
+  /**
+   * An admin reading one learner's timeline. Separate from the learner method
+   * because the ownership rule is different — an admin is allowed to read a
+   * learner they do not own the row of, but only inside their own org, which
+   * `findLearner` enforces before anything is returned.
+   */
+  async datamodelForAdmin(
+    scope: OrgScope,
+    packageId: number,
+    userId: number,
+    limit: number,
+    offset: number,
+  ) {
+    const pkg = await this.repository.findPackageSummary(scope, packageId);
+    if (!pkg) throw new NotFoundException('Package not found');
+
+    const learner = await this.repository.findLearner(scope, userId);
+    if (!learner) throw new NotFoundException('Learner not found');
+
+    const [entries, total, latest] = await Promise.all([
+      this.datamodel.listForLearner(scope, userId, packageId, limit, offset),
+      this.datamodel.countForLearner(scope, userId, packageId),
+      this.datamodel.latestByElement(scope, userId, packageId),
+    ]);
+
+    return {
+      package: { id: pkg.id, title: pkg.title, version: pkg.version },
+      learner,
+      entries,
+      total,
+      limit,
+      offset,
+      // The reconstructed current data model, so the screen does not have to
+      // fold the timeline itself and get a different answer than the DB would.
+      latest,
+    };
+  }
+
+
+  /**
+   * Marks a package as in use, called when a lesson successfully references it.
+   * Exported through the module so `CoursesService` can reach it — the
+   * repository stays private (§3.2).
+   */
+  async claimPackage(scope: OrgScope, packageId: number): Promise<void> {
+    await this.repository.claimPackage(scope, packageId);
+  }
+
+  /**
+   * Deletes provisional packages nothing claimed, and their files.
+   *
+   * Best-effort in the strongest sense: it is housekeeping, it is triggered by
+   * an unrelated request, and nothing about the caller depends on it. Every
+   * failure is logged and swallowed (§8.4).
+   */
+  async sweepProvisional(): Promise<number> {
+    try {
+      const abandoned = await this.repository.sweepUnclaimed(
+        PROVISIONAL_TTL_MINUTES,
+      );
+      for (const location of abandoned) {
+        await this.storage.remove(location);
+      }
+      if (abandoned.length > 0) {
+        this.logger.log(
+          `Swept ${abandoned.length} abandoned provisional SCORM package(s).`,
+        );
+      }
+      return abandoned.length;
+    } catch (error) {
+      this.logger.warn(
+        `Provisional SCORM sweep failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return 0;
+    }
+  }
+
   async deletePackage(scope: OrgScope, packageId: number) {
     const pkg = await this.repository.findPackage(scope, packageId);
     if (!pkg) throw new NotFoundException('Package not found');
 
     // Row first (cascades to assignments + tracking), then the files.
     await this.repository.deletePackage(scope, packageId);
-    await this.storage.remove(pkg.packageDir);
+    await this.storage.remove({
+      packageDir: pkg.packageDir,
+      storagePrefix: pkg.storagePrefix ?? null,
+    });
 
     return { message: 'Package deleted' };
   }

@@ -1,4 +1,15 @@
-import { index, integer, pgTable, real, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import {
+  bigserial,
+  index,
+  integer,
+  pgTable,
+  real,
+  serial,
+  text,
+  timestamp,
+  unique,
+  varchar,
+} from 'drizzle-orm/pg-core';
 
 import { users } from './users.schema';
 
@@ -28,6 +39,19 @@ export const scormPackages = pgTable(
      */
     courseId: integer('course_id'),
     /**
+     * Where this package's files live. Null means local disk under
+     * `<SCORM_STORAGE_PATH>/<package_dir>` — every row written before object
+     * storage — and a value means an object-storage key prefix, currently
+     * `tenants/<organizationId>/scorm/<packageDir>/`.
+     *
+     * Stored rather than derived: a platform-owned package is readable by
+     * every tenant (`contentScope`), so computing the prefix from the
+     * REQUESTING org would address the wrong keys for exactly those rows.
+     * Nullable is what lets `local` and `s3` coexist per package instead of
+     * forcing a flag day.
+     */
+    storagePrefix: text('storage_prefix'),
+    /**
      * Runtime declared by the manifest's LOM `typicalLearningTime`, in minutes.
      * Null when the package does not say — plenty of authoring tools omit it —
      * and then the lesson's duration has to be typed by the admin instead.
@@ -35,6 +59,13 @@ export const scormPackages = pgTable(
      * from the runtime's own reported `total_time` (§10.4).
      */
     durationMinutes: integer('duration_minutes'),
+    /**
+     * When something first referenced this package — a lesson that saved, or
+     * a direct library upload. NULL means provisional: the lesson editor
+     * uploaded it and no lesson has claimed it yet, so it is hidden from the
+     * library list and swept once old enough (migration 0010).
+     */
+    claimedAt: timestamp('claimed_at', { mode: 'string', withTimezone: true }),
     createdBy: integer('created_by').references(() => users.id),
     isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
@@ -42,7 +73,10 @@ export const scormPackages = pgTable(
       .defaultNow(),
   },
   (table) => [
-    index('idx_scorm_packages_org_active').on(table.organizationId, table.isActive),index('idx_scorm_packages_active').on(table.isActive)],
+    index('idx_scorm_packages_org_active').on(table.organizationId, table.isActive),
+    index('idx_scorm_packages_active').on(table.isActive),
+    index('idx_scorm_packages_unclaimed').on(table.createdAt),
+  ],
 );
 
 export const userScormAssignments = pgTable(
@@ -158,6 +192,60 @@ export const scormAttempts = pgTable(
   ],
 );
 
+
+/**
+ * Append-only log of every SCORM data-model write.
+ *
+ * The finest of three deliberately different grains — see the header of
+ * `0009_scorm_cloud_storage_and_datamodel_log.sql`. `scormTracking` is current
+ * state, `scormAttempts` is per-attempt history with a CMI snapshot, and this
+ * is the individual `SetValue` deltas in the order they happened.
+ *
+ * Activity, never content: a learner's runtime writes always belong to their
+ * own organization, so every read uses `orgScope`, never `contentScope`.
+ */
+export const scormDatamodelLog = pgTable(
+  'scorm_datamodel_log',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    /** Activity: the learner's own org. Mandatory tenant separation. */
+    organizationId: integer('organization_id').notNull(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    packageId: integer('package_id')
+      .notNull()
+      .references(() => scormPackages.id, { onDelete: 'cascade' }),
+    /** Matches `scormAttempts.attemptNumber`, so re-takes stay separable. */
+    attemptNumber: integer('attempt_number').notNull().default(1),
+    /** e.g. `cmi.core.lesson_location`, `cmi.interactions.0.result`. */
+    elementKey: varchar('element_key', { length: 255 }).notNull(),
+    /** Nullable — clearing an element is a legitimate write. */
+    elementValue: text('element_value'),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index('idx_scorm_datamodel_log_org_user').on(
+      table.organizationId,
+      table.userId,
+    ),
+    index('idx_scorm_datamodel_log_user_package_time').on(
+      table.organizationId,
+      table.userId,
+      table.packageId,
+      table.createdAt,
+    ),
+    index('idx_scorm_datamodel_log_package_element').on(
+      table.organizationId,
+      table.packageId,
+      table.elementKey,
+    ),
+  ],
+);
+
 export type ScormPackageRow = typeof scormPackages.$inferSelect;
 export type ScormTrackingRow = typeof scormTracking.$inferSelect;
 export type ScormAttemptRow = typeof scormAttempts.$inferSelect;
+export type ScormDatamodelLogRow = typeof scormDatamodelLog.$inferSelect;

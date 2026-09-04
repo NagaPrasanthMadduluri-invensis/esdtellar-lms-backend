@@ -26,6 +26,12 @@ import { R2StorageService } from './storage/r2-storage.service';
     LearnerResourcesController,
   ],
   providers: [MediaService, MediaRepository, R2StorageService],
-  exports: [MediaService],
+  /**
+   * R2StorageService is exported so ScormModule's `s3` driver can reuse the one
+   * configured R2 client instead of constructing a second one. It is
+   * infrastructure, not a domain repository, so §3.2's "export the service,
+   * never the repository" rule is satisfied — MediaRepository stays private.
+   */
+  exports: [MediaService, R2StorageService],
 })
 export class MediaModule {}

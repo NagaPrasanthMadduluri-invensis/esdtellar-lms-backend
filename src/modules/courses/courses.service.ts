@@ -462,6 +462,17 @@ export class CoursesService {
       isActive: dto.is_active !== false ? 1 : 0,
     });
 
+    /**
+     * The lesson row exists, so the package it references is no longer
+     * provisional. Claiming AFTER the write, never before: the whole point is
+     * that a package uploaded by the lesson editor stays sweepable until a
+     * lesson actually lands, and claiming it up front would recreate the
+     * orphan problem migration 0010 exists to fix.
+     */
+    if (lesson.scormPackageId != null) {
+      await this.scorm.claimPackage(scope, lesson.scormPackageId);
+    }
+
     return { lesson };
   }
 
@@ -563,6 +574,15 @@ export class CoursesService {
     // Only after the row has stopped naming it. Best-effort (§8.4): an orphaned
     // object costs storage, a thrown error costs the admin their edit.
     await this.media.discardObject(replacedKey);
+
+    /**
+     * Same as createLesson: the row now references the package, so it stops
+     * being provisional. Claiming after the write is what keeps an abandoned
+     * lesson-editor upload sweepable (migration 0010).
+     */
+    if (lesson.scormPackageId != null) {
+      await this.scorm.claimPackage(scope, lesson.scormPackageId);
+    }
 
     return { lesson };
   }

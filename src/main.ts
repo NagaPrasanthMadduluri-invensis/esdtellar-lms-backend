@@ -9,6 +9,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { setReferenceDate } from './modules/learning-hours/periods';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { ScormContentHandler } from './modules/scorm/scorm-content.handler';
 import { ScormContentMiddleware } from './modules/scorm/scorm-content.middleware';
 import { ScormStorageService } from './modules/scorm/storage/scorm-storage.service';
 
@@ -71,9 +72,27 @@ async function bootstrap(): Promise<void> {
    * JavaScript. Proxying keeps the content same-origin with the player while
    * the files stay owned by the server.
    */
-  app.useStaticAssets(app.get(ScormStorageService).rootPath, {
-    prefix: '/scorm',
-  });
+  const scormStorage = app.get(ScormStorageService);
+  if (scormStorage.driverKind === 's3') {
+    /**
+     * Object storage has no directory for `useStaticAssets` to mount, so the
+     * bytes are streamed out of R2 by hand. Mounted at the same `/scorm`
+     * prefix and right after the middleware above, so the URL the browser
+     * sees is unchanged — which is the whole point: SCORM content calls
+     * `window.parent.API`, and a presigned R2 URL would make the frame
+     * cross-origin and break that silently (§10.1).
+     */
+    app.use('/scorm', app.get(ScormContentHandler).handler);
+    logger.log('SCORM content served from object storage (driver=s3).');
+  } else {
+    app.useStaticAssets(scormStorage.rootPath, { prefix: '/scorm' });
+    logger.warn(
+      `SCORM content served from local disk at ${scormStorage.rootPath} ` +
+        '(driver=local). This is single-instance only — a second API process ' +
+        'cannot see packages this one extracted. Set SCORM_STORAGE_DRIVER=s3 ' +
+        'before running more than one instance.',
+    );
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

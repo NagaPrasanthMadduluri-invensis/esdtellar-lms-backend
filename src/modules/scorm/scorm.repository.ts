@@ -18,6 +18,104 @@ export class ScormRepository {
   }
 
   /* ── Admin ── */
+  /**
+   * Marks a package as in use. Idempotent — re-saving a lesson that already
+   * referenced it is a no-op rather than moving the timestamp, so `claimed_at`
+   * keeps meaning "when it was first used".
+   *
+   * `contentScope`, not `orgScope`: a lesson in one tenant may legitimately
+   * reference a package owned by the platform organization (§3.4), and that
+   * attachment still claims it.
+   */
+  async claimPackage(scope: OrgScope, packageId: number): Promise<void> {
+    await this.db.run(sql`
+      UPDATE scorm_packages
+      SET claimed_at = now()
+      WHERE id = ${packageId}
+        AND claimed_at IS NULL
+        AND ${contentScope('scorm_packages', scope)}
+    `);
+  }
+
+  /**
+   * Deletes provisional packages older than `olderThanMinutes` and returns
+   * their storage locations so the caller can remove the files too.
+   *
+   * DELIBERATELY UNSCOPED and cross-tenant: this is the server tidying up after
+   * itself, not a read on anyone's behalf. There is no request scope that could
+   * legitimately own it, and scoping it would mean debris in a quiet tenant was
+   * never collected.
+   *
+   * The age threshold is the whole safety argument. An admin who uploads a
+   * package and then spends twenty minutes filling in the lesson form must not
+   * have it deleted underneath them, so the window is measured in hours, not
+   * minutes. The immediate case is handled on the client instead, which knows
+   * at once that its save failed.
+   *
+   * A row is only taken if nothing references it — belt and braces against a
+   * lesson that somehow attached without claiming, which would otherwise mean
+   * deleting a package a learner can see.
+   */
+  async sweepUnclaimed(
+    olderThanMinutes: number,
+  ): Promise<Array<{ packageDir: string; storagePrefix: string | null }>> {
+    const rows = await this.db.all<{
+      package_dir: string;
+      storage_prefix: string | null;
+    }>(sql`
+      DELETE FROM scorm_packages sp
+      WHERE sp.claimed_at IS NULL
+        AND sp.created_at < now() - (${olderThanMinutes} * interval '1 minute')
+        AND NOT EXISTS (SELECT 1 FROM lessons l WHERE l.scorm_package_id = sp.id)
+        AND NOT EXISTS (SELECT 1 FROM user_scorm_assignments a WHERE a.package_id = sp.id)
+        AND NOT EXISTS (SELECT 1 FROM scorm_tracking t WHERE t.package_id = sp.id)
+        AND NOT EXISTS (SELECT 1 FROM scorm_attempts t WHERE t.package_id = sp.id)
+      RETURNING sp.package_dir, sp.storage_prefix
+    `);
+    return rows.map((row) => ({
+      packageDir: row.package_dir,
+      storagePrefix: row.storage_prefix,
+    }));
+  }
+
+  /**
+   * A package's storage location, by its UUID directory name.
+   *
+   * DELIBERATELY UNSCOPED, and the only unscoped method in this repository.
+   * Two reasons, both structural rather than convenient:
+   *
+   *   - The caller (`ScormContentHandler`) runs behind
+   *     `ScormContentMiddleware`, which has already authorized this exact
+   *     package for this exact caller against the verified JWT. Re-deriving a
+   *     scope here would duplicate that check, not add one.
+   *   - The key prefix belongs to the package's OWNER, and a platform-owned
+   *     package is legitimately served to every tenant (`contentScope`). An
+   *     `orgScope` predicate here would fail to resolve exactly those rows.
+   *
+   * It returns only the two location fields, so it cannot become a way to read
+   * a package's other columns cross-tenant. Adding a field here without
+   * re-reading the paragraph above would be a leak.
+   */
+  async findLocationByPackageDir(
+    packageDir: string,
+  ): Promise<{ packageDir: string; storagePrefix: string | null } | null> {
+    const rows = await this.db.all<{
+      package_dir: string;
+      storage_prefix: string | null;
+    }>(sql`
+      SELECT package_dir, storage_prefix
+      FROM scorm_packages
+      WHERE package_dir = ${packageDir} AND is_active = 1
+      LIMIT 1
+    `);
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      packageDir: row.package_dir,
+      storagePrefix: row.storage_prefix,
+    };
+  }
+
 
   async listPackages(scope: OrgScope) {
     return this.db.all(sql`
@@ -31,7 +129,10 @@ export class ScormRepository {
         c.name AS course_name
       FROM scorm_packages sp
       LEFT JOIN courses c ON c.id = sp.course_id
-      WHERE ${contentScope('sp', scope)}
+      -- Provisional uploads are excluded: the lesson editor commits a package
+      -- before its lesson is saved, and one whose lesson never saved is debris,
+      -- not a library entry. It becomes visible the moment a lesson claims it.
+      WHERE ${contentScope('sp', scope)} AND sp.claimed_at IS NOT NULL
       ORDER BY sp.created_at DESC
     `);
   }
@@ -48,7 +149,14 @@ export class ScormRepository {
 
   async findPackage(scope: OrgScope, packageId: number) {
     const rows = await this.db
-      .select({ id: scormPackages.id, packageDir: scormPackages.packageDir })
+      // storagePrefix is selected because deletion needs to know WHERE the
+      // files are, not just which row to remove. Still an explicit column
+      // list, never SELECT * (§3.1).
+      .select({
+        id: scormPackages.id,
+        packageDir: scormPackages.packageDir,
+        storagePrefix: scormPackages.storagePrefix,
+      })
       .from(scormPackages)
       .where(
         and(

@@ -475,7 +475,7 @@ lesson complete. Log the reason; do not propagate.
 | `CLIENT_ORIGIN` | no | Exact frontend origin for CORS — no wildcard |
 | `COOKIE_DOMAIN` | no | Omitted for localhost; set to the shared parent domain in production |
 | `AUTH_TOKEN_DAYS` | no (7) | Token + cookie lifetime |
-| `SCORM_STORAGE_DRIVER` | no (`local`) | `local` now, `s3` when credentials arrive |
+| `SCORM_STORAGE_DRIVER` | no (`local`) | `local` (single-instance) or `s3` (R2, multi-instance) — see §10.9. `s3` reuses the `R2_*` variables |
 | `SCORM_STORAGE_PATH` | no | Local SCORM root |
 | `R2_ACCOUNT_ID` | for video | Cloudflare account id; used to derive the endpoint |
 | `R2_ACCESS_KEY_ID` | for video | R2 API token key |
@@ -515,6 +515,7 @@ Update this table with every module you move.
 | analytics / reports / export | 6 | `server/src/modules/reports` |
 | media (lesson video + captions in R2) | 7 | `server/src/modules/media` |
 | scorm attempt history (admin view) | 1 | `server/src/modules/scorm` |
+| scorm granular data-model log (learner write + read, admin read) | 3 | `server/src/modules/scorm` |
 | lesson video progress (learner) | 1 | `server/src/modules/media` |
 | manual certificate issue (admin) | 1 | `server/src/modules/certificates` |
 | session completion (admin) | 1 | `server/src/modules/sessions` |
@@ -522,6 +523,130 @@ Update this table with every module you move.
 | organizations (platform org resolution) | 0 | `server/src/modules/organizations` |
 | leaderboard | 1 | `server/src/modules/leaderboard` |
 | learning-hours | 1 | `server/src/modules/learning-hours` |
+
+### 10.9 SCORM object storage, and the granular data-model log
+
+`SCORM_STORAGE_DRIVER` now has both implementations §10.3 asked for.
+
+| Driver | Files live | Served by | Multi-instance |
+|---|---|---|---|
+| `local` (default) | `SCORM_STORAGE_PATH/<package_dir>/` | `useStaticAssets` | **no** |
+| `s3` | R2, `tenants/<orgId>/scorm/<packageDir>/` | `ScormContentHandler` | yes |
+
+`scorm_packages.storage_prefix` records which: NULL means local disk, a value
+means an object key prefix. It is **stored, not derived**, because the owner and
+the reader are not always the same tenant — a platform-owned package is read by
+every org (`contentScope`), so computing the prefix from the *requesting* org
+would address the wrong keys for exactly those rows. Nullable is what lets the
+two drivers coexist per package instead of forcing a flag day.
+
+**The iframe stays same-origin even on `s3`, and that is not negotiable.**
+The obvious cloud-native move — hand the browser a presigned R2 URL — breaks
+the player. SCORM content calls `window.parent.API.LMSSetValue(...)`, and a
+frame served from `*.r2.cloudflarestorage.com` is cross-origin to the player
+page, so those calls throw on property access and the package tracks nothing,
+*silently*. So the bytes move to R2 while the URL does not change: the browser
+requests `/scorm/<dir>/<file>`, `client/next.config.mjs` rewrites to this API,
+and `ScormContentHandler` streams the object out of the bucket (§10.1 is the
+same reason that rewrite exists at all). `signedAssetUrl` exists for out-of-band
+use — an admin download, or confirming what was written — never for the frame.
+
+**Path resolution moved into the drivers.** `ScormContentMiddleware` used to
+reimplement `send`'s disk normalization inline. That is correct for a filesystem
+and meaningless for a key space, so each driver now owns the rule for turning a
+request path into the address it will actually serve, and the middleware asks
+the driver. The two-interpretation trap the guard exists to close is only closed
+if the authorized address and the served address are the same string — which
+means the rule has to live with whatever resolves it.
+
+`ScormRepository.findLocationByPackageDir` is **deliberately unscoped** and is
+the only such method in that repository. It resolves storage location from a
+UUID the middleware in front has already authorized, and it cannot be
+org-scoped because the key prefix belongs to the package's owner. It returns
+only the two location fields; adding a column there without re-reading its
+docblock would be a leak.
+
+**Three grains of SCORM tracking, none replacing another:**
+
+| Table | Shape | Answers |
+|---|---|---|
+| `scorm_tracking` | one row per (user, package), upserted | where is the learner now — the resume record `loadFromJSON` reloads |
+| `scorm_attempts` | one row per finished attempt + CMI snapshot | how did each sitting go |
+| `scorm_datamodel_log` | one row per `SetValue` delta, timestamped | what did they do, in order, within a sitting |
+
+The log is an **activity** table: `orgScope`, never `contentScope`. Its
+`organization_id` and `attempt_number` are both resolved server-side — the org
+from the verified JWT, the attempt from `COUNT(*) + 1` over `scorm_attempts` in
+SQL — so a client can neither claim a tenant nor backdate a delta into an
+earlier attempt. Writes are one multi-row `INSERT`, never one per element (§7.1
+on the hottest write path in the system), and every read is paginated (§7.6) —
+a single sitting emits thousands of rows.
+
+Endpoints are mounted per audience (§2.2), not at a shared `/v1/scorm/track`:
+
+```
+POST /api/learner/scorm/:packageId/datamodel          learner writes a batch
+GET  /api/learner/scorm/:packageId/datamodel          their own timeline
+GET  /api/admin/scorm/:packageId/datamodel/:userId    admin reads one learner's
+```
+
+**Frontend.** `scorm-again` keeps owning `window.API` / `window.API_1484_11`;
+`client/components/scorm/datamodel-recorder.js` proxies `SetValue`/`LMSSetValue`
+to record deltas and flushes them on Commit, Terminate, a 20s timer and
+`pagehide`. Delivery is `fetch(..., { keepalive: true })`, **not**
+`navigator.sendBeacon`: a beacon is `no-cors` and so cannot carry JSON to
+another origin, and `lms.edstellar.com -> lms-api.edstellar.com` is another
+origin. The cost is fetch's 64 KB keepalive body cap, which is why the recorder
+flushes on a timer rather than saving everything for the end. Consecutive
+identical writes to one element are dropped — packages re-set `total_time` on
+every tick, and the previous row's `created_at` already says when the value last
+changed.
+
+Recording never breaks the lesson: every recorder method swallows its own
+errors and always calls through to the real runtime. A lost analytics row is
+acceptable; a package that stops tracking its own completion is not.
+
+
+**Provisional packages (migration 0010).** The lesson editor must upload the
+zip *before* it can save the lesson — it needs the package id for the payload
+and the manifest's declared duration to prefill the field — so the package row
+and its files are committed first. Every failed or abandoned save therefore used
+to leave a package nothing pointed at: ten uploads on 2026-09-04 left eight of
+them, all showing in the admin SCORM library, which is precisely what made a
+failed save look like a successful one.
+
+`scorm_packages.claimed_at` fixes it:
+
+| `claimed_at` | Meaning |
+|---|---|
+| NOT NULL | Real — uploaded to the library directly, or attached to a lesson that saved |
+| NULL | Provisional — the lesson editor uploaded it, nothing references it yet |
+
+- Provisional is **opt-in** (`provisional=1` on the upload), so the library page
+  and any existing caller are claimed at creation and entirely unaffected.
+- `CoursesService` claims the package **after** the lesson row is written, in
+  both create and update. Claiming before the write would recreate the problem.
+- `listPackages` hides unclaimed rows — debris is not a library entry.
+- `ScormService.sweepProvisional()` deletes unclaimed packages older than
+  `PROVISIONAL_TTL_MINUTES` (12 h) and their files. Triggered opportunistically
+  **on upload**, not by a scheduler: no scheduler exists here, and an upload is
+  both the only moment this endpoint is reached and exactly when clearing the
+  previous upload's debris is worth doing. `sweepUnclaimed` is deliberately
+  unscoped — it is the server tidying up after itself, and scoping it would mean
+  debris in a quiet tenant was never collected.
+- The 12 h threshold is the safety argument: an admin who uploads a 100 MB
+  package and then spends twenty minutes on the form must not have it deleted
+  underneath them. The fast path is the **client's own rollback** — the lesson
+  editor deletes a package it uploaded if its save then fails, because it knows
+  at once, whereas the server cannot tell a slow admin from a closed tab.
+
+`npm run db:clean-orphan-scorm` handles the backlog and anything the sweep's
+conservative threshold leaves. Dry-run by default, `--commit` to apply, matching
+`db:reset-to-admin`. It cleans two classes: rows nothing references, and
+directories with no row at all (invisible to the application, so only a
+disk-vs-database comparison finds them). It refuses to touch a package with
+tracking, attempts or data-model rows even when no lesson carries it — that
+history is the record of someone's training.
 
 ### 10.8 Lesson content: video, SCORM, document — plus resources
 
@@ -735,9 +860,12 @@ you compare old and new behaviour:
 
 - `listForAdmin` (admin certificates) is unbounded — add pagination (§7.6)
   before the certificate count grows.
-- SCORM storage is behind `SCORM_STORAGE_DRIVER`; the S3/R2 driver is not
-  written yet. Implement it as a `StorageService` interface with `local` and
-  `s3` implementations so no call site changes.
+- ~~SCORM storage is behind `SCORM_STORAGE_DRIVER`; the S3/R2 driver is not
+  written yet.~~ **Done — see §10.9.** Remaining: no backfill exists for
+  packages already on local disk, so flipping an existing deployment to `s3`
+  strands them (`storage_prefix IS NULL` serves 404 under the `s3` handler).
+  Write a one-off script that re-uploads those directories and sets the prefix
+  before flipping the switch in production.
 - `TokenService` can move to `@nestjs/jwt` once §10 reaches zero pending
   modules and the legacy verifier is deleted (§6.4).
 - Rate-limit the public verify endpoint (`@nestjs/throttler`).

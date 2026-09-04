@@ -554,6 +554,117 @@ async function main() {
     skip('SCORM content boundary (all four checks)', 'no Edstellar SCORM package fixture found');
   }
 
+
+  /* ======================================================================
+     6b. SCORM data-model log (granular runtime tracking)
+
+     The log is an ACTIVITY table, so every read must use orgScope, never
+     contentScope. These checks fail loudly if someone widens it: dropping the
+     org predicate from listForLearner would make check 4 below return the
+     other tenant's rows.
+     ====================================================================== */
+  section('6b. SCORM data-model log is org-scoped');
+
+  if (edScormRow) {
+    const pkgId = edScormRow.id;
+    const probeKey = 'cmi.core.lesson_location';
+    const probeValue = `isolation-probe-${Date.now()}`;
+
+    const write = await api(edLearner, 'POST', `/learner/scorm/${pkgId}/datamodel`, {
+      deltas: [{ element_key: probeKey, element_value: probeValue }],
+    });
+    check(
+      'datamodel: entitled learner can write a delta',
+      write.status === 200 && write.body?.tracked === 1,
+      `status=${write.status} tracked=${write.body?.tracked}`,
+    );
+
+    // The row must carry the writer's OWN org, taken from the JWT — not
+    // anything the body could have said.
+    const stored = await one(
+      'SELECT organization_id, user_id, attempt_number FROM scorm_datamodel_log WHERE element_value = $1',
+      [probeValue],
+    );
+    check(
+      'datamodel: row lands in the writer\'s organization',
+      stored && stored.organization_id === edOrg.id,
+      `organization_id=${stored?.organization_id} expected=${edOrg.id}`,
+    );
+
+    // A body-supplied organization_id must be stripped by ValidationPipe's
+    // whitelist and never reach the insert.
+    const spoofValue = `isolation-spoof-${Date.now()}`;
+    const spoof = await api(edLearner, 'POST', `/learner/scorm/${pkgId}/datamodel`, {
+      organization_id: invOrg.id,
+      user_id: 999999,
+      deltas: [{ element_key: probeKey, element_value: spoofValue }],
+    });
+    const spoofed = await one(
+      'SELECT organization_id FROM scorm_datamodel_log WHERE element_value = $1',
+      [spoofValue],
+    );
+    check(
+      'datamodel: body-supplied organization_id is ignored',
+      spoof.status === 200 && spoofed && spoofed.organization_id === edOrg.id,
+      `stored organization_id=${spoofed?.organization_id} attempted=${invOrg.id}`,
+    );
+
+    // The other tenant's learner must not be able to write to, or read, this
+    // package at all. 404 rather than 403 on purpose — a 403 would confirm the
+    // package exists to someone enumerating ids.
+    const foreignWrite = await api(invLearner, 'POST', `/learner/scorm/${pkgId}/datamodel`, {
+      deltas: [{ element_key: probeKey, element_value: 'should-never-persist' }],
+    });
+    check(
+      'datamodel: learner from the other org cannot write (404)',
+      foreignWrite.status === 404,
+      `status=${foreignWrite.status}`,
+    );
+    const leaked = await one(
+      'SELECT COUNT(*)::int AS n FROM scorm_datamodel_log WHERE element_value = $1',
+      ['should-never-persist'],
+    );
+    check('datamodel: the refused write persisted nothing', leaked?.n === 0, `rows=${leaked?.n}`);
+
+    const foreignRead = await api(invLearner, 'GET', `/learner/scorm/${pkgId}/datamodel`);
+    check(
+      'datamodel: learner from the other org cannot read (404)',
+      foreignRead.status === 404,
+      `status=${foreignRead.status}`,
+    );
+
+    // The admin read is scoped too: the Invensis admin must not be able to
+    // read an Edstellar learner's timeline on an Edstellar package.
+    const foreignAdmin = await api(
+      invAdmin,
+      'GET',
+      `/admin/scorm/${pkgId}/datamodel/${edLearnerRow.id}`,
+    );
+    check(
+      'datamodel: admin from the other org cannot read a foreign timeline (404)',
+      foreignAdmin.status === 404,
+      `status=${foreignAdmin.status}`,
+    );
+
+    const ownAdmin = await api(
+      edAdmin,
+      'GET',
+      `/admin/scorm/${pkgId}/datamodel/${edLearnerRow.id}`,
+    );
+    check(
+      'datamodel: own-org admin CAN read the timeline',
+      ownAdmin.status === 200 && Array.isArray(ownAdmin.body?.entries),
+      `status=${ownAdmin.status}`,
+    );
+
+    // Clean up the probe rows so the residue check below stays meaningful.
+    await pool.query('DELETE FROM scorm_datamodel_log WHERE element_value = ANY($1)', [
+      [probeValue, spoofValue],
+    ]);
+  } else {
+    skip('SCORM data-model log (all eight checks)', 'no Edstellar SCORM package fixture found');
+  }
+
   /* ======================================================================
      7. Platform routes are platform-only
      ====================================================================== */

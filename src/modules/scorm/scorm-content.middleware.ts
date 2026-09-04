@@ -1,5 +1,3 @@
-import * as path from 'node:path';
-
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { NextFunction, Request, Response } from 'express';
@@ -12,15 +10,6 @@ import { OrganizationsService } from '@/modules/organizations/organizations.serv
 import { EntitlementCache } from './entitlement-cache';
 import { ScormService } from './scorm.service';
 import { ScormStorageService } from './storage/scorm-storage.service';
-
-/**
- * Same regex `send` (the package underlying `express.static`) uses to detect
- * a `..` path segment that survived normalization — i.e. one that tried to
- * climb above the directory it was joined against. Copied rather than
- * imported: it is an internal, unexported detail of `send`, and duplicating
- * four lines is safer than reaching into another package's private module.
- */
-const UP_PATH_REGEXP = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
 
 /**
  * Authenticates every request under `/scorm` before `useStaticAssets` ever
@@ -36,33 +25,34 @@ const UP_PATH_REGEXP = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
  * which is exactly the information a stranger holding a UUID is trying to
  * extract.
  *
- * SECURITY NOTE — the two-interpretation trap. `express.static` (via `send`)
- * authorizes and serves the SAME request by decoding the URL path and then
+ * SECURITY NOTE — the two-interpretation trap. The server behind this
+ * middleware (`express.static` on the `local` driver, `ScormContentHandler` on
+ * `s3`) resolves the SAME request by decoding the URL path and then
  * `path.normalize`-ing it: `..` segments collapse against whatever precedes
  * them, so `/<A>/../<B>/x` and `/<A>/x` are different addresses of the same
  * file once decoded and normalized, even though `..` never escapes the
  * static root. A guard that only inspects the RAW first path segment sees
  * `<A>` (entitled) and waves the request through, while the file actually
- * served — after `send`'s own decode+normalize — is `<B>`'s. This class
- * authorizes on the fully decoded, normalized, root-relative path — the
- * exact one `send` will resolve — never on the raw segment alone.
+ * served — after that same decode+normalize — is `<B>`'s. This class
+ * authorizes on the address the driver will actually resolve, obtained from
+ * the driver itself, never on the raw segment alone. The resolution rule lives
+ * in the driver because a filesystem and a key space differ: disk collapses
+ * `..`, object storage has nothing to collapse and rejects it outright.
  */
 @Injectable()
 export class ScormContentMiddleware {
   private readonly logger = new Logger(ScormContentMiddleware.name);
   private readonly cookieName: string;
-  private readonly storageRoot: string;
 
   constructor(
     private readonly tokenService: TokenService,
     private readonly scormService: ScormService,
     private readonly organizations: OrganizationsService,
     private readonly entitlementCache: EntitlementCache,
-    storage: ScormStorageService,
+    private readonly storage: ScormStorageService,
     config: ConfigService,
   ) {
     this.cookieName = config.getOrThrow<string>('auth.cookieName');
-    this.storageRoot = storage.rootPath;
   }
 
   /**
@@ -98,12 +88,18 @@ export class ScormContentMiddleware {
       return;
     }
 
-    // 3. Resolve the path the SAME way `send` will actually resolve it —
-    // decode once, normalize, join against the storage root — and take
-    // *that* result's first segment as the package directory to authorize.
-    // `express.static` is mounted at this same prefix right after this
-    // middleware, so this is the request it is about to serve.
-    const resolvedSegment = this.resolveServedPackageDir(req.path);
+    // 3. Resolve the path the same way whatever serves it will resolve it,
+    // and take THAT result's first segment as the package directory to
+    // authorize — not the raw segment from step 2.
+    //
+    // Delegated to the storage driver rather than resolved here. The two
+    // backing stores have genuinely different path semantics — a filesystem
+    // collapses `..`, a key space does not — and the guard has to resolve the
+    // address that will ACTUALLY be served, which now depends on which driver
+    // serves it. Keeping this logic in one place while `useStaticAssets` and
+    // `ScormContentHandler` resolved paths differently would reintroduce the
+    // two-interpretation trap this whole check exists to close.
+    const resolvedSegment = this.storage.resolvePackageDir(req.path);
     if (!resolvedSegment || resolvedSegment !== rawSegment) {
       // Exact segment comparison, not `startsWith` — "abc" must never match
       // "abcd" — and any mismatch between the two interpretations means the
@@ -160,7 +156,7 @@ export class ScormContentMiddleware {
   /**
    * The raw (still percent-encoded) first path segment, rejected outright if
    * it contains a literal `..` or a path separator. Cheap and necessary, but
-   * insufficient alone — see `resolveServedPackageDir`.
+   * insufficient alone — step 3 is the real guard.
    */
   private firstRawSegment(rawPath: string): string | null {
     const segment = rawPath.split('/').filter(Boolean)[0];
@@ -173,49 +169,6 @@ export class ScormContentMiddleware {
       return null;
     }
     return segment;
-  }
-
-  /**
-   * Mirrors `send`'s own pipeline (`node_modules/send/index.js`,
-   * `SendStream.prototype.pipe`) exactly, in the same order:
-   *   1. `decodeURIComponent` once — never twice, which is what makes
-   *      double-encoding (`%252f`) inert rather than a bypass: it decodes to
-   *      the two literal characters `%2f`, not to a separator.
-   *   2. Reject a null byte.
-   *   3. `path.normalize('.' + sep + decoded)`, collapsing any `..`.
-   *   4. Reject if a `..` segment survives normalization (`send`'s own
-   *      `UP_PATH_REGEXP`) — that is an attempt to climb past the root
-   *      entirely.
-   *   5. Join against the real storage root and normalize again, then
-   *      confirm the result still lives under that root (defense in depth
-   *      beyond step 4, which `send` itself does not need because it has
-   *      no further root to escape).
-   * Returns the first path segment of the address `send` would actually
-   * resolve, or `null` for anything malformed or root-escaping.
-   */
-  private resolveServedPackageDir(rawPath: string): string | null {
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(rawPath);
-    } catch {
-      return null; // malformed percent-encoding
-    }
-    if (decoded.includes('\0')) return null;
-
-    const normalized = path.normalize(`.${path.sep}${decoded}`);
-    if (UP_PATH_REGEXP.test(normalized)) return null; // escapes the root
-
-    const joined = path.normalize(path.join(this.storageRoot, normalized));
-    const rootWithSep = this.storageRoot.endsWith(path.sep)
-      ? this.storageRoot
-      : `${this.storageRoot}${path.sep}`;
-    if (joined !== this.storageRoot && !joined.startsWith(rootWithSep)) {
-      return null; // escaped the storage root
-    }
-
-    const relative = joined.slice(rootWithSep.length);
-    const [firstSegment] = relative.split(path.sep);
-    return firstSegment || null;
   }
 
   private sendHtml(
