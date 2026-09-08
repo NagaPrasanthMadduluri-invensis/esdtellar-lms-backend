@@ -33,6 +33,18 @@ export class AdminSessionsController {
     return this.sessions.list(scope);
   }
 
+  /**
+   * The trainers this organization can assign a session to — for the session
+   * form's picker, which replaced a free-text trainer name (rbac.md §3.6.1).
+   *
+   * Declared BEFORE `@Get(':sessionId')`: Nest matches in declaration order,
+   * so the other way round `trainers` is parsed as an id and ParseIntPipe 400s.
+   */
+  @Get('trainers')
+  async trainers(@CurrentScope() scope: OrgScope) {
+    return this.sessions.listTrainers(scope);
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() dto: SessionDto, @CurrentScope() scope: OrgScope) {

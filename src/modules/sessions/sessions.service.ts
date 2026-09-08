@@ -56,6 +56,7 @@ export class SessionsService {
           ? Number(row.training_course_id)
           : null,
         capacity: Number(row.capacity),
+        trainer_user_id: row.trainer_user_id ? Number(row.trainer_user_id) : null,
         roster_count: Number(row.roster_count ?? 0),
         attendance_marked_count: Number(row.marked_count ?? 0),
         credited_count: Number(row.credited_count ?? 0),
@@ -72,6 +73,10 @@ export class SessionsService {
 
   async create(scope: OrgScope, dto: SessionDto) {
     await this.assertCourseInScope(scope, dto.course_id);
+    const trainer = await this.resolveTrainer(scope, dto.trainer_user_id);
+    // Derived, not trusted: when a trainer account is linked, the display name
+    // is that account's name, so the column and the link cannot drift apart.
+    if (trainer) dto.trainer = trainer.name;
     const id = await this.repository.createSession(scope, this.toRow(dto));
     // The training course is part of creating a session, not a follow-up step:
     // a session with no training would show in the calendar and nowhere else,
@@ -86,6 +91,8 @@ export class SessionsService {
 
   async update(scope: OrgScope, sessionId: number, dto: SessionDto) {
     await this.assertCourseInScope(scope, dto.course_id);
+    const trainer = await this.resolveTrainer(scope, dto.trainer_user_id);
+    if (trainer) dto.trainer = trainer.name;
     const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
@@ -257,6 +264,154 @@ export class SessionsService {
     }
 
     return this.shapeAttendance(await this.repository.attendance(scope, sessionId));
+  }
+
+  /* ── Trainer portal (specs/rbac.md §3.6.1) ─────────────────────────────
+     Every method here starts with the same ownership probe, and the probe is a
+     SQL predicate rather than a comparison in JavaScript: a session that is
+     not this trainer's must be indistinguishable from one that does not exist,
+     or the 404 becomes a way to enumerate other trainers' sessions.
+
+     What a trainer deliberately CANNOT do, per decisions 7 and 8: complete a
+     session (it credits every attendee with the training, its hours and its
+     completion) or change its roster (it creates course assignments). Those
+     have no method here at all — there is nothing to reach, rather than a
+     guard to get past. */
+
+  async listForTrainer(scope: OrgScope, trainerUserId: number) {
+    const rows = (await this.repository.listForTrainer(
+      scope,
+      trainerUserId,
+    )) as Record<string, unknown>[];
+    return {
+      sessions: rows.map((row) => ({
+        ...row,
+        course_id: row.course_id ? Number(row.course_id) : null,
+        training_course_id: row.training_course_id
+          ? Number(row.training_course_id)
+          : null,
+        capacity: Number(row.capacity),
+        roster_count: Number(row.roster_count ?? 0),
+        attendance_marked_count: Number(row.marked_count ?? 0),
+        credited_count: Number(row.credited_count ?? 0),
+        display_status: displayStatus(row as Parameters<typeof displayStatus>[0]),
+      })),
+    };
+  }
+
+  async trainerSession(
+    scope: OrgScope,
+    sessionId: number,
+    trainerUserId: number,
+  ) {
+    const row = await this.repository.findTrainerSession(
+      scope,
+      sessionId,
+      trainerUserId,
+    );
+    if (!row) throw new NotFoundException('Session not found');
+    const session = row as Record<string, unknown>;
+    return {
+      session: {
+        ...session,
+        course_id: session.course_id ? Number(session.course_id) : null,
+        training_course_id: session.training_course_id
+          ? Number(session.training_course_id)
+          : null,
+        capacity: Number(session.capacity),
+        display_status: displayStatus(
+          session as Parameters<typeof displayStatus>[0],
+        ),
+      },
+    };
+  }
+
+  async trainerParticipants(
+    scope: OrgScope,
+    sessionId: number,
+    trainerUserId: number,
+  ) {
+    const owned = await this.repository.findTrainerSession(
+      scope,
+      sessionId,
+      trainerUserId,
+    );
+    if (!owned) throw new NotFoundException('Session not found');
+    return this.shapeTrainerParticipants(
+      await this.repository.attendance(scope, sessionId),
+    );
+  }
+
+  async trainerSaveAttendance(
+    scope: OrgScope,
+    sessionId: number,
+    trainerUserId: number,
+    dto: SaveAttendanceDto,
+  ) {
+    const owned = await this.repository.findTrainerSession(
+      scope,
+      sessionId,
+      trainerUserId,
+    );
+    if (!owned) throw new NotFoundException('Session not found');
+
+    await this.repository.upsertAttendance(
+      scope,
+      sessionId,
+      // `marked_by` is whoever marked it — the trainer here, an admin from the
+      // admin controller. The column records a user, not a role.
+      trainerUserId,
+      dto.lock ? 1 : 0,
+      dto.records ?? [],
+    );
+
+    // A trainer cannot complete a session, but an admin may already have, and
+    // a correction afterwards still has to move the credit in both directions
+    // or a learner marked absent by mistake keeps the training for good.
+    const session = await this.repository.findStatus(scope, sessionId);
+    if (session?.status === 'completed') {
+      await this.repository.syncCompletions(scope, sessionId);
+    }
+
+    return this.shapeTrainerParticipants(
+      await this.repository.attendance(scope, sessionId),
+    );
+  }
+
+  /**
+   * The admin's attendance shape minus the learner's email address.
+   *
+   * A trainer needs to know who is in the room and whether they turned up, not
+   * how to contact them. Widening this is a PII decision for the owner
+   * (`specs/rbac.md` §7.5), so it is narrowed here on purpose rather than
+   * reusing `shapeAttendance` and hoping nobody notices what it carries.
+   */
+  private shapeTrainerParticipants(rows: AttendanceRow[]) {
+    return {
+      participants: rows.map((row) => ({
+        user_id: Number(row.id),
+        first_name: row.first_name,
+        last_name: row.last_name,
+        department: row.department,
+        status: row.status || null,
+        credits_training: CREDITING_STATUSES.includes(
+          (row.status ?? '') as (typeof CREDITING_STATUSES)[number],
+        ),
+        join_time: row.join_time || '',
+        notes: row.notes || '',
+        is_locked: Number(row.is_locked) === 1,
+      })),
+    };
+  }
+
+  async listTrainers(scope: OrgScope) {
+    const rows = await this.repository.listTrainers(scope);
+    return {
+      trainers: rows.map((r) => ({
+        id: Number(r.id),
+        name: `${r.first_name} ${r.last_name}`,
+      })),
+    };
   }
 
   /* ── Learner ── */
@@ -435,6 +590,36 @@ export class SessionsService {
     if (!found) throw new NotFoundException('Course not found');
   }
 
+  /**
+   * A body-supplied `trainer_user_id` must name a trainer in the CALLER's own
+   * organization. 404 rather than 403, matching every other cross-tenant id in
+   * this codebase: whether that user exists is not something an admin of
+   * another org should be able to learn.
+   *
+   * Returns the trainer's display name so the caller can derive `trainer` from
+   * it. The composite FK would also reject a cross-org id, but a 404 is a
+   * better answer than a 500 from a constraint violation.
+   */
+  private async resolveTrainer(
+    scope: OrgScope,
+    trainerUserId: unknown,
+  ): Promise<{ id: number; name: string } | null> {
+    if (
+      trainerUserId === undefined ||
+      trainerUserId === null ||
+      trainerUserId === ''
+    ) {
+      return null;
+    }
+    const trainers = await this.repository.listTrainers(scope);
+    const found = trainers.find((t) => Number(t.id) === Number(trainerUserId));
+    if (!found) throw new NotFoundException('Trainer not found');
+    return {
+      id: Number(found.id),
+      name: `${found.first_name} ${found.last_name}`,
+    };
+  }
+
   private toRow(dto: SessionDto) {
     return {
       title: dto.title,
@@ -443,6 +628,7 @@ export class SessionsService {
       courseId: dto.course_id ? Number(dto.course_id) : null,
       capacity: dto.capacity ? Number(dto.capacity) : 20,
       trainer: dto.trainer,
+      trainerUserId: dto.trainer_user_id ? Number(dto.trainer_user_id) : null,
       venueUrl: dto.venue_url,
       date: dto.date,
       startTime: dto.start_time,

@@ -20,6 +20,19 @@ export const sessions = pgTable(
     }),
     capacity: integer('capacity').notNull().default(20),
     trainer: text('trainer').notNull(),
+    /**
+     * The trainer's own `users` row, when the session has been assigned to one
+     * (`specs/rbac.md` §3.6.1). Nullable: a session may name a trainer only as
+     * free text — an external facilitator, or one scheduled before trainer
+     * accounts existed — and that session simply appears in no trainer's
+     * portal. `trainer` above stays the display name and is DERIVED from this
+     * user when it is set, so the two cannot disagree.
+     *
+     * Bound to the same org by `sessions_trainer_same_org`, added in
+     * `scripts/migrate-rbac.mjs`: a session pointing at a user in another
+     * organization is rejected by Postgres.
+     */
+    trainerUserId: integer('trainer_user_id'),
     /** ILT: room/venue name. Virtual: meeting URL. */
     venueUrl: text('venue_url').notNull(),
     date: text('date').notNull(),
@@ -38,6 +51,7 @@ export const sessions = pgTable(
     index('idx_sessions_date').on(table.date),
     index('idx_sessions_status').on(table.status),
     index('idx_sessions_org_date').on(table.organizationId, table.date),
+    index('idx_sessions_trainer_user').on(table.organizationId, table.trainerUserId),
   ],
 );
 

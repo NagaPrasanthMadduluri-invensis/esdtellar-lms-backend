@@ -2,7 +2,15 @@ import type { Request } from 'express';
 
 import type { OrgScope } from '@/database/org-scope';
 
-export type UserRole = 'admin' | 'learner';
+/**
+ * The portal selector. Three values since `specs/rbac.md` decision 6 gave the
+ * trainer a portal of his own; a manager deliberately has no value here and
+ * rides in `learner` (decision 2, §3.1.1).
+ *
+ * This is NOT the permission vocabulary — that lives in `common/permissions.ts`
+ * and reaches a request as the `permissions[]` claim.
+ */
+export type UserRole = 'admin' | 'learner' | 'trainer';
 
 /**
  * The verified JWT claims. `userId` is the `users.id` primary key — the legacy

@@ -47,6 +47,63 @@ export class SessionsRepository {
     `);
   }
 
+  /* ── Trainer portal (specs/rbac.md §3.6.1) ─────────────────────────────
+     Two methods, and both carry `trainer_user_id = ${trainerUserId}` in the
+     SQL rather than checking it afterwards in the service. That is deliberate:
+     a trainer must not be able to learn that another trainer's session exists,
+     so a session that is not his has to be indistinguishable from one that
+     does not exist. Filtering in the query makes the 404 fall out naturally.
+
+     `orgScope` is still applied on top — the trainer axis narrows within the
+     tenant, it does not replace it. */
+
+  async listForTrainer(scope: OrgScope, trainerUserId: number) {
+    return this.db.all(sql`
+      SELECT s.*, c.name AS course_name,
+        tc.id AS training_course_id,
+        (SELECT COUNT(*) FROM session_roster sr
+         WHERE sr.session_id = s.id) AS roster_count,
+        (SELECT COUNT(*) FROM session_attendance sa
+         WHERE sa.session_id = s.id AND sa.status IS NOT NULL) AS marked_count,
+        (SELECT COUNT(*) FROM session_attendance sa
+         WHERE sa.session_id = s.id
+           AND sa.status IN ('present', 'late', 'partial')) AS credited_count
+      FROM sessions s
+      LEFT JOIN courses c ON c.id = s.course_id
+      LEFT JOIN courses tc ON tc.session_id = s.id
+      WHERE ${orgScope('s', scope)} AND s.trainer_user_id = ${trainerUserId}
+      ORDER BY s.date DESC, s.start_time DESC
+    `);
+  }
+
+  /** The ownership probe every trainer endpoint starts with. Null = not his. */
+  async findTrainerSession(
+    scope: OrgScope,
+    sessionId: number,
+    trainerUserId: number,
+  ) {
+    const rows = await this.db.all(sql`
+      SELECT s.*, c.name AS course_name, tc.id AS training_course_id
+      FROM sessions s
+      LEFT JOIN courses c ON c.id = s.course_id
+      LEFT JOIN courses tc ON tc.session_id = s.id
+      WHERE s.id = ${sessionId}
+        AND ${orgScope('s', scope)}
+        AND s.trainer_user_id = ${trainerUserId}
+    `);
+    return rows[0] ?? null;
+  }
+
+  /** Trainers whose sessions the admin session form can assign. */
+  async listTrainers(scope: OrgScope) {
+    return this.db.all<{ id: number; first_name: string; last_name: string }>(sql`
+      SELECT u.id, u.first_name, u.last_name
+      FROM users u
+      WHERE ${orgScope('u', scope)} AND u.role = 'trainer' AND u.is_active = 1
+      ORDER BY u.first_name, u.last_name
+    `);
+  }
+
   async findWithCourse(scope: OrgScope, sessionId: number) {
     const rows = await this.db.all(sql`
       SELECT s.*, c.name AS course_name, tc.id AS training_course_id

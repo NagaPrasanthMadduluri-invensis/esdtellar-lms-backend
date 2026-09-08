@@ -138,15 +138,45 @@ export class OrganizationsService implements OnModuleInit {
     return { organization: this.toOrganization(created) };
   }
 
-  /** `GET /api/platform/organizations/:id` — org + its own stats. */
-  async getOrganization(
-    id: number,
-  ): Promise<{ organization: OrganizationDto; stats: OrganizationStatsDto }> {
+  /**
+   * `GET /api/platform/organizations/:id` — org, its stats, and its roles.
+   *
+   * Roles are included here because they are a property of the organization a
+   * platform admin is looking at: which roles it has defined, who holds them,
+   * and how many permissions each carries. An org that has added a `trainer`
+   * shows four rows where another shows three (`specs/rbac.md` §3.3).
+   */
+  async getOrganization(id: number): Promise<{
+    organization: OrganizationDto;
+    stats: OrganizationStatsDto;
+    roles: {
+      id: number;
+      key: string;
+      label: string;
+      portal: string;
+      scope: string;
+      isSystem: boolean;
+      users: number;
+      permissions: number;
+    }[];
+  }> {
     const row = await this.analytics.getOrganizationStatsById(id);
     if (!row) throw new NotFoundException('Organization not found');
 
+    const roleRows = await this.repository.listRoles(id);
+
     const { organization, ...stats } = this.toOrganizationWithStats(row);
     return {
+      roles: roleRows.map((r) => ({
+        id: Number(r.id),
+        key: r.key,
+        label: r.label,
+        portal: r.portal,
+        scope: r.scope,
+        isSystem: r.is_system,
+        users: Number(r.users ?? 0),
+        permissions: Number(r.permissions ?? 0),
+      })),
       organization: {
         id: organization.id,
         name: organization.name,

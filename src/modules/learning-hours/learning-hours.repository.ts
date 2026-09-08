@@ -20,6 +20,10 @@ export interface ScormTimeRow {
   user_id: number;
   total_time: string | null;
   updated_at: string;
+  /** The lesson's declared worth, or the package's. Null when neither says. */
+  declared_minutes: number | null;
+  /** True when a lesson completion has ALREADY paid the declared duration. */
+  credited_by_lesson: boolean;
 }
 
 /** Lesson-side minutes for one learner on one course. */
@@ -34,6 +38,10 @@ export interface CourseScormTimeRow {
   user_id: number;
   course_id: number;
   total_time: string | null;
+  /** The lesson's declared worth, or the package's. Null when neither says. */
+  declared_minutes: number | null;
+  /** True when a lesson completion has ALREADY paid the declared duration. */
+  credited_by_lesson: boolean;
 }
 
 export interface Week {
@@ -79,18 +87,6 @@ export class LearningHoursRepository {
    */
   private lessonSource(scope: OrgScope) {
     return sql`
-      SELECT vp.user_id,
-             cm.course_id,
-             vp.watched_seconds / 60.0 AS minutes,
-             vp.updated_at AS at
-      FROM lesson_video_progress vp
-      JOIN lessons l ON l.id = vp.lesson_id
-      JOIN course_modules cm ON cm.id = l.module_id
-      WHERE l.content_type <> 'scorm'
-        AND ${orgScope('vp', scope)}
-
-      UNION ALL
-
       SELECT c.user_id,
              cm.course_id,
              COALESCE(l.duration_minutes, 0) AS minutes,
@@ -98,27 +94,48 @@ export class LearningHoursRepository {
       FROM user_lesson_completions c
       JOIN lessons l ON l.id = c.lesson_id
       JOIN course_modules cm ON cm.id = l.module_id
-      WHERE l.content_type <> 'scorm'
-        AND ${orgScope('c', scope)}
+      WHERE ${orgScope('c', scope)}
+
+      UNION ALL
+
+      SELECT vp.user_id,
+             cm.course_id,
+             LEAST(
+               vp.watched_seconds / 60.0,
+               COALESCE(l.duration_minutes, vp.watched_seconds / 60.0)
+             ) AS minutes,
+             vp.updated_at AS at
+      FROM lesson_video_progress vp
+      JOIN lessons l ON l.id = vp.lesson_id
+      JOIN course_modules cm ON cm.id = l.module_id
+      WHERE ${orgScope('vp', scope)}
         AND NOT EXISTS (
-          SELECT 1 FROM lesson_video_progress vp
-          WHERE vp.user_id = c.user_id AND vp.lesson_id = c.lesson_id
+          SELECT 1 FROM user_lesson_completions c
+          WHERE c.user_id = vp.user_id AND c.lesson_id = vp.lesson_id
         )
     `;
   }
 
   /**
-   * The canonical lesson-side minutes query.
+   * The canonical lesson-side minutes query. Spec: BACKEND_STRUCTURE.md §10.4.
    *
-   * Exactly one source counts per lesson, which is what stops the same sitting
-   * being paid for twice:
+   * A lesson is worth its declared `duration_minutes`, and exactly one branch
+   * of the union pays for any given lesson:
    *
-   *   video with a progress row  -> measured watch time, declared value ignored
-   *   SCORM lesson               -> excluded here entirely, counted from
-   *                                 scorm_tracking instead (it reports its own
-   *                                 time, and marking the lesson complete would
-   *                                 otherwise ALSO credit duration_minutes)
-   *   anything else completed    -> the admin-declared duration_minutes
+   *   completed (any content type) -> duration_minutes, full stop. Finishing a
+   *                                   30-minute video in five earns 30, and
+   *                                   re-watching afterwards earns nothing
+   *                                   more, because progress rows are excluded
+   *                                   once a completion exists.
+   *   video, still incomplete      -> measured watch time, CAPPED at
+   *                                   duration_minutes so 45 minutes on a
+   *                                   30-minute video cannot earn 45.
+   *
+   * SCORM lessons are in the first branch like everything else. They used to be
+   * excluded here and paid purely from `scorm_tracking.total_time`, which paid
+   * nothing at all for a package reporting `PT0S` even when it reported itself
+   * complete. The service still adds SCORM time, but only for packages whose
+   * lesson is NOT yet complete — see `scormTimes`.
    *
    * The union is grouped once by user so this stays a single round trip
    * regardless of how many learners or lessons exist.
@@ -178,10 +195,15 @@ export class LearningHoursRepository {
    */
   async scormTimesByCourse(scope: OrgScope): Promise<CourseScormTimeRow[]> {
     return this.db.all<CourseScormTimeRow>(sql`
-      SELECT st.user_id, cm.course_id, MAX(st.total_time) AS total_time
+      SELECT st.user_id, cm.course_id, MAX(st.total_time) AS total_time,
+             MAX(COALESCE(l.duration_minutes, sp.duration_minutes)) AS declared_minutes,
+             BOOL_OR(ulc.user_id IS NOT NULL) AS credited_by_lesson
       FROM scorm_tracking st
       JOIN lessons l ON l.scorm_package_id = st.package_id
       JOIN course_modules cm ON cm.id = l.module_id
+      LEFT JOIN scorm_packages sp ON sp.id = st.package_id
+      LEFT JOIN user_lesson_completions ulc
+        ON ulc.lesson_id = l.id AND ulc.user_id = st.user_id
       WHERE st.total_time IS NOT NULL
         AND l.is_active = 1 AND cm.is_active = 1
         AND ${orgScope('st', scope)}
@@ -190,16 +212,37 @@ export class LearningHoursRepository {
   }
 
   /**
-   * SCORM time is stored as a string the database cannot sum — SCORM 1.2 uses
-   * `HHHH:MM:SS.SS` and 2004 uses an ISO 8601 duration — so the rows come back
-   * raw and are parsed in the service.
+   * SCORM time per learner, for packages whose lesson is not yet complete.
+   *
+   * `total_time` is a string the database cannot sum — SCORM 1.2 uses
+   * `HHHH:MM:SS.SS` and 2004 an ISO 8601 duration — so rows come back raw and
+   * are parsed in the service, which is also where the cap is applied.
+   *
+   * `credited_by_lesson` is the important column: once the learner has a
+   * completion for the lesson carrying this package, the lesson branch of
+   * `lessonSource` has already paid the declared duration, and adding reported
+   * time on top would pay the same sitting twice — which is exactly what the
+   * old query did. A package in no lesson at all has no completion to check,
+   * so it keeps being paid from reported time alone.
+   *
+   * Grouped by (user, package) so a package used in two lessons is one sitting.
    */
   async scormTimes(scope: OrgScope): Promise<ScormTimeRow[]> {
     return this.db.all<ScormTimeRow>(sql`
-      SELECT st.user_id, st.total_time, st.updated_at
+      SELECT st.user_id,
+             MAX(st.total_time) AS total_time,
+             MAX(st.updated_at) AS updated_at,
+             MAX(COALESCE(l.duration_minutes, sp.duration_minutes)) AS declared_minutes,
+             BOOL_OR(ulc.user_id IS NOT NULL) AS credited_by_lesson
       FROM scorm_tracking st
+      LEFT JOIN lessons l
+        ON l.scorm_package_id = st.package_id AND l.is_active = 1
+      LEFT JOIN scorm_packages sp ON sp.id = st.package_id
+      LEFT JOIN user_lesson_completions ulc
+        ON ulc.lesson_id = l.id AND ulc.user_id = st.user_id
       WHERE st.total_time IS NOT NULL
         AND ${orgScope('st', scope)}
+      GROUP BY st.user_id, st.package_id
     `);
   }
 }

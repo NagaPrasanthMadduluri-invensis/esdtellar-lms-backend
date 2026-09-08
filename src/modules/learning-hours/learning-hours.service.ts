@@ -32,6 +32,29 @@ export interface LearnerMinutes {
  *   - SCORM  -> total_time reported by the package
  *   - other  -> the admin-declared duration_minutes, on completion
  */
+/**
+ * Reported SCORM time, capped at whatever the lesson — or the package's own
+ * manifest — says the content is worth (BACKEND_STRUCTURE.md §10.4).
+ *
+ * A package that reports four hours for a thirty-minute module earns thirty. A
+ * package whose worth nobody declared is still paid its reported time, because
+ * there is nothing to cap against; that is the one gap the doc calls out.
+ */
+function cappedScormMinutes(row: {
+  total_time: string | null;
+  declared_minutes: number | null;
+}): number {
+  const reported = parseScormDuration(row.total_time);
+  const declared =
+    row.declared_minutes === null || row.declared_minutes === undefined
+      ? null
+      : Number(row.declared_minutes);
+  if (declared === null || Number.isNaN(declared) || declared <= 0) {
+    return reported;
+  }
+  return Math.min(reported, declared);
+}
+
 @Injectable()
 export class LearningHoursService {
   constructor(private readonly repository: LearningHoursRepository) {}
@@ -60,7 +83,13 @@ export class LearningHoursService {
     const buckets = new Map<number, LearnerMinutes>();
 
     for (const row of rows) {
-      const minutes = parseScormDuration(row.total_time);
+      // The lesson branch of `lessonSource` has already paid this package's
+      // declared duration, so adding its reported time would pay the same
+      // sitting twice (BACKEND_STRUCTURE.md §10.4). This is also what makes
+      // re-launching a finished package earn nothing.
+      if (row.credited_by_lesson) continue;
+
+      const minutes = cappedScormMinutes(row);
       if (minutes === 0) continue;
 
       const key = Number(row.user_id);
@@ -144,13 +173,10 @@ export class LearningHoursService {
       add(Number(row.user_id), Number(row.course_id), Number(row.minutes));
     }
     for (const row of scormRows) {
-      // Parsed here rather than in SQL for the same reason as everywhere else:
-      // the two SCORM versions use formats Postgres cannot sum.
-      add(
-        Number(row.user_id),
-        Number(row.course_id),
-        parseScormDuration(row.total_time),
-      );
+      // Same two rules as the per-learner shape, or the exported report's
+      // "Time Spent" column would disagree with the learner's own total.
+      if (row.credited_by_lesson) continue;
+      add(Number(row.user_id), Number(row.course_id), cappedScormMinutes(row));
     }
 
     return totals;

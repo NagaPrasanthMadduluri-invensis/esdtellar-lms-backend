@@ -10,6 +10,7 @@
  */
 export * from './organizations.schema';
 export * from './users.schema';
+export * from './roles.schema';
 export * from './courses.schema';
 export * from './enrollments.schema';
 export * from './assessments.schema';

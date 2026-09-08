@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-import { organizations, users } from '@/database/schema';
+import { organizations, roles, users } from '@/database/schema';
 
 export interface OrganizationRow {
   id: number;
@@ -59,6 +59,45 @@ export class OrganizationsRepository {
       .limit(1);
 
     return rows[0] ?? null;
+  }
+
+  /**
+   * An organization's roles, for the platform admin's org detail page
+   * (`specs/rbac.md` §3.3). Deliberately unscoped by org in the usual sense —
+   * this repository is one of the three legitimately unscoped ones
+   * (multi-tenancy.md), and the id is supplied by a `@PlatformAdmin()` route.
+   *
+   * Holder and permission counts come back as grouped aggregates in the one
+   * query rather than a count per role (§7.1).
+   */
+  async listRoles(organizationId: number) {
+    return this.db
+      .select({
+        id: roles.id,
+        key: roles.key,
+        label: roles.label,
+        portal: roles.portal,
+        scope: roles.scope,
+        is_system: roles.isSystem,
+        // Grouped aggregate and one correlated subquery — not a count per role
+        // (BACKEND_STRUCTURE.md §7.1).
+        users: sql<number>`count(${users.id})`,
+        permissions: sql<number>`(
+          SELECT count(*) FROM role_permissions rp WHERE rp.role_id = ${roles.id}
+        )`,
+      })
+      .from(roles)
+      .leftJoin(users, and(eq(users.roleId, roles.id), eq(users.isActive, 1)))
+      .where(eq(roles.organizationId, organizationId))
+      .groupBy(
+        roles.id,
+        roles.key,
+        roles.label,
+        roles.portal,
+        roles.scope,
+        roles.isSystem,
+      )
+      .orderBy(desc(roles.isSystem), roles.key);
   }
 
   async slugExists(slug: string): Promise<boolean> {

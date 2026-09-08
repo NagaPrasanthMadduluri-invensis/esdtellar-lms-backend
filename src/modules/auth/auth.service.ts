@@ -6,7 +6,10 @@ import {
 } from '@nestjs/common';
 
 import { verifyPassword } from '@/common/crypto/password.util';
-import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import type {
+  AuthenticatedUser,
+  UserRole,
+} from '@/common/types/authenticated-request';
 
 import { OrganizationsService } from '../organizations/organizations.service';
 import { AuthRepository } from './auth.repository';
@@ -21,7 +24,7 @@ export interface PublicUser {
   last_name: string;
   email: string;
   department: string | null;
-  role: 'admin' | 'learner';
+  role: UserRole;
   is_active: boolean;
   organization_id: number;
   /**

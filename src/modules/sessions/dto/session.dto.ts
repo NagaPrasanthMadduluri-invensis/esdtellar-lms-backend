@@ -31,10 +31,24 @@ export class SessionDto {
   @IsOptional() @IsInt() course_id?: number | null;
   @IsOptional() @IsInt() capacity?: number;
 
+  /**
+   * The display name. Still required, and still free text, so a session can
+   * name an external facilitator who has no account. When `trainer_user_id`
+   * is also given, the server OVERWRITES this with that user's name — the two
+   * must not be able to disagree (`specs/rbac.md` §3.6.1).
+   */
   @IsString()
   @MinLength(1, { message: 'trainer is required' })
   @Transform(trim)
   trainer!: string;
+
+  /**
+   * Optional link to a trainer account. Setting it is what puts the session in
+   * that trainer's portal; leaving it null keeps the session admin-only, which
+   * is the existing behaviour and the only option for an org with no trainer
+   * accounts yet.
+   */
+  @IsOptional() @IsInt() trainer_user_id?: number | null;
 
   @IsString()
   @MinLength(1, { message: 'venue_url is required' })

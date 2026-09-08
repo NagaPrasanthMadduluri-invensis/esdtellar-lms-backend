@@ -15,6 +15,10 @@
     "db:detach-assessments": "node scripts/detach-all-assessments.mjs",
     "db:reset-to-admin": "node scripts/reset-to-admin-only.mjs",
     "db:migrate:tenancy": "node scripts/migrate-tenancy.mjs",
+    "db:migrate:rbac": "node scripts/migrate-rbac.mjs",
+    "db:create-org-role": "node scripts/create-org-role.mjs",
+    "db:create-org-user": "node scripts/create-org-user.mjs",
+    "db:create-platform-admin": "node scripts/create-platform-admin.mjs",
     "test:isolation": "node scripts/test-isolation.mjs",
     "db:clean-orphan-scorm": "node scripts/clean-orphan-scorm.mjs"
   },

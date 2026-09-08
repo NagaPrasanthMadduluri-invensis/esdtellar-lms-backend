@@ -19,6 +19,18 @@ export const organizations = pgTable(
     logoUrl: text('logo_url'),
     isPlatform: boolean('is_platform').notNull().default(false),
     isActive: integer('is_active').notNull().default(1),
+    /**
+     * Bumped in the same transaction as any write to `roles` or
+     * `role_permissions`. The JWT carries the value it was signed with and
+     * `AuthGuard` compares the two, so a permission change signs THIS
+     * organization out and no other — how decision 5 ("a permission change
+     * forces a re-login") is delivered. `specs/rbac.md` §3.6.
+     *
+     * Deliberately not TTL-cached: `scorm/entitlement-cache.ts` says in its
+     * own docblock that its stale-positive pattern must not be reused where a
+     * capability is granted.
+     */
+    permVersion: integer('perm_version').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

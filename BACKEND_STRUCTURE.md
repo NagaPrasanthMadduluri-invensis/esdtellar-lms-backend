@@ -800,13 +800,42 @@ was first. Do not add a second points calculation.
 
 `modules/learning-hours` owns the single definition of an hour of learning, and
 both portals read it. Exactly one source counts per lesson, which is what stops
-a sitting being paid for twice:
+a sitting being paid for twice.
 
-| Content | Counted from |
-|---|---|
-| uploaded video | measured watch seconds (`lesson_video_progress`) |
-| SCORM | `total_time` reported by the package |
-| everything else | `lessons.duration_minutes`, credited on completion |
+**A lesson is worth its declared `duration_minutes`.** That is the rule, and
+everything else follows from it:
+
+| | While the lesson is INCOMPLETE | Once it is COMPLETE |
+|---|---|---|
+| uploaded video | measured watch seconds, **capped** at `duration_minutes` | `duration_minutes` |
+| SCORM lesson | `total_time` reported by the package, **capped** at `duration_minutes` | `duration_minutes` |
+| session / document / quiz | nothing | `duration_minutes` |
+| standalone SCORM (assigned, in no lesson) | `total_time`, capped at `scorm_packages.duration_minutes` when the manifest declared one | same — there is no lesson to complete |
+
+Three consequences, all deliberate, decided with the product owner on
+2026-09-08:
+
+1. **A 30-minute course is worth 30 minutes.** Finishing it in five does not
+   reduce it to five. Measured time is a *proxy* used only while the learner has
+   not finished, never the payment.
+2. **The declared duration is a ceiling as well as a floor.** Watching 45
+   minutes of a 30-minute video earns 30. Hours stay comparable between
+   learners, and a slow connection or a paused tab cannot inflate them.
+3. **Re-watching earns nothing.** Once a lesson is complete its contribution is
+   fixed at the declared duration, so opening it again adds no hours. This is
+   what the "incomplete / complete" split above is for — not a special case.
+
+This replaced an earlier rule where video counted *only* measured watch seconds
+and SCORM *only* its reported `total_time`. Both under-credited real work: a
+30-minute video skimmed in five paid five, and a SCORM package that reported
+`PT0S` paid nothing even when it reported itself completed — which was
+observable in the seeded data on package 24 / lesson 47.
+
+Because SCORM lessons are now credited by completion like anything else, a
+SCORM lesson's `duration_minutes` is load-bearing, which is why §10.8 makes it
+mandatory. A standalone SCORM assignment has no lesson and therefore no
+declared duration unless the manifest supplied one; it is the one case that
+still relies on reported time alone.
 
 Do not add a second place that sums hours. The learner view and the admin
 analytics previously computed them independently — the admin side counted no
