@@ -1,6 +1,11 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Put } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import {
+  CurrentScope,
+  CurrentUser,
+  Permissions,
+  Roles,
+} from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -35,6 +40,7 @@ export class TrainerSessionsController {
 
   /** His own sessions, newest first. */
   @Get()
+  @Permissions('view_own_sessions')
   async list(
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
@@ -44,6 +50,7 @@ export class TrainerSessionsController {
 
   /** One session with its companion course. 404 when it is not his. */
   @Get(':id')
+  @Permissions('view_own_sessions')
   async get(
     @Param('id', ParseIntPipe) id: number,
     @CurrentScope() scope: OrgScope,
@@ -54,6 +61,7 @@ export class TrainerSessionsController {
 
   /** The roster with each learner's attendance state. No email addresses. */
   @Get(':id/participants')
+  @Permissions('view_session_participants')
   async participants(
     @Param('id', ParseIntPipe) id: number,
     @CurrentScope() scope: OrgScope,
@@ -64,6 +72,7 @@ export class TrainerSessionsController {
 
   /** Mark or correct attendance for his own session. */
   @Put(':id/attendance')
+  @Permissions('mark_attendance')
   async saveAttendance(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: SaveAttendanceDto,

@@ -44,6 +44,59 @@ export class RolesService {
     return { permissions: PERMISSION_CATALOGUE };
   }
 
+  /**
+   * One role in this organization, or 404.
+   *
+   * Public because creating a user has to know the role's `portal` BEFORE the
+   * insert (`PlatformRolesService.createUser`) — `users.role` is derived from
+   * it, and a role id that does not belong to this organization has to fail
+   * before anything is written rather than after.
+   *
+   * 404 and not 422 for a foreign-organization id, matching `assign()` below:
+   * whether a role exists in another tenant is not something this caller may
+   * learn.
+   */
+  async requireRole(scope: OrgScope, roleId: number) {
+    const role = await this.repository.findById(scope, roleId);
+    if (!role) throw new NotFoundException('Role not found');
+    return {
+      id: Number(role.id),
+      key: role.key,
+      label: role.label,
+      portal: role.portal,
+      scope: role.scope,
+      isSystem: role.is_system,
+    };
+  }
+
+  /**
+   * The organization's role for a given key, or 422 naming the problem.
+   *
+   * `UsersService.create` needs the `learner` role's id because `role_id` is
+   * NOT NULL, and an INSERT has to supply it. 422 rather than 404 because the
+   * caller did not ask for this role by id — the organization is in a state
+   * that cannot accept a new learner, and the message has to say which state,
+   * or the admin sees a bare failure on an unrelated form.
+   *
+   * `is_system` and lockout guard 4 mean the seeded `learner` role is very
+   * hard to remove, so this is a defensive branch rather than an expected one.
+   */
+  async roleByKey(scope: OrgScope, key: string) {
+    const role = await this.repository.findByKey(scope, key);
+    if (!role) {
+      throw new UnprocessableEntityException(
+        `This organization has no "${key}" role, so a user cannot be created ` +
+          'on it. Create one on the Roles screen first.',
+      );
+    }
+    return {
+      id: Number(role.id),
+      key: role.key,
+      label: role.label,
+      portal: role.portal,
+    };
+  }
+
   async list(scope: OrgScope) {
     const rows = await this.repository.list(scope);
     return {

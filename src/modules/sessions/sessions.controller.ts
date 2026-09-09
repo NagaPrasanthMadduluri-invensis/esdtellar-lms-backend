@@ -11,7 +11,12 @@ import {
   Put,
 } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import {
+  CurrentScope,
+  CurrentUser,
+  Permissions,
+  Roles,
+} from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -47,6 +52,7 @@ export class AdminSessionsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_sessions')
   async create(@Body() dto: SessionDto, @CurrentScope() scope: OrgScope) {
     return this.sessions.create(scope, dto);
   }
@@ -60,6 +66,7 @@ export class AdminSessionsController {
   }
 
   @Put(':sessionId')
+  @Permissions('manage_sessions')
   async update(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: SessionDto,
@@ -69,6 +76,7 @@ export class AdminSessionsController {
   }
 
   @Delete(':sessionId')
+  @Permissions('manage_sessions')
   async remove(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -92,6 +100,7 @@ export class AdminSessionsController {
    */
   @Post(':sessionId/complete')
   @HttpCode(HttpStatus.OK)
+  @Permissions('complete_session')
   async complete(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -101,6 +110,7 @@ export class AdminSessionsController {
 
   @Post(':sessionId/roster')
   @HttpCode(HttpStatus.OK)
+  @Permissions('manage_session_roster')
   async addToRoster(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: RosterAddDto,
@@ -111,6 +121,7 @@ export class AdminSessionsController {
   }
 
   @Delete(':sessionId/roster')
+  @Permissions('manage_session_roster')
   async removeFromRoster(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: RosterRemoveDto,
@@ -128,6 +139,7 @@ export class AdminSessionsController {
   }
 
   @Put(':sessionId/attendance')
+  @Permissions('mark_attendance')
   async saveAttendance(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: SaveAttendanceDto,

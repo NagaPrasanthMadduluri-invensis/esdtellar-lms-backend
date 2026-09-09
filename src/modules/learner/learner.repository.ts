@@ -236,6 +236,7 @@ export class LearnerRepository {
       passing_score: number | null;
       has_passed: number | null;
       assessment_count: number;
+      passed_assessments: number;
       session_id: number | null;
       session_type: string | null;
       trainer: string | null;
@@ -281,7 +282,14 @@ export class LearnerRepository {
          JOIN assessments a ON a.id = t.assessment_id
          WHERE a.course_id = c.id AND t.user_id = ${userId}) AS has_passed,
         (SELECT COUNT(*) FROM assessments a
-         WHERE a.course_id = c.id AND a.is_active = 1) AS assessment_count
+         WHERE a.course_id = c.id AND a.is_active = 1) AS assessment_count,
+        -- DISTINCT, matching LeaderboardRepository.standings: re-passing an
+        -- assessment already passed pays nothing, so the card must not count
+        -- it as progress toward the course's total either.
+        (SELECT COUNT(DISTINCT t.assessment_id) FROM user_assessment_attempts t
+         JOIN assessments a ON a.id = t.assessment_id
+         WHERE a.course_id = c.id AND t.user_id = ${userId}
+           AND t.is_passed = 1) AS passed_assessments
       FROM user_course_assignments uca
       JOIN courses c ON c.id = uca.course_id AND c.is_active = 1
       LEFT JOIN sessions s ON s.id = c.session_id
@@ -399,7 +407,12 @@ export class LearnerRepository {
         (SELECT COUNT(*) FROM user_assessment_attempts
          WHERE assessment_id = a.id AND user_id = ${userId}) AS attempt_count,
         (SELECT MAX(percentage) FROM user_assessment_attempts
-         WHERE assessment_id = a.id AND user_id = ${userId}) AS best_score
+         WHERE assessment_id = a.id AND user_id = ${userId}) AS best_score,
+        -- Whether this one assessment has EVER been passed, which is what the
+        -- points model pays for (once, however many attempts it took). Best
+        -- score cannot answer it: the passing mark is per assessment.
+        (SELECT MAX(is_passed) FROM user_assessment_attempts
+         WHERE assessment_id = a.id AND user_id = ${userId}) AS has_passed
       FROM assessments a
       WHERE a.course_id = ${courseId} AND a.is_active = 1
       ORDER BY a.created_at

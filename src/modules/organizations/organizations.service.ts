@@ -7,9 +7,10 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
+import type { RolePortal } from '@/common/permissions';
+import { createOrgScope, type OrgScope } from '@/database/org-scope';
 
 import type {
-  CreateOrganizationAdminDto,
   CreateOrganizationDto,
   UpdateOrganizationDto,
 } from './dto/organization.dto';
@@ -109,6 +110,42 @@ export class OrganizationsService implements OnModuleInit {
     return this.platformOrganizationId;
   }
 
+  /**
+   * Mints an `OrgScope` for a TARGET organization — `specs/rbac.md` §3.9.
+   *
+   * READ THIS BEFORE ADDING A CALLER. `TenantContextGuard` is otherwise the
+   * only thing that mints a scope, and it takes `organizationId` from the
+   * verified JWT, which is what makes a tenant scope unforgeable
+   * (`multi-tenancy.md` §3.1). This method is the one exception, and it exists
+   * because delegated administration genuinely needs it: a platform admin
+   * editing organization 11's roles carries a token that says 9.
+   *
+   * Three things make it safe, and all three have to hold:
+   *
+   *   1. **Only `@PlatformAdmin()` routes may call it.** That guard has
+   *      already established `role === 'admin' AND organizationId ===
+   *      platformOrgId`. A caller behind any weaker guard — `@Roles('admin')`,
+   *      or nothing — would be a cross-tenant write, because `organizationId`
+   *      would then be an ordinary path parameter that any org admin could
+   *      change. There is no way to assert that from in here, which is why
+   *      this docblock is the assertion.
+   *   2. The id is resolved against a real `organizations` row first, so an
+   *      invented or deleted id is a 404 rather than a scope over nothing.
+   *   3. It lives here, on the service that already owns every cross-org read,
+   *      so there is one place to audit rather than a helper any module can
+   *      reach for.
+   *
+   * The returned scope carries the platform org id as usual, so a delegated
+   * read sees the target org's own rows plus global platform content, exactly
+   * as that organization's own admin would.
+   */
+  async scopeFor(organizationId: number): Promise<OrgScope> {
+    const organization = await this.repository.findById(organizationId);
+    if (!organization) throw new NotFoundException('Organization not found');
+
+    return createOrgScope(organization.id, this.getPlatformOrganizationId());
+  }
+
   /** `GET /api/platform/organizations` — every org with its own counts. */
   async listOrganizations(): Promise<{
     organizations: (OrganizationDto & OrganizationStatsDto)[];
@@ -139,55 +176,24 @@ export class OrganizationsService implements OnModuleInit {
   }
 
   /**
-   * `GET /api/platform/organizations/:id` — org, its stats, and its roles.
+   * `GET /api/platform/organizations/:id` — the organization and its stats.
    *
-   * Roles are included here because they are a property of the organization a
-   * platform admin is looking at: which roles it has defined, who holds them,
-   * and how many permissions each carries. An org that has added a `trainer`
-   * shows four rows where another shows three (`specs/rbac.md` §3.3).
+   * Roles used to come back here too, as a count of permissions per role. They
+   * now have their own endpoint (`GET .../roles`, `specs/rbac.md` §3.9)
+   * because the platform page no longer just displays them — it edits them,
+   * and editing needs each role's actual `permissions[]`, not a number. One
+   * endpoint answering "what roles does this org have" rather than two
+   * answering it differently.
    */
   async getOrganization(id: number): Promise<{
     organization: OrganizationDto;
     stats: OrganizationStatsDto;
-    roles: {
-      id: number;
-      key: string;
-      label: string;
-      portal: string;
-      scope: string;
-      isSystem: boolean;
-      users: number;
-      permissions: number;
-    }[];
   }> {
     const row = await this.analytics.getOrganizationStatsById(id);
     if (!row) throw new NotFoundException('Organization not found');
 
-    const roleRows = await this.repository.listRoles(id);
-
     const { organization, ...stats } = this.toOrganizationWithStats(row);
-    return {
-      roles: roleRows.map((r) => ({
-        id: Number(r.id),
-        key: r.key,
-        label: r.label,
-        portal: r.portal,
-        scope: r.scope,
-        isSystem: r.is_system,
-        users: Number(r.users ?? 0),
-        permissions: Number(r.permissions ?? 0),
-      })),
-      organization: {
-        id: organization.id,
-        name: organization.name,
-        slug: organization.slug,
-        logoUrl: organization.logoUrl,
-        isPlatform: organization.isPlatform,
-        isActive: organization.isActive,
-        createdAt: organization.createdAt,
-      },
-      stats,
-    };
+    return { organization, stats };
   }
 
   /** `PATCH /api/platform/organizations/:id` — rename, activate/deactivate. */
@@ -211,37 +217,58 @@ export class OrganizationsService implements OnModuleInit {
   }
 
   /**
-   * `POST /api/platform/organizations/:id/admins` — seeds that org's FIRST
-   * admin.
+   * Creates a user inside an organization, on a role a super-admin has picked
+   * — `specs/rbac.md` §3.9. Called by `PlatformRolesService`, which has
+   * already resolved the role against that same organization.
    *
-   * This mints an ORG admin, never a platform admin: `organizationId` is
-   * `:id` from the route, resolved against a real organization row before any
-   * insert happens, and the platform organization itself gets its own admin
-   * once, at install time, never through this endpoint. An org admin created
-   * this way can in turn only ever create users within their own `OrgScope`
-   * (`UsersService.create`), so this is the one and only place a platform
-   * admin could otherwise have been minted by accident — hence the emphasis.
+   * This was `createOrganizationAdmin`, which could only ever mint an admin
+   * and — after `users.role_id` became NOT NULL — could not mint anything at
+   * all without a 500 (§3.4). The role is now a parameter, which is the whole
+   * point of the change: a super-admin can add a second admin, a trainer, or
+   * a learner, under the organization they are looking at.
+   *
+   * It still mints an ORG user and never a platform admin: `organizationId`
+   * comes from the route param and is resolved against a real organization
+   * row before any insert, and the platform organization's own admin is
+   * created once at install time by `scripts/create-platform-admin.mjs`. An
+   * org admin created this way can in turn only create users within their own
+   * `OrgScope`, so this remains the one place that would otherwise have been
+   * able to plant one by accident.
    */
-  async createOrganizationAdmin(
+  async createOrganizationUser(
     organizationId: number,
-    dto: CreateOrganizationAdminDto,
-  ): Promise<{ user: Awaited<ReturnType<OrganizationsRepository['createAdmin']>> }> {
+    input: {
+      firstName: string;
+      lastName: string;
+      email: string;
+      password: string;
+      roleId: number;
+      role: RolePortal;
+      department?: string | null;
+      jobRole?: string | null;
+    },
+  ) {
     const organization = await this.repository.findById(organizationId);
     if (!organization) throw new NotFoundException('Organization not found');
 
-    if (await this.repository.emailExists(dto.email)) {
+    if (await this.repository.emailExists(input.email)) {
       throw new ConflictException('Email already in use');
     }
 
-    const user = await this.repository.createAdmin(organizationId, {
-      firstName: dto.firstName,
-      lastName: dto.lastName,
-      email: dto.email,
-      passwordHash: hashPassword(dto.password),
+    const user = await this.repository.createUser(organizationId, {
+      firstName: input.firstName,
+      lastName: input.lastName,
+      email: input.email,
+      passwordHash: hashPassword(input.password),
+      roleId: input.roleId,
+      role: input.role,
+      department: input.department ?? null,
+      jobRole: input.jobRole ?? null,
     });
 
     this.logger.log(
-      `First admin seeded for organization=${organizationId}: user=${user.id}`,
+      `Platform admin created user=${user.id} role=${input.role} ` +
+        `roleId=${input.roleId} in organization=${organizationId}`,
     );
 
     return { user };

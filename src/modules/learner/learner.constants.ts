@@ -13,9 +13,19 @@ export { thisMonth, lastMonth, today, weeks } from '@/modules/learning-hours/per
 export const MONTHLY_GOAL_HOURS = 10;
 export const DUE_DAYS = 44;
 
-/** Points model: 10 per lesson completed, 50 per assessment passed. */
-export const POINTS_PER_LESSON = 10;
-export const POINTS_PER_PASSED_ASSESSMENT = 50;
+/**
+ * Points model: 10 per lesson completed, 50 per assessment passed.
+ *
+ * Re-exported, not redeclared. These were a second copy of the numbers in
+ * `modules/leaderboard/points.ts`, which is the file the board itself reads —
+ * so a change there would have moved the ranking and left every learner-side
+ * figure quoting the old rate. Now the course cards promise what the board
+ * pays because they read the same constants.
+ */
+export {
+  POINTS_PER_LESSON,
+  POINTS_PER_PASSED_ASSESSMENT,
+} from '@/modules/leaderboard/points';
 
 /**
  * Delivery mode, derived from what a course actually contains.

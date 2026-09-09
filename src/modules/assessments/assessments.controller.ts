@@ -11,7 +11,12 @@ import {
   Put,
 } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import {
+  CurrentScope,
+  CurrentUser,
+  Permissions,
+  Roles,
+} from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -49,6 +54,7 @@ export class CourseAssessmentsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('build_assessments')
   async create(
     @Param('courseId', ParseIntPipe) courseId: number,
     @Body() dto: AssessmentDto,
@@ -72,6 +78,7 @@ export class AdminAssessmentsController {
   }
 
   @Put(':assessmentId')
+  @Permissions('build_assessments')
   async update(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @Body() dto: AssessmentDto,
@@ -87,6 +94,7 @@ export class AdminAssessmentsController {
    */
   @Post(':assessmentId/attach')
   @HttpCode(HttpStatus.OK)
+  @Permissions('manage_assessments')
   async attach(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @CurrentScope() scope: OrgScope,
@@ -95,6 +103,7 @@ export class AdminAssessmentsController {
   }
 
   @Delete(':assessmentId/attach')
+  @Permissions('manage_assessments')
   async detach(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @CurrentScope() scope: OrgScope,
@@ -103,6 +112,7 @@ export class AdminAssessmentsController {
   }
 
   @Delete(':assessmentId')
+  @Permissions('build_assessments')
   async remove(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @CurrentScope() scope: OrgScope,
@@ -112,6 +122,7 @@ export class AdminAssessmentsController {
 
   @Post(':assessmentId/questions')
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('build_assessments')
   async addQuestion(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @Body() dto: QuestionDto,
@@ -127,6 +138,7 @@ export class QuestionsController {
   constructor(private readonly assessments: AssessmentsService) {}
 
   @Put(':questionId')
+  @Permissions('build_assessments')
   async update(
     @Param('questionId', ParseIntPipe) questionId: number,
     @Body() dto: QuestionDto,
@@ -136,6 +148,7 @@ export class QuestionsController {
   }
 
   @Delete(':questionId')
+  @Permissions('build_assessments')
   async remove(
     @Param('questionId', ParseIntPipe) questionId: number,
     @CurrentScope() scope: OrgScope,

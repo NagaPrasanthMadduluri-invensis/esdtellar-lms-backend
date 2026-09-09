@@ -55,6 +55,18 @@ const commit = process.argv.includes('--commit');
  * step; the verification in step 5 fails loudly if a portal here disagrees
  * with the users.role it is mapped from.
  */
+/**
+ * KEEP IN STEP with PERMISSIONS in src/common/permissions.ts — 20 keys.
+ *
+ * This drifted once, and it matters here more than anywhere else: on a server
+ * running RBAC for the FIRST time, this list is what every organization's
+ * admin role is seeded with. It still held the pre-catalogue 19 (with
+ * `manage_departments`, without `manage_certificates` and `manage_sessions`),
+ * so a fresh production run would have seeded admins unable to create a
+ * session or issue a certificate — while migration 0014, which repairs exactly
+ * that, had already run and no-opped because no roles existed yet. Keeping
+ * this correct is what stops the order of the two mattering.
+ */
 const ALL_PERMISSIONS = [
   'view_dashboard',
   'view_employees',
@@ -66,8 +78,9 @@ const ALL_PERMISSIONS = [
   'view_reports',
   'manage_courses',
   'manage_assessments',
-  'manage_departments',
   'view_certificates',
+  'manage_certificates',
+  'manage_sessions',
   'manage_roles',
   'view_team_learning',
   'view_own_sessions',

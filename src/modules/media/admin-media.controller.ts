@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
-import { CurrentScope, Roles } from '@/common/decorators';
+import { CurrentScope, Permissions, Roles } from '@/common/decorators';
 import type { OrgScope } from '@/database/org-scope';
 
 import {
@@ -45,6 +45,7 @@ export class AdminMediaUploadController {
   /** Presign before the lesson exists, so the form can upload on file-select. */
   @Post('video/presign')
   @HttpCode(HttpStatus.OK)
+  @Permissions('upload_content')
   async presignVideo(@Body() dto: PresignVideoDto) {
     return this.media.presignStandaloneVideoUpload(dto);
   }
@@ -56,6 +57,7 @@ export class AdminMediaUploadController {
    */
   @Post('document/presign')
   @HttpCode(HttpStatus.OK)
+  @Permissions('upload_content')
   async presignDocument(@Body() dto: PresignDocumentDto) {
     return this.media.presignDocumentUpload(dto);
   }
@@ -76,6 +78,7 @@ export class AdminMediaController {
 
   @Post(':lessonId/video/presign')
   @HttpCode(HttpStatus.OK)
+  @Permissions('upload_content')
   async presignVideo(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @Body() dto: PresignVideoDto,
@@ -86,6 +89,7 @@ export class AdminMediaController {
 
   @Post(':lessonId/video/confirm')
   @HttpCode(HttpStatus.OK)
+  @Permissions('upload_content')
   async confirmVideo(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @Body() dto: ConfirmVideoDto,
@@ -95,6 +99,7 @@ export class AdminMediaController {
   }
 
   @Delete(':lessonId/video')
+  @Permissions('upload_content')
   async removeVideo(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentScope() scope: OrgScope,
@@ -105,6 +110,7 @@ export class AdminMediaController {
   @Post(':lessonId/captions')
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(FileInterceptor('captions'))
+  @Permissions('upload_content')
   async uploadCaptions(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @UploadedFile() file: Express.Multer.File,
@@ -114,6 +120,7 @@ export class AdminMediaController {
   }
 
   @Delete(':lessonId/captions')
+  @Permissions('upload_content')
   async removeCaptions(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentScope() scope: OrgScope,

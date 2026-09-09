@@ -265,6 +265,38 @@ is an explicit, greppable act:
 This inverts the legacy model, where every handler repeated a `requireAuth()`
 call and a forgotten call meant a silently public endpoint.
 
+### 5.2.1 Permissions, on top of roles
+
+`@Roles()` says which portal's audience a route belongs to. `@Permissions()`
+says what that audience must be allowed to do, checked by `PermissionsGuard`
+against the `permissions[]` claim in the verified token (`specs/rbac.md` §4.1).
+They AND together, and a route with no `@Permissions()` is open to its whole
+audience.
+
+**Every entry in `common/permissions.ts` has at least one guard behind it, and
+that is an invariant worth keeping.** It was not true when the roles UI first
+shipped: 14 of 19 entries were checked nowhere, so an organization could untick
+a box and the role kept the capability. A permission with no guard is worse
+than no permission — it is a screen that lies. When you add an entry to the
+catalogue, add the decorator in the same change; when you remove the last route
+that checks one, remove the entry.
+
+The rule for which routes carry one:
+
+> A permission named `view_*` gates a read. Everything else gates writes.
+
+Content reads (courses, modules, lessons, sessions, the SCORM library) stay
+open to any admin-portal role on purpose — an `assign_learning` role has to
+list courses in order to assign one. The four `view_*` permissions cover the
+reads that carry something worth withholding: the dashboard, the employee
+list, reports, and certificates.
+
+A **delegated** route is the one exception to reading the scope from the
+caller's token: `@PlatformAdmin()` routes under
+`/platform/organizations/:organizationId` mint an `OrgScope` for the org in the
+path via `OrganizationsService.scopeFor()`. Read that method's docblock before
+adding a caller — behind a weaker guard it would be a cross-tenant write.
+
 ### 5.3 Rules
 
 - **Never read a role from anything but the verified JWT.** Not a request body,
@@ -523,6 +555,11 @@ Update this table with every module you move.
 | organizations (platform org resolution) | 0 | `server/src/modules/organizations` |
 | leaderboard | 1 | `server/src/modules/leaderboard` |
 | learning-hours | 1 | `server/src/modules/learning-hours` |
+| roles & permissions (org admin) | 7 | `server/src/modules/roles` |
+| roles & user creation, delegated to a platform admin | 5 | `server/src/modules/roles` |
+| trainer portal (own sessions, participants, attendance) | 4 | `server/src/modules/sessions` |
+| team learning (manager) | 1 | `server/src/modules/learner` |
+| change password (any authenticated role) | 1 | `server/src/modules/auth` |
 
 ### 10.9 SCORM object storage, and the granular data-model log
 

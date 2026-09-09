@@ -36,6 +36,12 @@ try {
  * rejected, so the two drifting apart fails loudly rather than silently
  * granting something no guard knows about.
  */
+/**
+ * KEEP IN STEP with PERMISSIONS in src/common/permissions.ts — 20 keys.
+ * A key absent here is rejected, so drift fails loudly instead of granting
+ * something no guard knows about. It last drifted when the catalogue dropped
+ * `manage_departments` and gained `manage_certificates` / `manage_sessions`.
+ */
 const PERMISSIONS = [
   'view_dashboard',
   'view_employees',
@@ -47,8 +53,9 @@ const PERMISSIONS = [
   'view_reports',
   'manage_courses',
   'manage_assessments',
-  'manage_departments',
   'view_certificates',
+  'manage_certificates',
+  'manage_sessions',
   'manage_roles',
   'view_team_learning',
   'view_own_sessions',

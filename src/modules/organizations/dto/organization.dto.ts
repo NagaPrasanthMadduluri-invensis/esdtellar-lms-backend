@@ -1,7 +1,6 @@
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
-  IsEmail,
   IsOptional,
   IsString,
   Matches,
@@ -54,26 +53,9 @@ export class UpdateOrganizationDto {
 }
 
 /**
- * Seeds an organization's FIRST admin. `organizationId` is always taken from
- * the route param (`POST /platform/organizations/:id/admins`), never from
- * this body — the caller cannot name a different organization to seed.
+ * The DTO for creating a user inside an organization now lives with the
+ * endpoint that does it — `modules/roles/dto/platform-user.dto.ts`, for
+ * `POST /platform/organizations/:id/users` (`specs/rbac.md` §3.9). What was
+ * here, `CreateOrganizationAdminDto`, had no `roleId` because the old
+ * endpoint could only make an admin.
  */
-export class CreateOrganizationAdminDto {
-  @IsString()
-  @MinLength(1, { message: 'firstName is required' })
-  @Transform(trim)
-  firstName!: string;
-
-  @IsString()
-  @MinLength(1, { message: 'lastName is required' })
-  @Transform(trim)
-  lastName!: string;
-
-  @IsEmail({}, { message: 'email must be a valid email address' })
-  @Transform(lower)
-  email!: string;
-
-  @IsString()
-  @MinLength(8, { message: 'password must be at least 8 characters' })
-  password!: string;
-}

@@ -22,13 +22,37 @@
 /**
  * Permission id -> the label the roles UI shows.
  *
- * The first twelve are the ones the existing `/admin/roles` screen already
- * lists, keyed identically, so wiring that screen up does not change a single
- * label the admin has already seen. The rest are added by this feature:
- * `manage_roles` is what it needs to guard itself, `view_team_learning` is the
- * manager's extra module (decision 2), and the last five belong to the trainer
- * portal — of which two, `complete_session` and `manage_session_roster`, exist
- * precisely so a trainer role can be seen NOT to hold them (decisions 7, 8).
+ * Most of these are the ones the original `/admin/roles` screen listed, keyed
+ * identically, so wiring that screen up did not change labels an admin had
+ * already seen. `manage_roles` is what the roles screen needs to guard itself,
+ * `view_team_learning` is the manager's extra module (decision 2), and five
+ * belong to the trainer portal — of which two, `complete_session` and
+ * `manage_session_roster`, exist precisely so a trainer role can be seen NOT
+ * to hold them (decisions 7, 8).
+ *
+ * THREE CHANGES WERE MADE WHEN THE GUARDS WENT ON THE ROUTES, and they are the
+ * reason this list is not simply the mock's list plus the new work. Ticking a
+ * box that no guard reads is the mock's defect one layer down, so every entry
+ * here now has a route behind it:
+ *
+ *   - `manage_departments` was REMOVED. There is no department to manage:
+ *     `users.department` is free text with no table behind it and no CRUD
+ *     endpoint (`specs/rbac.md` §8.2), so nothing could ever have enforced it.
+ *     Setting a person's department is `edit_employees`. When the departments
+ *     table in §8.2 lands, the permission comes back with the routes that need
+ *     it. Existing grants naming it become orphan rows that no guard reads,
+ *     which is the documented safe direction to fail.
+ *   - `manage_certificates` was ADDED. Issuing and revoking a certificate had
+ *     no permission at all, so `view_certificates` was the only certificate
+ *     entry and a role that could merely look could also revoke.
+ *   - `manage_sessions` was ADDED, for creating and editing a session. The
+ *     three session permissions that existed all describe running one that
+ *     already exists.
+ *
+ * `manage_assessments` was also relabelled to say what its routes actually do
+ * — attach an assessment to a course — because `build_assessments` covers
+ * authoring and two labels reading "assessments" told an admin nothing about
+ * which was which.
  */
 export const PERMISSIONS = {
   view_dashboard: 'View dashboard',
@@ -40,9 +64,10 @@ export const PERMISSIONS = {
   manage_users: 'Manage users',
   view_reports: 'View reports',
   manage_courses: 'Manage courses',
-  manage_assessments: 'Manage assessments',
-  manage_departments: 'Manage departments',
+  manage_assessments: 'Attach assessments to courses',
   view_certificates: 'View certificates',
+  manage_certificates: 'Issue and revoke certificates',
+  manage_sessions: 'Create and edit training sessions',
   manage_roles: 'Manage roles and permissions',
   view_team_learning: 'View team learning',
   // Trainer portal (`specs/rbac.md` §3.6.1). Each is additionally scoped to

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 
+import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
 import { orgScope, type OrgScope } from '@/database/org-scope';
 
@@ -8,7 +9,13 @@ export interface RoleListRow {
   id: number;
   key: string;
   label: string;
-  portal: string;
+  /**
+   * Typed as the closed union rather than `string`: `roles_portal_check` in
+   * the database restricts the column to exactly these three values, so
+   * anything else cannot be stored, and the Drizzle `users.role` column is
+   * the same union — a plain `string` here would not assign to it.
+   */
+  portal: RolePortal;
   scope: string;
   is_system: boolean;
   users: number;
@@ -59,7 +66,7 @@ export class RolesRepository {
       id: number;
       key: string;
       label: string;
-      portal: string;
+      portal: RolePortal;
       scope: string;
       is_system: boolean;
       users: number;
@@ -68,6 +75,26 @@ export class RolesRepository {
              (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id) AS users
       FROM roles r
       WHERE r.id = ${roleId} AND ${orgScope('r', scope)}
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * One role by its key within the organization — used to resolve the
+   * `learner` role when an admin adds an employee (`specs/rbac.md` §3.4).
+   * Keys are unique per organization (`UNIQUE (organization_id, key)`), so
+   * this is at most one row.
+   */
+  async findByKey(scope: OrgScope, key: string) {
+    const rows = await this.db.all<{
+      id: number;
+      key: string;
+      label: string;
+      portal: RolePortal;
+    }>(sql`
+      SELECT r.id, r.key, r.label, r.portal
+      FROM roles r
+      WHERE r.key = ${key} AND ${orgScope('r', scope)}
     `);
     return rows[0] ?? null;
   }

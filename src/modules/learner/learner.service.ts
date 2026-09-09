@@ -11,6 +11,9 @@ import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
 import type { OrgScope } from '@/database/org-scope';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
+// The points model itself, not the ranking: the card promises what the board
+// pays, so both read one file (see `courseReward`).
+import { courseReward, type CourseReward } from '@/modules/leaderboard/points';
 import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
 // A pure derivation, not a service: "in progress" has to mean the same thing on
 // the course card as it does in the calendar, so both read the one function.
@@ -36,6 +39,7 @@ import {
   round1,
   skillTags,
   thisMonth as currentMonthKey,
+  today,
   weeks as monthWeeks,
 } from './learner.constants';
 import { LearnerRepository } from './learner.repository';
@@ -52,6 +56,41 @@ const BADGE_DEFS = [
   { id: 'high_flyer', tier: 'SILVER', title: 'High Flyer', desc: 'Earned 500 or more points', icon: 'rocket' },
   { id: 'learning_champion', tier: 'GOLD', title: 'Learning Champion', desc: 'Earned 1000 or more points', icon: 'crown' },
 ] as const;
+
+/**
+ * The badges reached purely by finishing courses, keyed by the completed-course
+ * count that earns them. The card nudge ("finishing this earns Committed
+ * Learner") is derived from this, so it stays in step with `hasBadge` below —
+ * a threshold changed there and not here would advertise a badge that is not
+ * awarded. Point-total badges (high_flyer, learning_champion) are deliberately
+ * absent: they need the learner's org-wide points, which the courses page does
+ * not fetch, and the achievements page already tracks them.
+ */
+const COURSE_COUNT_BADGES: Record<number, string> = {
+  1: 'first_steps',
+  3: 'committed_learner',
+  5: 'scholar',
+};
+
+const BADGE_BY_ID = new Map<string, (typeof BADGE_DEFS)[number]>(
+  BADGE_DEFS.map((b) => [b.id as string, b]),
+);
+
+/** The advertised reward on a course card: points, plus what they unlock. */
+interface CourseRewardView extends CourseReward {
+  /**
+   * The next course-count badge still unearned, with how many completions are
+   * left. `coursesToGo === 1` means finishing THIS course earns it.
+   */
+  unlocksBadge: {
+    id: string;
+    title: string;
+    tier: string | null;
+    coursesToGo: number;
+  } | null;
+  /** Quick Learner, when it is still available AND still reachable in time. */
+  onTimeBadge: { id: string; title: string; by: string } | null;
+}
 
 interface BadgeStats {
   points: number;
@@ -75,6 +114,88 @@ export class LearnerService {
      Shared: points + hours for every learner
   ───────────────────────────────────────────── */
 
+  /**
+   * The reward a learner is shown BEFORE they finish — "earn 120 points",
+   * "finishing this earns Committed Learner".
+   *
+   * Returns a mapper rather than a per-row function because two of the three
+   * answers depend on the learner's OTHER courses: which course-count badge is
+   * next, and whether Quick Learner is already banked. Computing those once
+   * over the rows already in hand is what keeps this free of a second query
+   * (§7.1) — the alternative was asking the badge logic per card.
+   *
+   * Every threshold here is read from the same place the award is decided
+   * (`COURSE_COUNT_BADGES` / `hasBadge`, `courseReward`), because a card that
+   * over-promises is worse than a card that says nothing.
+   */
+  private rewardMapper(
+    rows: Awaited<ReturnType<LearnerRepository['assignedCourses']>>,
+  ): (row: (typeof rows)[number]) => CourseRewardView {
+    const isComplete = (row: (typeof rows)[number]) =>
+      Number(row.total_lessons) > 0 &&
+      Number(row.completed_lessons) >= Number(row.total_lessons);
+
+    const completedCourses = rows.filter(isComplete).length;
+
+    // Exactly the test `achievements()` applies for `completedBeforeDue`, so
+    // the card never offers a badge the achievements page already granted.
+    const quickLearnerEarned = rows.some(
+      (row) =>
+        isComplete(row) &&
+        row.last_activity !== null &&
+        row.last_activity.slice(0, 10) <= addDays(row.assigned_at, DUE_DAYS),
+    );
+
+    // The next course-count threshold still ahead. Any unfinished course is a
+    // candidate for being the next one completed, so they all advertise the
+    // same badge and the same distance to it — the nearest threshold ABOVE the
+    // current count, not only an exact next-course hit, or a learner sitting on
+    // one completed course would be told nothing until they reached two.
+    const nextThreshold = Object.keys(COURSE_COUNT_BADGES)
+      .map(Number)
+      .sort((a, b) => a - b)
+      .find((n) => n > completedCourses);
+    const nextBadge =
+      nextThreshold === undefined
+        ? undefined
+        : BADGE_BY_ID.get(COURSE_COUNT_BADGES[nextThreshold]);
+    const now = today();
+
+    return (row) => {
+      const reward = courseReward({
+        totalLessons: Number(row.total_lessons),
+        completedLessons: Number(row.completed_lessons),
+        assessmentCount: Number(row.assessment_count),
+        passedAssessments: Number(row.passed_assessments),
+      });
+
+      const complete = isComplete(row);
+      const due = addDays(row.assigned_at, DUE_DAYS);
+
+      return {
+        ...reward,
+        unlocksBadge:
+          complete || !nextBadge || nextThreshold === undefined
+            ? null
+            : {
+                id: nextBadge.id,
+                title: nextBadge.title,
+                tier: nextBadge.tier,
+                coursesToGo: nextThreshold - completedCourses,
+              },
+        // Suppressed for a session training: the learner cannot finish one
+        // themselves (§10.7), so dangling a deadline badge in front of them
+        // would be asking for something they have no control over. Suppressed
+        // once the due date has passed for the same reason — the offer has to
+        // still be winnable.
+        onTimeBadge:
+          complete || quickLearnerEarned || row.session_id !== null || due < now
+            ? null
+            : { id: 'quick_learner', title: 'Quick Learner', by: formatDate(due) },
+      };
+    };
+  }
+
   /* ─────────────────────────────────────────────
      GET /learner/courses
   ───────────────────────────────────────────── */
@@ -92,6 +213,8 @@ export class LearnerService {
         (r.content_types || '').split(',').filter(Boolean),
       ]),
     );
+
+    const rewardOf = this.rewardMapper(rows);
 
     const courses = rows.map((row) => {
       const total = Number(row.total_lessons);
@@ -133,6 +256,9 @@ export class LearnerService {
         category: meta.category,
         isMandatory: meta.isMandatory,
         totalMinutes: Number(row.total_minutes),
+        // What finishing this course is worth, so the card can say so before
+        // the learner starts rather than only crediting them afterwards.
+        reward: rewardOf(row),
         bestScore,
         passingScore:
           row.passing_score !== null ? Number(row.passing_score) : 60,
@@ -200,6 +326,8 @@ export class LearnerService {
         this.repository.recentAttempts(scope, userId, 5),
       ]);
 
+    const rewardOf = this.rewardMapper(rows);
+
     const enrolled = rows.map((row) => {
       const total = Number(row.total_lessons);
       const done = Number(row.completed_lessons);
@@ -214,6 +342,7 @@ export class LearnerService {
         progress_percentage: pct,
         due_date: this.dueDateFor(row),
         session: this.sessionOf(row),
+        reward: rewardOf(row),
         course: {
           id: row.course_id,
           name: row.name,
@@ -338,12 +467,19 @@ export class LearnerService {
     const course = await this.repository.findActiveCourse(courseId);
     if (!course) throw new NotFoundException('Course not found');
 
-    const [modules, lessons, assessments, latestAttempts] = await Promise.all([
-      this.repository.activeModules(courseId),
-      this.repository.lessonsWithStatus(courseId, userId),
-      this.repository.courseAssessments(courseId, userId),
-      this.repository.latestAttemptsForCourse(courseId, userId),
-    ]);
+    const [modules, lessons, assessments, latestAttempts, assignedRows] =
+      await Promise.all([
+        this.repository.activeModules(courseId),
+        this.repository.lessonsWithStatus(courseId, userId),
+        this.repository.courseAssessments(courseId, userId),
+        this.repository.latestAttemptsForCourse(courseId, userId),
+        // Every assignment, not just this one: the badge nudge depends on how
+        // many courses the learner has already finished, and the card on My
+        // Courses is built from these same rows — reading them here is what
+        // stops the two pages quoting different rewards for one course. It
+        // runs alongside the others, so it costs no extra wait (§7.5).
+        this.repository.assignedCourses(scope, userId),
+      ]);
 
     const byModule = new Map<number, typeof lessons>();
     for (const lesson of lessons) {
@@ -404,6 +540,9 @@ export class LearnerService {
         ? Math.round((completedLessons / totalLessons) * 100)
         : 0;
 
+    const thisRow =
+      assignedRows.find((r) => Number(r.course_id) === courseId) ?? null;
+
     return {
       course: {
         ...(course as Record<string, unknown>),
@@ -421,6 +560,9 @@ export class LearnerService {
         last_attempt: latestByAssessment.get(Number(a.id)) ?? null,
       })),
       assessmentsUnlocked: totalLessons > 0 && completedLessons === totalLessons,
+      // Null only if the assignment vanished between the two reads, which the
+      // 404 above has already ruled out for any realistic request.
+      reward: thisRow ? this.rewardMapper(assignedRows)(thisRow) : null,
     };
   }
 

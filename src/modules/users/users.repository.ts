@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 
+import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
 import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import { users } from '@/database/schema';
@@ -142,6 +143,17 @@ export class UsersRepository {
     return rows.length > 0;
   }
 
+  /**
+   * `roleId` is REQUIRED and is the organization's `learner` role, resolved by
+   * the service before this is called.
+   *
+   * It used to be absent, and `users.role_id` is NOT NULL since
+   * `migrate-rbac.mjs` ran — so every call returned a not-null violation as a
+   * 500 and an admin could not add an employee at all (`specs/rbac.md` §3.4).
+   * `role` and `role_id` are now written together from one resolved role row,
+   * which is the only way an INSERT can satisfy both the constraint and the
+   * denormalisation rule in §8.3.
+   */
   async createLearner(
     scope: OrgScope,
     input: {
@@ -153,6 +165,8 @@ export class UsersRepository {
       department: string | null;
       location: string | null;
       jobRole: string | null;
+      roleId: number;
+      role: RolePortal;
     },
   ) {
     const [created] = await this.db
@@ -167,7 +181,8 @@ export class UsersRepository {
         lastName: input.lastName,
         email: input.email,
         password: input.passwordHash,
-        role: 'learner',
+        role: input.role,
+        roleId: input.roleId,
         department: input.department,
         location: input.location,
         jobRole: input.jobRole,

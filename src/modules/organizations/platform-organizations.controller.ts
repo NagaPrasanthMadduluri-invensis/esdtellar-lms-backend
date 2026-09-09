@@ -11,7 +11,6 @@ import {
 import { PlatformAdmin } from '@/common/decorators';
 
 import {
-  CreateOrganizationAdminDto,
   CreateOrganizationDto,
   UpdateOrganizationDto,
 } from './dto/organization.dto';
@@ -51,12 +50,14 @@ export class PlatformOrganizationsController {
     return this.organizations.updateOrganization(id, dto);
   }
 
-  /** Seeds the organization's first admin — see `OrganizationsService` for why. */
-  @Post(':id/admins')
-  async createAdmin(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: CreateOrganizationAdminDto,
-  ) {
-    return this.organizations.createOrganizationAdmin(id, dto);
-  }
+  /**
+   * Creating a user in this organization lives in
+   * `PlatformRolesController` — `POST /platform/organizations/:id/users`.
+   *
+   * `POST :id/admins` used to be here. It could only ever mint an admin, and
+   * once `users.role_id` became NOT NULL it could not mint even that
+   * (`specs/rbac.md` §3.4). Its replacement takes the role as a parameter, so
+   * it needs to resolve a role inside the target organization — which is the
+   * roles module's job, not this one's.
+   */
 }

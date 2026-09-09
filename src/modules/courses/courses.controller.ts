@@ -13,7 +13,12 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import {
+  CurrentScope,
+  CurrentUser,
+  Permissions,
+  Roles,
+} from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -40,6 +45,7 @@ export class CoursesController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_courses')
   async create(@Body() dto: CourseDto, @CurrentScope() scope: OrgScope) {
     return this.courses.create(scope, dto);
   }
@@ -53,6 +59,7 @@ export class CoursesController {
   }
 
   @Put(':courseId')
+  @Permissions('manage_courses')
   async update(
     @Param('courseId', ParseIntPipe) courseId: number,
     @Body() dto: CourseDto,
@@ -62,6 +69,7 @@ export class CoursesController {
   }
 
   @Delete(':courseId')
+  @Permissions('manage_courses')
   async remove(
     @Param('courseId', ParseIntPipe) courseId: number,
     @CurrentScope() scope: OrgScope,
@@ -79,6 +87,7 @@ export class CoursesController {
 
   @Post(':courseId/modules')
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_courses')
   async createModule(
     @Param('courseId', ParseIntPipe) courseId: number,
     @Body() dto: ModuleDto,
@@ -98,6 +107,7 @@ export class CoursesController {
   /** Bulk assign — one statement, so a department cannot end up half-enrolled. */
   @Post(':courseId/assignments/bulk')
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('assign_learning')
   async createAssignments(
     @Param('courseId', ParseIntPipe) courseId: number,
     @Body() dto: BulkAssignmentDto,
@@ -108,6 +118,7 @@ export class CoursesController {
   }
 
   @Post(':courseId/assignments')
+  @Permissions('assign_learning')
   async assign(
     @Param('courseId', ParseIntPipe) courseId: number,
     @Body() dto: CreateAssignmentDto,
@@ -129,6 +140,7 @@ export class ModulesController {
   constructor(private readonly courses: CoursesService) {}
 
   @Put(':moduleId')
+  @Permissions('manage_courses')
   async update(
     @Param('moduleId', ParseIntPipe) moduleId: number,
     @Body() dto: ModuleDto,
@@ -138,6 +150,7 @@ export class ModulesController {
   }
 
   @Delete(':moduleId')
+  @Permissions('manage_courses')
   async remove(
     @Param('moduleId', ParseIntPipe) moduleId: number,
     @CurrentScope() scope: OrgScope,
@@ -155,6 +168,7 @@ export class ModulesController {
 
   @Post(':moduleId/lessons')
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_courses')
   async createLesson(
     @Param('moduleId', ParseIntPipe) moduleId: number,
     @Body() dto: CreateLessonDto,
@@ -170,6 +184,7 @@ export class LessonsController {
   constructor(private readonly courses: CoursesService) {}
 
   @Put(':lessonId')
+  @Permissions('manage_courses')
   async update(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @Body() dto: UpdateLessonDto,
@@ -192,6 +207,7 @@ export class LessonsController {
 
   @Post(':lessonId/resources')
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_courses')
   async createResource(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @Body() dto: CreateResourceDto,
@@ -201,6 +217,7 @@ export class LessonsController {
   }
 
   @Delete(':lessonId')
+  @Permissions('manage_courses')
   async remove(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentScope() scope: OrgScope,
@@ -216,6 +233,7 @@ export class ResourcesController {
   constructor(private readonly courses: CoursesService) {}
 
   @Delete(':resourceId')
+  @Permissions('manage_courses')
   async remove(
     @Param('resourceId', ParseIntPipe) resourceId: number,
     @CurrentScope() scope: OrgScope,
@@ -230,6 +248,7 @@ export class AssignmentsController {
   constructor(private readonly courses: CoursesService) {}
 
   @Delete(':assignmentId')
+  @Permissions('assign_learning')
   async remove(
     @Param('assignmentId', ParseIntPipe) assignmentId: number,
     @CurrentScope() scope: OrgScope,

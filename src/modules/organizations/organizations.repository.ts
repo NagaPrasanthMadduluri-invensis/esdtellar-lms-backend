@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
+import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
-import { organizations, roles, users } from '@/database/schema';
+import { organizations, users } from '@/database/schema';
 
 export interface OrganizationRow {
   id: number;
@@ -28,10 +29,16 @@ const ORGANIZATION_COLUMNS = {
  * Deliberately NOT org-scoped, like `auth.repository.ts`: resolving the
  * platform organization's id is what makes `OrgScope` possible in the first
  * place, so it cannot depend on one. The rest of this file's methods are
- * platform-only CRUD over the `organizations` table itself and the seeding of
- * an organization's first admin — both inherently precede or sit outside any
- * single org's scope, so the same absence of `OrgScope` is correct here too,
- * not a second exception.
+ * platform-only CRUD over the `organizations` table itself and the creation of
+ * a user during organization onboarding — both inherently precede or sit
+ * outside any single org's scope, so the same absence of `OrgScope` is correct
+ * here too, not a second exception.
+ *
+ * Listing an organization's roles used to live here as well. It was removed
+ * rather than kept alongside `RolesRepository.list`: that method already
+ * returns the same rows WITH each role's permissions, and two queries
+ * answering "what roles does this org have" is how the platform page and the
+ * admin page come to disagree about it.
  */
 @Injectable()
 export class OrganizationsRepository {
@@ -59,45 +66,6 @@ export class OrganizationsRepository {
       .limit(1);
 
     return rows[0] ?? null;
-  }
-
-  /**
-   * An organization's roles, for the platform admin's org detail page
-   * (`specs/rbac.md` §3.3). Deliberately unscoped by org in the usual sense —
-   * this repository is one of the three legitimately unscoped ones
-   * (multi-tenancy.md), and the id is supplied by a `@PlatformAdmin()` route.
-   *
-   * Holder and permission counts come back as grouped aggregates in the one
-   * query rather than a count per role (§7.1).
-   */
-  async listRoles(organizationId: number) {
-    return this.db
-      .select({
-        id: roles.id,
-        key: roles.key,
-        label: roles.label,
-        portal: roles.portal,
-        scope: roles.scope,
-        is_system: roles.isSystem,
-        // Grouped aggregate and one correlated subquery — not a count per role
-        // (BACKEND_STRUCTURE.md §7.1).
-        users: sql<number>`count(${users.id})`,
-        permissions: sql<number>`(
-          SELECT count(*) FROM role_permissions rp WHERE rp.role_id = ${roles.id}
-        )`,
-      })
-      .from(roles)
-      .leftJoin(users, and(eq(users.roleId, roles.id), eq(users.isActive, 1)))
-      .where(eq(roles.organizationId, organizationId))
-      .groupBy(
-        roles.id,
-        roles.key,
-        roles.label,
-        roles.portal,
-        roles.scope,
-        roles.isSystem,
-      )
-      .orderBy(desc(roles.isSystem), roles.key);
   }
 
   async slugExists(slug: string): Promise<boolean> {
@@ -156,26 +124,44 @@ export class OrganizationsRepository {
   }
 
   /**
-   * Seeds an organization's FIRST admin.
+   * Creates a user inside an organization, on a role that has already been
+   * resolved — `specs/rbac.md` §3.9.
+   *
+   * This was `createAdmin`, hard-coding `role: 'admin'` and writing no
+   * `role_id`. Once `migrate-rbac.mjs` set `users.role_id NOT NULL`, that
+   * became a not-null violation surfacing as a 500, so organization
+   * onboarding was broken from the moment RBAC landed (§3.4). Two things
+   * changed: `roleId` is now required, and `role` is passed in as the
+   * resolved role's `portal` rather than assumed — which is what lets a
+   * super-admin create a trainer or a learner here and not only an admin.
+   *
+   * `role` and `role_id` are written together from ONE role row, so the
+   * denormalisation cannot desync. `RolesService.assign` remains the only
+   * method that MOVES a user between roles (§8.3); this one only ever creates.
    *
    * Writes directly into `users` rather than delegating to `UsersModule`:
-   * `UsersRepository.createLearner` hard-codes `role: 'learner'` for the
-   * org-scoped self-service flow (`POST /api/admin/users`) and takes an
-   * `OrgScope` that this call has no business minting — onboarding an
-   * organization is a platform-only concern, prior to and outside that org's
-   * own scope, exactly like every other method in this file.
+   * `UsersRepository.createLearner` serves the org-scoped self-service flow
+   * and takes an `OrgScope` shaped by the caller's own token, whereas
+   * onboarding an organization is a platform concern that precedes it —
+   * exactly like every other method in this file.
    *
-   * `organizationId` is a plain parameter, never a caller-suppliable one: the
-   * controller reads it from the route param, so this can never be used to
-   * plant a platform admin — see `OrganizationsService.createOrganizationAdmin`.
+   * `organizationId` is a plain parameter, never caller-suppliable: the
+   * controller reads it from the route param, and the composite FK
+   * `users_role_same_org` rejects a `roleId` from any other organization, so
+   * this cannot plant a user in a tenant using another tenant's role.
    */
-  async createAdmin(
+  async createUser(
     organizationId: number,
     input: {
       firstName: string;
       lastName: string;
       email: string;
       passwordHash: string;
+      roleId: number;
+      /** The role's `portal` — `users.role` stays the portal selector (§3.4). */
+      role: RolePortal;
+      department: string | null;
+      jobRole: string | null;
     },
   ) {
     const [created] = await this.db
@@ -186,7 +172,10 @@ export class OrganizationsRepository {
         lastName: input.lastName,
         email: input.email,
         password: input.passwordHash,
-        role: 'admin',
+        role: input.role,
+        roleId: input.roleId,
+        department: input.department,
+        jobRole: input.jobRole,
       })
       .returning({
         id: users.id,
@@ -194,6 +183,7 @@ export class OrganizationsRepository {
         lastName: users.lastName,
         email: users.email,
         role: users.role,
+        roleId: users.roleId,
         organizationId: users.organizationId,
         isActive: users.isActive,
         createdAt: users.createdAt,

@@ -184,6 +184,33 @@ export async function assertSeedingIntended(db, orgId, { confirmed = false } = {
   }
 }
 
+/**
+ * The organization's role id for a key. `users.role_id` is NOT NULL once
+ * `migrate-rbac.mjs` has run (`specs/rbac.md` §3.4), so every INSERT into
+ * `users` in this file has to name one — three of them did not, and every
+ * `db:seed` against an RBAC-migrated database failed on a not-null violation.
+ *
+ * Resolved by key against THAT organization, which is what the composite FK
+ * `users_role_same_org` requires: a role id belonging to another tenant is a
+ * database error rather than a seeded row.
+ *
+ * Returns null when the `roles` table does not exist yet, or the org has no
+ * such role. On a database seeded BEFORE the RBAC migration, `role_id` is
+ * still nullable and null is the correct value — which is what keeps this
+ * script working on both, instead of only on whichever was last set up.
+ */
+async function roleIdFor(db, organizationId, key) {
+  try {
+    const r = await db.execute({
+      sql: "SELECT id FROM roles WHERE organization_id = $1 AND key = $2",
+      args: [organizationId, key],
+    });
+    return r.rows[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function seedIfEmpty(db, orgId) {
   // Content — courses, modules, lessons, assessments, questions, options —
   // is owned by this org (spec §3.3 CONTENT: "the owner"). Named separately
@@ -199,10 +226,12 @@ export async function seedIfEmpty(db, orgId) {
   ).rows[0];
   if (count.c > 0) return;
 
+  const adminRoleId = await roleIdFor(db, orgId, "admin");
+
   // ── Users ──
   const adminResult = await db.execute({
-    sql: `INSERT INTO users (first_name, last_name, email, password, role, department, organization_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    args: ["Admin", "User", "admin@edstellar.com", hashPassword("Admin@123"), "admin", null, orgId],
+    sql: `INSERT INTO users (first_name, last_name, email, password, role, department, organization_id, role_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    args: ["Admin", "User", "admin@edstellar.com", hashPassword("Admin@123"), "admin", null, orgId, adminRoleId],
   });
   const adminId = adminResult.rows[0].id;
 
@@ -719,14 +748,17 @@ export async function seedLearners(db, orgId) {
   ];
 
   const total = allLessons.length;
+  // Once, outside the loop — a query per learner would be an N+1 in a script
+  // that already inserts row by row.
+  const learnerRoleId = await roleIdFor(db, orgId, "learner");
 
   for (let li = 0; li < LEARNERS.length; li++) {
     const l = LEARNERS[li];
 
     // Insert user
     const uRes = await db.execute({
-      sql: "INSERT INTO users (first_name, last_name, email, password, role, department, location, job_role, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (email) DO NOTHING RETURNING id",
-      args: [l.first, l.last, l.email, hashPassword("Learner@123"), "learner", l.dept, l.location, l.job_role, orgId],
+      sql: "INSERT INTO users (first_name, last_name, email, password, role, department, location, job_role, organization_id, role_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (email) DO NOTHING RETURNING id",
+      args: [l.first, l.last, l.email, hashPassword("Learner@123"), "learner", l.dept, l.location, l.job_role, orgId, learnerRoleId],
     });
     const userId = uRes.rows[0]?.id;
     if (!userId) continue; // already exists (IGNORE)
@@ -800,8 +832,8 @@ export async function seedDemoLearner(db, orgId) {
 
   if (!demoUser) {
     const res = await db.execute({
-      sql: "INSERT INTO users (first_name, last_name, email, password, role, department, location, job_role, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id",
-      args: ["Priya", "Sharma", "demolearner@gmail.com", hashPassword("Demo@123"), "learner", "Sales", "Mumbai", "Senior Sales Executive", orgId],
+      sql: "INSERT INTO users (first_name, last_name, email, password, role, department, location, job_role, organization_id, role_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+      args: ["Priya", "Sharma", "demolearner@gmail.com", hashPassword("Demo@123"), "learner", "Sales", "Mumbai", "Senior Sales Executive", orgId, await roleIdFor(db, orgId, "learner")],
     });
     demoUser = { id: res.rows[0].id };
   }

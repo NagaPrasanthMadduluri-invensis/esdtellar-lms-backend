@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-import { CurrentScope, Roles } from '@/common/decorators';
+import { CurrentScope, Permissions, Roles } from '@/common/decorators';
 import { SpreadsheetService } from '@/modules/reports/spreadsheet.service';
 
 import {
@@ -36,12 +36,14 @@ export class UsersController {
   ) {}
 
   @Get()
+  @Permissions('view_employees')
   async list(@CurrentScope() scope: OrgScope) {
     return this.users.listLearners(scope);
   }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_users')
   async create(@CurrentScope() scope: OrgScope, @Body() dto: CreateUserDto) {
     return this.users.create(scope, dto);
   }
@@ -52,12 +54,14 @@ export class UsersController {
    * (`:userId` would capture "template").
    */
   @Get('template')
+  @Permissions('view_employees')
   template(@Res() response: Response): void {
     const buffer = this.spreadsheets.buildLearnerUploadTemplate();
     this.spreadsheets.send(response, buffer, 'Learner_Upload_Template.xlsx');
   }
 
   @Post('bulk')
+  @Permissions('manage_users')
   async bulk(
     @CurrentScope() scope: OrgScope,
     @Body() dto: BulkCreateUsersDto,
@@ -72,6 +76,7 @@ export class UsersController {
   }
 
   @Get(':userId')
+  @Permissions('view_employees')
   async detail(
     @CurrentScope() scope: OrgScope,
     @Param('userId', ParseIntPipe) userId: number,
@@ -80,6 +85,7 @@ export class UsersController {
   }
 
   @Put(':userId')
+  @Permissions('edit_employees')
   async update(
     @CurrentScope() scope: OrgScope,
     @Param('userId', ParseIntPipe) userId: number,
@@ -89,6 +95,7 @@ export class UsersController {
   }
 
   @Patch(':userId')
+  @Permissions('edit_employees')
   async toggle(
     @CurrentScope() scope: OrgScope,
     @Param('userId', ParseIntPipe) userId: number,
@@ -98,6 +105,7 @@ export class UsersController {
   }
 
   @Delete(':userId')
+  @Permissions('manage_users')
   async remove(
     @CurrentScope() scope: OrgScope,
     @Param('userId', ParseIntPipe) userId: number,
@@ -113,6 +121,7 @@ export class EmployeesController {
   constructor(private readonly users: UsersService) {}
 
   @Get()
+  @Permissions('view_employees')
   async list(@CurrentScope() scope: OrgScope) {
     return this.users.listEmployees(scope);
   }

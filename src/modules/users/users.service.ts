@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
+import { RolesService } from '@/modules/roles/roles.service';
 
 import type {
   BulkCreateUsersDto,
@@ -21,7 +22,16 @@ const DEFAULT_BULK_PASSWORD = 'Edstellar@123';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly repository: UsersRepository) {}
+  constructor(
+    private readonly repository: UsersRepository,
+    /**
+     * Injected for one reason: `users.role_id` is NOT NULL, so creating a
+     * learner has to resolve this organization's `learner` role first
+     * (`specs/rbac.md` §3.4). The SERVICE is injected, never
+     * `RolesRepository` — `BACKEND_STRUCTURE.md` §3.2.
+     */
+    private readonly roles: RolesService,
+  ) {}
 
   async listLearners(scope: OrgScope) {
     return { users: await this.repository.listLearners(scope) };
@@ -64,10 +74,27 @@ export class UsersService {
     };
   }
 
+  /**
+   * Adds an employee to the admin's own organization, on that organization's
+   * `learner` role.
+   *
+   * The role is resolved BEFORE the insert because `users.role_id` is NOT NULL
+   * (`specs/rbac.md` §3.4) — without it this endpoint returned a 500 from a
+   * not-null violation, which is what "Add User" did from the moment RBAC
+   * landed until this was fixed.
+   *
+   * A learner is the only thing this creates. Putting the new user on a
+   * different role is a second, explicit step — `PATCH /admin/users/:id/role`,
+   * which the Add User dialog calls straight afterwards — so that
+   * `RolesService.assign` stays the one method that MOVES a user between
+   * roles (§8.3) and the one that decides which portal they land in.
+   */
   async create(scope: OrgScope, dto: CreateUserDto) {
     if (await this.repository.emailExists(dto.email)) {
       throw new ConflictException('Email already in use');
     }
+
+    const learnerRole = await this.roles.roleByKey(scope, 'learner');
 
     const user = await this.repository.createLearner(scope, {
       firstName: dto.first_name,
@@ -77,6 +104,11 @@ export class UsersService {
       department: dto.department ?? null,
       location: dto.location ?? null,
       jobRole: dto.job_role ?? null,
+      roleId: learnerRole.id,
+      // Derived from the role, never assumed to be the string 'learner' — if
+      // an organization ever points its `learner` key at another portal, the
+      // portal selector follows the role rather than contradicting it.
+      role: learnerRole.portal,
     });
 
     return { user };
@@ -277,6 +309,13 @@ export class UsersService {
     let created = 0;
     const failed: { row: number; email: string; reason: string }[] = [];
 
+    // Resolved ONCE, outside the loop: a query per row would be an N+1 on the
+    // one endpoint that is deliberately row-at-a-time (§7.1). If the
+    // organization has no learner role this throws before any row is
+    // attempted, which is right — every row would otherwise land in `failed`
+    // with a generic reason and the real cause never shown.
+    const learnerRole = await this.roles.roleByKey(scope, 'learner');
+
     for (const [index, row] of dto.users.entries()) {
       const rowNum = index + 1;
       const email = row.email ?? '';
@@ -313,6 +352,8 @@ export class UsersService {
           department: row.department ?? null,
           location: row.location ?? null,
           jobRole: row.job_role ?? null,
+          roleId: learnerRole.id,
+          role: learnerRole.portal,
         });
         created++;
       } catch {

@@ -1,7 +1,7 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import type { Response } from 'express';
 
-import { CurrentScope, Roles } from '@/common/decorators';
+import { CurrentScope, Permissions, Roles } from '@/common/decorators';
 import type { OrgScope } from '@/database/org-scope';
 
 import { AnalyticsService } from './analytics.service';
@@ -20,31 +20,37 @@ export class ReportsController {
   ) {}
 
   @Get('dashboard')
+  @Permissions('view_dashboard')
   async dashboard(@CurrentScope() scope: OrgScope) {
     return this.analytics.dashboard(scope);
   }
 
   @Get('reports')
+  @Permissions('view_reports')
   async reports(@CurrentScope() scope: OrgScope) {
     return this.analytics.reports(scope);
   }
 
   @Get('departments')
+  @Permissions('view_reports')
   async departments(@CurrentScope() scope: OrgScope) {
     return this.analytics.departments(scope);
   }
 
   @Get('leaderboard')
+  @Permissions('view_reports')
   async leaderboard(@CurrentScope() scope: OrgScope) {
     return this.analytics.leaderboard(scope);
   }
 
   @Get('learning-hours')
+  @Permissions('view_reports')
   async learningHours(@CurrentScope() scope: OrgScope) {
     return this.analytics.learningHours(scope);
   }
 
   @Get('export')
+  @Permissions('view_reports')
   async export(
     @CurrentScope() scope: OrgScope,
     @Res() response: Response,

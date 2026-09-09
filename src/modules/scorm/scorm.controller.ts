@@ -14,7 +14,12 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import {
+  CurrentScope,
+  CurrentUser,
+  Permissions,
+  Roles,
+} from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import {
@@ -46,6 +51,7 @@ export class AdminScormController {
   @Post('upload')
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('scorm_package'))
+  @Permissions('upload_content')
   async upload(
     @CurrentScope() scope: OrgScope,
     @UploadedFile() file: Express.Multer.File,
@@ -91,6 +97,7 @@ export class AdminScormController {
   }
 
   @Delete(':packageId')
+  @Permissions('upload_content')
   async remove(
     @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
@@ -100,6 +107,7 @@ export class AdminScormController {
 
   @Post(':packageId/assign')
   @HttpCode(HttpStatus.OK)
+  @Permissions('assign_learning')
   async assign(
     @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
@@ -110,6 +118,7 @@ export class AdminScormController {
   }
 
   @Delete(':packageId/assign')
+  @Permissions('assign_learning')
   async unassign(
     @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,

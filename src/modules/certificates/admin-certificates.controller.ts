@@ -12,7 +12,12 @@ import {
   Query,
 } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import {
+  CurrentScope,
+  CurrentUser,
+  Permissions,
+  Roles,
+} from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -26,6 +31,7 @@ export class AdminCertificatesController {
   constructor(private readonly certificates: CertificatesService) {}
 
   @Get()
+  @Permissions('view_certificates')
   async list(
     @Query() query: ListCertificatesQueryDto,
     @CurrentScope() scope: OrgScope,
@@ -44,6 +50,7 @@ export class AdminCertificatesController {
    */
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_certificates')
   async issue(
     @Body() dto: IssueCertificateDto,
     @CurrentUser() admin: AuthenticatedUser,
@@ -62,6 +69,7 @@ export class AdminCertificatesController {
 
   /** Soft revoke — sets is_revoked/revoked_at/revoked_by. Never deletes a row. */
   @Delete(':id')
+  @Permissions('manage_certificates')
   async revoke(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() admin: AuthenticatedUser,
@@ -73,6 +81,7 @@ export class AdminCertificatesController {
 
   /** Reinstate a revoked certificate. 409 when it is not currently revoked. */
   @Patch(':id')
+  @Permissions('manage_certificates')
   async reinstate(
     @Param('id', ParseIntPipe) id: number,
     @CurrentScope() scope: OrgScope,
