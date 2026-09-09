@@ -16,6 +16,7 @@ import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import { AuthService, type PublicUser } from './auth.service';
 import { authCookieOptions, clearCookieOptions } from './cookie.util';
+import { ChangePasswordDto } from '@/modules/learner/dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { TokenService } from './token.service';
@@ -93,6 +94,27 @@ export class AuthController {
       }),
     );
     return { ok: true };
+  }
+
+  /**
+   * Change your own password. Authenticated, any role — no `@Roles()`.
+   *
+   * Previously `POST /api/learner/change-password` on a `@Roles('learner')`
+   * controller, which meant a trainer got 403 from the only screen the product
+   * has for this. Identity comes from the token, so there is nothing here that
+   * lets one user change another's.
+   */
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  async changePassword(
+    @Body() dto: ChangePasswordDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.authService.changePassword(
+      user.userId,
+      user.organizationId,
+      dto,
+    );
   }
 
   private setAuthCookie(response: Response, token: string): void {

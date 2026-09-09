@@ -4,6 +4,7 @@ import { APP_GUARD } from '@nestjs/core';
 
 import { AuthGuard } from './common/guards/auth.guard';
 import { PlatformAdminGuard } from './common/guards/platform-admin.guard';
+import { PermissionsGuard } from './common/guards/permissions.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { TenantContextGuard } from './common/guards/tenant-context.guard';
 import configuration from './config/configuration';
@@ -19,12 +20,14 @@ import { LearningHoursModule } from './modules/learning-hours/learning-hours.mod
 import { MediaModule } from './modules/media/media.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { RolesModule } from './modules/roles/roles.module';
 import { ScormModule } from './modules/scorm/scorm.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
   imports: [
+    RolesModule,
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
@@ -58,6 +61,9 @@ import { UsersModule } from './modules/users/users.module';
     //      once every authorization decision above it has already passed.
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    //   3b. PermissionsGuard checks @Permissions() from the token's claim,
+    //       after the role gate and before anything reads the database.
+    { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_GUARD, useClass: PlatformAdminGuard },
     { provide: APP_GUARD, useClass: TenantContextGuard },
   ],

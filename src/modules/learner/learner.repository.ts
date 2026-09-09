@@ -45,6 +45,77 @@ export class LearnerRepository {
     return this.database.db;
   }
 
+  /**
+   * The actor's team: active learners in the SAME department, in the same
+   * organization, with their learning figures — `specs/rbac.md` §3.5.
+   *
+   * The department is passed in from `ActorScope`, resolved server-side from
+   * the caller's own row. It is never a request parameter: a scope a client can
+   * name is a scope a client can widen.
+   *
+   * One query. The three figures are correlated aggregates rather than a
+   * per-member round trip (§7.1), and the minutes expression is the same
+   * "declared duration, credited on completion" rule as
+   * `learning-hours` — writing a second definition here is exactly how the two
+   * would come to disagree (§10.4).
+   */
+  async teamForDepartment(
+    organizationId: number,
+    department: string,
+    excludeUserId: number,
+  ) {
+    return this.db.all<{
+      id: number;
+      first_name: string;
+      last_name: string;
+      department: string | null;
+      job_role: string | null;
+      assigned: number;
+      completed: number;
+      minutes: number;
+      last_active_at: string | null;
+    }>(sql`
+      SELECT u.id, u.first_name, u.last_name, u.department, u.job_role,
+             (SELECT COUNT(*) FROM user_course_assignments a
+               WHERE a.user_id = u.id) AS assigned,
+             -- A course is complete when every active lesson in it is. There is
+             -- no status column on the assignment: completion is DERIVED, the
+             -- same way assignedCourses derives it, so the team view and the
+             -- learner's own My Courses cannot disagree.
+             (SELECT COUNT(*) FROM user_course_assignments a
+               WHERE a.user_id = u.id
+                 AND (SELECT COUNT(*) FROM lessons l
+                        JOIN course_modules cm ON cm.id = l.module_id
+                       WHERE cm.course_id = a.course_id
+                         AND l.is_active = 1 AND cm.is_active = 1) > 0
+                 AND (SELECT COUNT(*) FROM lessons l
+                        JOIN course_modules cm ON cm.id = l.module_id
+                       WHERE cm.course_id = a.course_id
+                         AND l.is_active = 1 AND cm.is_active = 1)
+                     = (SELECT COUNT(*) FROM user_lesson_completions ulc
+                          JOIN lessons l ON l.id = ulc.lesson_id
+                          JOIN course_modules cm ON cm.id = l.module_id
+                         WHERE cm.course_id = a.course_id AND ulc.user_id = u.id
+                           AND l.is_active = 1 AND cm.is_active = 1)
+             ) AS completed,
+             COALESCE((
+               SELECT SUM(COALESCE(l.duration_minutes, 0))
+                 FROM user_lesson_completions c
+                 JOIN lessons l ON l.id = c.lesson_id
+                WHERE c.user_id = u.id
+             ), 0) AS minutes,
+             (SELECT MAX(c.completed_at) FROM user_lesson_completions c
+               WHERE c.user_id = u.id) AS last_active_at
+        FROM users u
+       WHERE u.organization_id = ${organizationId}
+         AND u.role = 'learner'
+         AND u.is_active = 1
+         AND u.department = ${department}
+         AND u.id <> ${excludeUserId}
+       ORDER BY u.first_name, u.last_name
+    `);
+  }
+
   /* ─────────────────────────────────────────────
      Shared aggregates — one query each, for ALL learners.
 

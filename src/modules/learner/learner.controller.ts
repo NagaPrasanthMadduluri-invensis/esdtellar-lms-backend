@@ -9,7 +9,7 @@ import {
   Post,
 } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -97,13 +97,30 @@ export class LearnerController {
     return this.learner.learningHours(scope, user.userId);
   }
 
-  @Post('change-password')
-  @HttpCode(HttpStatus.OK)
-  async changePassword(
-    @Body() dto: ChangePasswordDto,
+  /**
+   * The manager's Team Learning module (decision 2 — no separate portal, one
+   * extra module in the learner portal).
+   *
+   * `@Permissions('view_team_learning')` is the gate: a plain learner holds no
+   * permissions and gets 403, a manager holds this one and gets their
+   * department. The screen this replaces was a hardcoded array shown to
+   * everybody.
+   */
+  @Get('team')
+  @Permissions('view_team_learning')
+  async team(
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
-    return this.learner.changePassword(scope, user.userId, dto);
+    return this.learner.team(scope, user.userId);
   }
+
+  /*
+   * `change-password` moved to `POST /api/auth/change-password`.
+   *
+   * It sat here on a `@Roles('learner')` controller, so a trainer — who needs
+   * it just as much — got 403 from the only screen that offers it. Changing
+   * your own password is not learner work; it is auth work. One route now,
+   * reachable by every authenticated role (`specs/rbac.md` §8.3).
+   */
 }

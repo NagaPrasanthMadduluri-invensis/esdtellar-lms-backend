@@ -1158,40 +1158,77 @@ export class LearnerService {
      POST /learner/change-password
   ───────────────────────────────────────────── */
 
-  async changePassword(scope: OrgScope, userId: number, dto: ChangePasswordDto) {
-    const rules = {
-      minLength: dto.newPassword.length >= 8,
-      uppercase: /[A-Z]/.test(dto.newPassword),
-      number: /[0-9]/.test(dto.newPassword),
-      special: /[^A-Za-z0-9]/.test(dto.newPassword),
-    };
+  /*
+   * changePassword moved to AuthService — see auth.controller.ts. Removed
+   * rather than left unreachable: two copies of a password rule is exactly how
+   * they come to disagree, and this one could no longer be called.
+   */
 
-    if (!Object.values(rules).every(Boolean)) {
-      throw new UnprocessableEntityException({
-        message: 'New password does not meet strength requirements',
-        errors: {
-          minLength: rules.minLength ? null : 'Must be at least 8 characters',
-          uppercase: rules.uppercase ? null : 'Must contain at least one uppercase letter',
-          number: rules.number ? null : 'Must contain at least one number',
-          special: rules.special ? null : 'Must contain at least one special character',
+  /**
+   * `GET /api/learner/team` — the manager's extra module (decision 2).
+   *
+   * Scope comes from the caller's own row, not the request: a manager sees
+   * their own department and nothing else. A manager with no department set
+   * sees an EMPTY team rather than the whole organization — a visible bug
+   * report beats a silent leak (§3.5).
+   */
+  async team(scope: OrgScope, userId: number) {
+    const me = await this.repository.findUser(scope, userId);
+    const department = me?.department ?? null;
+
+    if (!department) {
+      return {
+        team: [],
+        summary: {
+          department: null,
+          size: 0,
+          coursesAssigned: 0,
+          coursesCompleted: 0,
+          completionPct: 0,
+          hours: 0,
+          note:
+            'Your department is not set, so there is no team to show. An admin ' +
+            'can set it on your profile.',
         },
-      });
+      };
     }
 
-    const user = await this.repository.findActiveWithPassword(scope, userId);
-    if (!user) throw new NotFoundException('User not found');
+    const rows = await this.repository.teamForDepartment(
+      scope.organizationId,
+      department,
+      userId,
+    );
 
-    if (!verifyPassword(dto.currentPassword, user.password)) {
-      throw new UnauthorizedException('Current password is incorrect');
-    }
-    if (dto.currentPassword === dto.newPassword) {
-      throw new UnprocessableEntityException(
-        'New password must be different from your current password',
-      );
-    }
+    const team = rows.map((r) => ({
+      id: Number(r.id),
+      name: `${r.first_name} ${r.last_name}`,
+      department: r.department,
+      jobRole: r.job_role,
+      coursesAssigned: Number(r.assigned ?? 0),
+      coursesCompleted: Number(r.completed ?? 0),
+      progressPct:
+        Number(r.assigned ?? 0) > 0
+          ? Math.round((Number(r.completed ?? 0) / Number(r.assigned)) * 100)
+          : 0,
+      hours: Math.round((Number(r.minutes ?? 0) / 60) * 10) / 10,
+      lastActiveAt: r.last_active_at ?? null,
+    }));
 
-    await this.repository.updatePassword(scope, userId, hashPassword(dto.newPassword));
-    return { message: 'Password updated successfully' };
+    const assigned = team.reduce((n, m) => n + m.coursesAssigned, 0);
+    const completed = team.reduce((n, m) => n + m.coursesCompleted, 0);
+
+    return {
+      team,
+      summary: {
+        department,
+        size: team.length,
+        coursesAssigned: assigned,
+        coursesCompleted: completed,
+        completionPct: assigned > 0 ? Math.round((completed / assigned) * 100) : 0,
+        hours: Math.round(team.reduce((n, m) => n + m.hours, 0) * 10) / 10,
+        note: null,
+      },
+    };
   }
 
   /* ── helpers ── */

@@ -43,6 +43,13 @@ export const users = pgTable(
      * `@Roles()` decorator and route-group layout working unchanged.
      */
     roleId: integer('role_id'),
+    /**
+     * This user's own token version (`specs/rbac.md` §3.6). Bumped when THEY
+     * are moved to another role, so only they are signed out — as opposed to
+     * `organizations.perm_version`, which is bumped when a role's permissions
+     * change and signs the whole organization out.
+     */
+    permVersion: integer('perm_version').notNull().default(1),
     isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()

@@ -6,6 +6,7 @@ import {
 
 import type { OrgScope } from '@/database/org-scope';
 
+import type { Permission } from '@/common/permissions';
 import type {
   AuthenticatedRequest,
   AuthenticatedUser,
@@ -15,6 +16,7 @@ import type {
 export const IS_PUBLIC_KEY = 'isPublic';
 export const ROLES_KEY = 'roles';
 export const PLATFORM_ADMIN_KEY = 'platformAdmin';
+export const PERMISSIONS_KEY = 'permissions';
 
 /**
  * Opts a route out of AuthGuard. Authentication is deny-by-default: AuthGuard is
@@ -26,6 +28,17 @@ export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
 
 /** Restricts a route to the given roles. Requires AuthGuard to have run. */
 export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
+
+/**
+ * Requires every listed permission (`specs/rbac.md` §4.1), enforced by
+ * `PermissionsGuard`. ANDs with `@Roles()` when both are present.
+ *
+ * Throws 403, not 404 — and that differs from the tenancy rule on purpose. A
+ * cross-tenant id must 404 because its existence is a secret; "you may not
+ * manage roles" leaks nothing, the button simply is not yours.
+ */
+export const Permissions = (...permissions: Permission[]) =>
+  SetMetadata(PERMISSIONS_KEY, permissions);
 
 /**
  * Restricts a route to admins of the platform organization
