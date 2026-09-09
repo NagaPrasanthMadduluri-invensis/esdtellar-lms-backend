@@ -1348,9 +1348,13 @@ export class LearnerService {
       jobRole: r.job_role,
       coursesAssigned: Number(r.assigned ?? 0),
       coursesCompleted: Number(r.completed ?? 0),
+      // Lessons, not courses — the same definition the learner's own course
+      // cards use, so a manager and their report cannot read a different
+      // number for the same work. Course completion is still shown, as
+      // coursesCompleted/coursesAssigned beside it.
       progressPct:
-        Number(r.assigned ?? 0) > 0
-          ? Math.round((Number(r.completed ?? 0) / Number(r.assigned)) * 100)
+        Number(r.total_lessons ?? 0) > 0
+          ? Math.round((Number(r.done_lessons ?? 0) / Number(r.total_lessons)) * 100)
           : 0,
       hours: Math.round((Number(r.minutes ?? 0) / 60) * 10) / 10,
       lastActiveAt: r.last_active_at ?? null,

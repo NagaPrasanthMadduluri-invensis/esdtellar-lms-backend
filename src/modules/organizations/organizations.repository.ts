@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 
 import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
-import { organizations, users } from '@/database/schema';
+import { organizations, rolePermissions, roles, users } from '@/database/schema';
 
 export interface OrganizationRow {
   id: number;
@@ -78,13 +78,72 @@ export class OrganizationsRepository {
     return rows.length > 0;
   }
 
-  async create(input: { name: string; slug: string }): Promise<OrganizationRow> {
-    const [created] = await this.db
-      .insert(organizations)
-      .values({ name: input.name, slug: input.slug })
-      .returning(ORGANIZATION_COLUMNS);
+  /**
+   * Creates an organization AND the roles it cannot function without, in one
+   * transaction — `specs/rbac.md` §3.7.
+   *
+   * The seeding used to be missing entirely. §3.7 says
+   * `createOrganization` seeds three system roles; the code only ever inserted
+   * the `organizations` row, so every organization created through the platform
+   * UI came up with ZERO roles. Since `users.role_id` is NOT NULL and a role
+   * must belong to the same organization, that org could not be given a single
+   * user — `POST /platform/organizations/:id/users` answered 404 "Role not
+   * found" and there was no role to pick. A new tenant was unusable from the
+   * moment it was created, and the only way in was a hand-written INSERT.
+   *
+   * `transaction` is what makes this safe, and it is a unit of work rather
+   * than a business rule, so it belongs here and not in the service (§3.1). If
+   * the roles fail to insert, the organization must not exist either: a
+   * half-created tenant is exactly the state this method exists to prevent,
+   * and it cannot be repaired by retrying, because the second attempt trips
+   * the unique slug.
+   *
+   * The role definitions are PASSED IN, from `SYSTEM_ROLES` in the code
+   * catalogue. This repository holds no opinion about which roles an
+   * organization gets — that is policy, and policy lives with the catalogue.
+   */
+  async createWithSystemRoles(
+    input: { name: string; slug: string },
+    systemRoles: readonly {
+      key: string;
+      label: string;
+      portal: string;
+      scope: string;
+      permissions: readonly string[];
+    }[],
+  ): Promise<OrganizationRow> {
+    return this.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(organizations)
+        .values({ name: input.name, slug: input.slug })
+        .returning(ORGANIZATION_COLUMNS);
 
-    return created;
+      for (const role of systemRoles) {
+        const [row] = await tx
+          .insert(roles)
+          .values({
+            organizationId: created.id,
+            key: role.key,
+            label: role.label,
+            portal: role.portal as 'admin' | 'learner' | 'trainer',
+            scope: role.scope as 'org' | 'department' | 'self',
+            isSystem: true,
+          })
+          .returning({ id: roles.id });
+
+        if (role.permissions.length === 0) continue;
+        // One multi-row INSERT per role, not one statement per permission
+        // (`BACKEND_STRUCTURE.md` §7.1).
+        await tx.insert(rolePermissions).values(
+          role.permissions.map((permission) => ({
+            roleId: row.id,
+            permission,
+          })),
+        );
+      }
+
+      return created;
+    });
   }
 
   async update(

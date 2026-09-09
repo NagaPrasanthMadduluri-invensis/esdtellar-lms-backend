@@ -72,6 +72,8 @@ export class LearnerRepository {
       job_role: string | null;
       assigned: number;
       completed: number;
+      total_lessons: number;
+      done_lessons: number;
       minutes: number;
       last_active_at: string | null;
     }>(sql`
@@ -98,6 +100,27 @@ export class LearnerRepository {
                          WHERE cm.course_id = a.course_id AND ulc.user_id = u.id
                            AND l.is_active = 1 AND cm.is_active = 1)
              ) AS completed,
+             -- Lesson counts, so "progress" here means what it means on the
+             -- learner's own course cards. Course completion alone said 0% for
+             -- someone three lessons into an eight-lesson course, which is the
+             -- number a manager would act on — and it duplicated the
+             -- completed/assigned column sitting next to it.
+             COALESCE((
+               SELECT COUNT(*)
+                 FROM user_course_assignments a
+                 JOIN course_modules cm ON cm.course_id = a.course_id
+                 JOIN lessons l ON l.module_id = cm.id
+                WHERE a.user_id = u.id AND l.is_active = 1 AND cm.is_active = 1
+             ), 0) AS total_lessons,
+             COALESCE((
+               SELECT COUNT(*)
+                 FROM user_lesson_completions ulc
+                 JOIN lessons l ON l.id = ulc.lesson_id
+                 JOIN course_modules cm ON cm.id = l.module_id
+                WHERE ulc.user_id = u.id AND l.is_active = 1 AND cm.is_active = 1
+                  AND EXISTS (SELECT 1 FROM user_course_assignments a
+                               WHERE a.user_id = u.id AND a.course_id = cm.course_id)
+             ), 0) AS done_lessons,
              COALESCE((
                SELECT SUM(COALESCE(l.duration_minutes, 0))
                  FROM user_lesson_completions c

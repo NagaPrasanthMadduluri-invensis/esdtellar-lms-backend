@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
-import type { RolePortal } from '@/common/permissions';
+import { SYSTEM_ROLES, type RolePortal } from '@/common/permissions';
 import { createOrgScope, type OrgScope } from '@/database/org-scope';
 
 import type {
@@ -159,7 +159,22 @@ export class OrganizationsService implements OnModuleInit {
     };
   }
 
-  /** `POST /api/platform/organizations` — name + slug; slug unique, URL-safe. */
+  /**
+   * `POST /api/platform/organizations` — name + slug, plus the roles the new
+   * organization cannot function without (`specs/rbac.md` §3.7).
+   *
+   * The role seeding is not optional and is not a later step. `users.role_id`
+   * is NOT NULL and a role must belong to the same organization, so an org
+   * with no roles cannot be given a single user — which is what every
+   * organization created here was, until this was fixed: created, listed, and
+   * impossible to populate.
+   *
+   * `SYSTEM_ROLES` comes from the code catalogue, so what a new tenant starts
+   * with is decided next to the permissions themselves. `trainer` is
+   * deliberately NOT among them (§3.7): not every organization runs its own
+   * training, and a super-admin can add it from the roles screen for the ones
+   * that do.
+   */
   async createOrganization(
     dto: CreateOrganizationDto,
   ): Promise<{ organization: OrganizationDto }> {
@@ -171,7 +186,16 @@ export class OrganizationsService implements OnModuleInit {
       );
     }
 
-    const created = await this.repository.create({ name: dto.name, slug });
+    const created = await this.repository.createWithSystemRoles(
+      { name: dto.name, slug },
+      SYSTEM_ROLES,
+    );
+
+    this.logger.log(
+      `Organization created: id=${created.id} slug=${slug} ` +
+        `with ${SYSTEM_ROLES.length} system roles`,
+    );
+
     return { organization: this.toOrganization(created) };
   }
 
