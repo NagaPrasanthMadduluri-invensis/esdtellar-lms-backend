@@ -101,6 +101,20 @@ function option(name, fallback) {
 
 const commit = flag('commit');
 const allowPublicPassword = flag('allow-public-password');
+/**
+ * Resets an EXISTING platform admin's password instead of creating one.
+ *
+ * Added because the failure it addresses actually happened: the account was
+ * present in production all along and the password simply was not the one
+ * being tried, so `superadmin` answered 401 and looked missing. Creating is
+ * refused (one email, one organization) and there was no other way in short
+ * of hand-writing a scrypt hash — which is format-locked
+ * (`BACKEND_STRUCTURE.md` §6.4) and exactly the thing not to do by hand.
+ *
+ * Deliberately opt-in: without the flag an existing email still fails loudly,
+ * so nobody overwrites a live credential by re-running the create command.
+ */
+const resetPassword = flag('reset-password');
 const email = option('email', 'superadmin@edstellar.com').trim().toLowerCase();
 const firstName = option('first', 'Platform');
 const lastName = option('last', 'Admin');
@@ -207,15 +221,37 @@ try {
       WHERE lower(u.email) = $1`,
     [email],
   );
+  /**
+   * `existingAdmin` is set only when the clash IS the account we would have
+   * created: same email, admin, inside the platform organization. That is the
+   * one case a password reset is safe, and the flag still has to ask for it.
+   */
+  let existingAdmin = null;
   if (clash.length > 0) {
     const u = clash[0];
     const where = u.is_platform ? 'the platform organization' : `"${u.org_name}"`;
-    throw new Error(
-      `${email} already exists — id ${u.id}, role "${u.role}", in ${where}.\n` +
-        'One email belongs to exactly one organization, so this script will not ' +
-        'touch it. Pick another address with --email, or change that account ' +
-        "instead if it is the one you meant.",
-    );
+    const isPlatformAdminRow =
+      u.is_platform && u.role === 'admin' && u.organization_id === platformOrg.id;
+
+    if (resetPassword && isPlatformAdminRow) {
+      existingAdmin = u;
+      console.log(
+        `\nRESETTING the password for an existing platform admin: [${u.id}] ${email}`,
+      );
+    } else {
+      throw new Error(
+        `${email} already exists — id ${u.id}, role "${u.role}", in ${where}, ` +
+          `on ${target.hostname}${target.pathname}.\n` +
+          'One email belongs to exactly one organization, so this script will ' +
+          'not create it again.\n' +
+          (isPlatformAdminRow
+            ? '  It IS a platform admin, so if the problem is a forgotten ' +
+              'password, re-run with --reset-password --commit.\n'
+            : '  Pick another address with --email.\n') +
+          `  If you meant a different database, check the target above — this ` +
+          `run went to ${target.hostname}${target.pathname}.`,
+      );
+    }
   }
 
   /* ── password ─────────────────────────────────────────────────────────── */
@@ -246,7 +282,10 @@ try {
   }
 
   /* ── insert, verify, then commit or roll back ─────────────────────────── */
-  console.log(`\n${commit ? 'Creating' : 'DRY RUN — would create'} platform admin:`);
+  const verb = existingAdmin
+    ? commit ? 'Resetting the password for' : 'DRY RUN — would reset the password for'
+    : commit ? 'Creating' : 'DRY RUN — would create';
+  console.log(`\n${verb} platform admin:`);
   console.log(`  email: ${email}`);
   console.log(`  name:  ${firstName} ${lastName}`);
   console.log(`  role:  admin`);
@@ -256,11 +295,108 @@ try {
   try {
     await client.query('BEGIN');
 
+    /**
+     * `users.role_id` is NOT NULL once `migrate-rbac.mjs` has run
+     * (`specs/rbac.md` §3.4), so the insert below has to name a role or it
+     * fails outright. This script predates RBAC and did not — which meant the
+     * one command that can bootstrap a super-admin stopped working on exactly
+     * the databases that had been migrated, and the failure looked like a
+     * mysterious 500 at the moment someone was trying to get in for the first
+     * time.
+     *
+     * Resolved by key against the PLATFORM organization, which is what the
+     * composite FK `users_role_same_org` requires. Null is passed through on a
+     * pre-RBAC database, where the column is still nullable and null is right
+     * — so this works on both, rather than only on whichever was set up last.
+     */
+    if (existingAdmin) {
+      /**
+       * Password only. Role, organization and role_id are left exactly as they
+       * are — this account already works, the credential is the only thing
+       * being replaced, and touching anything else would turn a password reset
+       * into an unreviewed permission change.
+       *
+       * `perm_version` IS bumped: a password reset must invalidate whatever
+       * sessions are already out there, and that counter is the mechanism
+       * AuthGuard checks (`specs/rbac.md` §3.6). Without it a stolen cookie
+       * would outlive the password it was obtained with.
+       */
+      const { rows: updated } = await client.query(
+        `UPDATE users
+            SET password = $1, perm_version = perm_version + 1, is_active = 1
+          WHERE id = $2
+          RETURNING id, email, role, is_active, organization_id, role_id, perm_version`,
+        [hashPassword(password), existingAdmin.id],
+      );
+      const row = updated[0];
+
+      const { rows: readBack } = await client.query(
+        'SELECT password FROM users WHERE id = $1',
+        [row.id],
+      );
+      if (!verifyPassword(password, readBack[0].password)) {
+        throw new Error(
+          'Stored hash does not verify against the password just used. ' +
+            'Refusing to commit.',
+        );
+      }
+      const stillPlatformAdmin =
+        row.role === 'admin' && row.organization_id === platformOrg.id;
+
+      console.log('\nChecks');
+      console.log(`  stored hash verifies:        ${'yes'}`);
+      console.log(`  resolves as platform admin:  ${stillPlatformAdmin ? 'yes' : 'NO'}`);
+      console.log(`  is_active:                   ${row.is_active}`);
+      console.log(`  role_id (unchanged):         ${row.role_id}`);
+      console.log(`  perm_version:                ${row.perm_version}  (existing sessions invalidated)`);
+      if (!stillPlatformAdmin) throw new Error('Row would not be a platform admin.');
+
+      if (commit) {
+        await client.query('COMMIT');
+        console.log(`\nCommitted. ${email} can sign in with the new password.`);
+      } else {
+        await client.query('ROLLBACK');
+        console.log('\nRolled back — nothing was written (this was a dry run).');
+        console.log('Re-run with --reset-password --commit to apply it.');
+      }
+      client.release();
+      await pool.end();
+      process.exit(0);
+    }
+
+    let adminRoleId = null;
+    try {
+      const { rows: roleRows } = await client.query(
+        `SELECT id FROM roles WHERE organization_id = $1 AND key = 'admin'`,
+        [platformOrg.id],
+      );
+      adminRoleId = roleRows[0]?.id ?? null;
+      if (adminRoleId === null) {
+        const { rows: notNull } = await client.query(
+          `SELECT is_nullable FROM information_schema.columns
+            WHERE table_name = 'users' AND column_name = 'role_id'`,
+        );
+        if (notNull[0]?.is_nullable === 'NO') {
+          throw new Error(
+            `The platform organization (${platformOrg.slug}) has no "admin" role, ` +
+              'and users.role_id is NOT NULL, so this account cannot be created.\n' +
+              '  Run:  npm run db:migrate:rbac -- --commit\n' +
+              '  then re-run this script.',
+          );
+        }
+      }
+    } catch (error) {
+      // A missing `roles` table means RBAC has not been applied at all, which
+      // is fine — role_id is still nullable there. Anything else is real.
+      if (!/relation "roles" does not exist/.test(error.message)) throw error;
+    }
+    console.log(`  role_id: ${adminRoleId ?? '(null — pre-RBAC database)'}`);
+
     const { rows: inserted } = await client.query(
-      `INSERT INTO users (first_name, last_name, email, password, role, organization_id)
-       VALUES ($1, $2, $3, $4, 'admin', $5)
-       RETURNING id, email, role, is_active, organization_id`,
-      [firstName, lastName, email, hashPassword(password), platformOrg.id],
+      `INSERT INTO users (first_name, last_name, email, password, role, organization_id, role_id)
+       VALUES ($1, $2, $3, $4, 'admin', $5, $6)
+       RETURNING id, email, role, is_active, organization_id, role_id`,
+      [firstName, lastName, email, hashPassword(password), platformOrg.id, adminRoleId],
     );
     const row = inserted[0];
 
