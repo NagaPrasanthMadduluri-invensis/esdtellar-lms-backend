@@ -114,8 +114,28 @@ const constraintExists = async (name) =>
 
 try {
   const target = new URL(process.env.DATABASE_URL);
+  const isLocal = ['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(target.hostname);
+
   console.log(`\nTarget: ${target.hostname}:${target.port || 5432}${target.pathname}`);
-  console.log('Mode:   read-only\n');
+  console.log('Mode:   read-only');
+
+  /**
+   * Say which environment this is, unmissably.
+   *
+   * The point of this script is answering "is PRODUCTION ready", and it reads
+   * `DATABASE_URL` from whatever `.env` sits next to it — so running it on a
+   * laptop checks the laptop. That happened: a clean report was read as
+   * "production is fine" when the target line said `127.0.0.1`. A quiet line
+   * of provenance is not enough when the conclusion is the thing being acted
+   * on, so the banner is loud and the closing summary repeats it.
+   */
+  console.log(
+    isLocal
+      ? '\n  >>> THIS IS A LOCAL DATABASE — it says nothing about production.\n' +
+          '      To check production, run this ON the production host (it reads\n' +
+          '      that host\'s server/.env), not on your laptop.\n'
+      : `\n  Remote target — treating ${target.hostname} as the deployed database.\n`,
+  );
 
   /* ── 1. Multi-tenancy ─────────────────────────────────────────────── */
   console.log('=== 1. Multi-tenancy (must be in place before RBAC) ===');
@@ -372,7 +392,10 @@ try {
   console.log(`  failures: ${failures}`);
   console.log(`  warnings: ${warnings}`);
   if (failures === 0) {
-    console.log('\n  Ready. Roles and permissions are enforced and every org is usable.');
+    console.log(
+      `\n  Ready — for ${target.hostname}${isLocal ? ' (LOCAL, not production)' : ''}. ` +
+        'Roles and permissions are enforced and every org is usable.',
+    );
   } else {
     console.log('\n  Not ready — run the fixes above, in the order printed, then re-run this.');
   }
