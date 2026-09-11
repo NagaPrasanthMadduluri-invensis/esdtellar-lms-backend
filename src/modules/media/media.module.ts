@@ -10,6 +10,7 @@ import {
 } from './learner-media.controller';
 import { MediaRepository } from './media.repository';
 import { MediaService } from './media.service';
+import { ImageStorageService } from './storage/image-storage.service';
 import { R2StorageService } from './storage/r2-storage.service';
 
 /**
@@ -25,13 +26,18 @@ import { R2StorageService } from './storage/r2-storage.service';
     LearnerMediaController,
     LearnerResourcesController,
   ],
-  providers: [MediaService, MediaRepository, R2StorageService],
+  providers: [MediaService, MediaRepository, R2StorageService, ImageStorageService],
   /**
    * R2StorageService is exported so ScormModule's `s3` driver can reuse the one
    * configured R2 client instead of constructing a second one. It is
    * infrastructure, not a domain repository, so §3.2's "export the service,
    * never the repository" rule is satisfied — MediaRepository stays private.
    */
-  exports: [MediaService, R2StorageService],
+  /**
+   * ImageStorageService is exported for `main.ts` alone, which needs the
+   * resolved uploads root to mount `useStaticAssets` — the same reason
+   * ScormStorageService is reachable there.
+   */
+  exports: [MediaService, R2StorageService, ImageStorageService],
 })
 export class MediaModule {}

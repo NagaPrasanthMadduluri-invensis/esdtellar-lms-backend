@@ -12,6 +12,11 @@ import {
   MinLength,
 } from 'class-validator';
 
+import {
+  DESCRIPTION_MAX_LENGTH,
+  DESCRIPTION_TOO_LONG,
+} from '@/common/content-limits';
+
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
@@ -22,14 +27,41 @@ const nullable = ({ value }: { value: unknown }) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+/**
+ * Like `nullable`, but an absent value stays absent instead of becoming null,
+ * so a caller that did not mention the field can be told apart from one that
+ * asked to clear it.
+ */
+const keepUndefined = ({ value }: { value: unknown }) => {
+  if (value === undefined) return undefined;
+  return nullable({ value });
+};
+
 export class CourseDto {
   @IsString()
   @MinLength(1, { message: 'name is required' })
   @Transform(trim)
   name!: string;
 
-  @IsOptional() @Transform(nullable) description?: string | null;
-  @IsOptional() @Transform(nullable) thumbnail_url?: string | null;
+  @IsOptional()
+  @MaxLength(DESCRIPTION_MAX_LENGTH, { message: DESCRIPTION_TOO_LONG })
+  @Transform(nullable)
+  description?: string | null;
+
+  /**
+   * Three distinct meanings, and the DTO has to preserve all three — which is
+   * why this does NOT use `nullable` like the field above it:
+   *
+   *   absent  → leave the course's current picture alone
+   *   null    → remove it, fall back to the generated artwork
+   *   string  → set it
+   *
+   * `nullable` collapses the first two into null, and with it every edit that
+   * did not resend the thumbnail silently cleared it — renaming a course
+   * removed its picture. `keepUndefined` maps "" to null (an emptied field is
+   * a removal) and leaves undefined as undefined.
+   */
+  @IsOptional() @Transform(keepUndefined) thumbnail_url?: string | null;
   @IsOptional() @IsBoolean() is_active?: boolean;
 }
 
@@ -39,7 +71,10 @@ export class ModuleDto {
   @Transform(trim)
   title!: string;
 
-  @IsOptional() @Transform(nullable) description?: string | null;
+  @IsOptional()
+  @MaxLength(DESCRIPTION_MAX_LENGTH, { message: DESCRIPTION_TOO_LONG })
+  @Transform(nullable)
+  description?: string | null;
   @IsOptional() @IsBoolean() is_active?: boolean;
 }
 
@@ -49,7 +84,10 @@ export class CreateLessonDto {
   @Transform(trim)
   title!: string;
 
-  @IsOptional() @Transform(nullable) description?: string | null;
+  @IsOptional()
+  @MaxLength(DESCRIPTION_MAX_LENGTH, { message: DESCRIPTION_TOO_LONG })
+  @Transform(nullable)
+  description?: string | null;
   @IsOptional() @IsString() content_type?: string;
   @IsOptional() @Transform(nullable) content_url?: string | null;
   @IsOptional() @IsInt() scorm_package_id?: number | null;
@@ -80,7 +118,10 @@ export class UpdateLessonDto {
   @Transform(trim)
   title?: string;
 
-  @IsOptional() @Transform(nullable) description?: string | null;
+  @IsOptional()
+  @MaxLength(DESCRIPTION_MAX_LENGTH, { message: DESCRIPTION_TOO_LONG })
+  @Transform(nullable)
+  description?: string | null;
   @IsOptional() @IsString() content_type?: string;
   @IsOptional() @Transform(nullable) content_url?: string | null;
   @IsOptional() @IsInt() scorm_package_id?: number | null;

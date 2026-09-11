@@ -15,9 +15,13 @@ import type { OrgScope } from '@/database/org-scope';
 
 import { toWebVtt } from './captions.util';
 import { MediaRepository } from './media.repository';
+import { ImageStorageService } from './storage/image-storage.service';
 import { R2StorageService } from './storage/r2-storage.service';
 import {
+  ALLOWED_IMAGE_TYPES,
+  COURSE_THUMBNAIL_MAX_BYTES,
   EXTENSION_FOR_DOCUMENT_TYPE,
+  EXTENSION_FOR_IMAGE_TYPE,
   RESOURCE_TYPE_FOR_MIME,
   type ConfirmVideoDto,
   type PresignDocumentDto,
@@ -39,6 +43,7 @@ export class MediaService {
   constructor(
     private readonly repository: MediaRepository,
     private readonly storage: R2StorageService,
+    private readonly images: ImageStorageService,
     private readonly config: ConfigService,
   ) {}
 
@@ -364,6 +369,85 @@ export class MediaService {
     return { ok: true };
   }
 
+  /* ─────────────────────────────────────────────
+     Admin — course thumbnails
+
+     Proxied multipart, like captions and unlike video: a thumbnail is small
+     enough that a round trip through this process is cheaper than a presign
+     handshake, and the bytes have to be inspected here anyway before they are
+     written somewhere this server publishes.
+  ───────────────────────────────────────────── */
+
+  /**
+   * Stores a course thumbnail and returns the path to put in
+   * `courses.thumbnail_url`.
+   *
+   * Three checks, in the order that costs least:
+   *
+   *   1. the declared type is one we serve;
+   *   2. the size is within the cap — checked here as well as by multer,
+   *      because multer's refusal is a generic 413 and this one can say what
+   *      the file was and what the limit is;
+   *   3. the bytes actually begin like the type they claim to be. A multipart
+   *      Content-Type is written by the client, so without this an HTML file
+   *      labelled `image/png` would be written into a directory served from
+   *      this origin.
+   */
+  async uploadCourseThumbnail(file: Express.Multer.File | undefined) {
+    if (!file) throw new BadRequestException('No image was uploaded.');
+
+    const contentType = (file.mimetype || '').toLowerCase();
+    if (!(ALLOWED_IMAGE_TYPES as readonly string[]).includes(contentType)) {
+      throw new UnprocessableEntityException(
+        `${file.originalname || 'That file'} is not a supported image. Use ` +
+          'JPG, PNG, WebP or GIF.',
+      );
+    }
+
+    if (file.size > COURSE_THUMBNAIL_MAX_BYTES) {
+      throw new UnprocessableEntityException(
+        `Image is ${formatBytes(file.size)}, which exceeds the ` +
+          `${formatBytes(COURSE_THUMBNAIL_MAX_BYTES)} limit.`,
+      );
+    }
+
+    if (sniffImageType(file.buffer) !== contentType) {
+      throw new UnprocessableEntityException(
+        `${file.originalname || 'That file'} is not a valid ` +
+          `${contentType.replace('image/', '').toUpperCase()} image.`,
+      );
+    }
+
+    const url = await this.images.saveThumbnail(
+      file.buffer,
+      EXTENSION_FOR_IMAGE_TYPE[contentType],
+    );
+    return { ok: true, url };
+  }
+
+  /**
+   * What may be written into `courses.thumbnail_url`, normalised.
+   *
+   * A course thumbnail is either something `uploadCourseThumbnail` stored or
+   * an image hosted elsewhere that an admin pasted. Anything else — a
+   * `javascript:` URL, a path that escapes the thumbnails directory — is
+   * refused rather than stored, because this value ends up as the `src` of an
+   * image tag on every course card.
+   */
+  assertCourseThumbnail(url: string): string {
+    const value = url.trim();
+    if (ImageStorageService.isStoredThumbnail(value)) return value;
+    if (/^https?:\/\/[^\s]+$/i.test(value) && value.length <= 1024) return value;
+    throw new UnprocessableEntityException(
+      'thumbnail_url must be an uploaded thumbnail or an http(s) image URL.',
+    );
+  }
+
+  /** Best-effort removal of a thumbnail this server stored (§8.4). */
+  async discardCourseThumbnail(url: string | null | undefined): Promise<void> {
+    await this.images.removeThumbnail(url);
+  }
+
   /**
    * Deletes whatever a lesson has in R2, without touching the lesson row.
    *
@@ -563,6 +647,32 @@ export class MediaService {
       resumeAtSeconds: progress?.last_position_seconds ?? 0,
     };
   }
+}
+
+/**
+ * The image type the bytes themselves declare, or null.
+ *
+ * Only the four types we serve are recognised; anything else returns null and
+ * is refused by the caller. Short signatures on purpose — this is a sanity
+ * check on the declared Content-Type, not a full format parser.
+ */
+function sniffImageType(bytes: Buffer): string | null {
+  if (bytes.length < 12) return null;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  if (
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  const gif = bytes.subarray(0, 6).toString('ascii');
+  if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';
+  return null;
 }
 
 function formatBytes(bytes: number): string {

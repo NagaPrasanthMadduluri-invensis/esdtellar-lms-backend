@@ -249,10 +249,46 @@ export class CoursesService {
     };
   }
 
+  /**
+   * One course, in the same vocabulary the list uses.
+   *
+   * The list is raw SQL and speaks `thumbnail_url` / `is_active`; `findById`
+   * is a Drizzle select and speaks `thumbnailUrl` / `isActive`. Handing the
+   * second straight to the client made `/admin/courses/:id` a different shape
+   * from `/admin/courses`, and the page reading it saw `undefined` for every
+   * field it named the list's way — a published course rendered as a draft,
+   * and its edit dialog then SAVED that back, so renaming a course quietly
+   * unpublished it. Shaping here is also what §3.1 asks for: a controller
+   * never sees a database row.
+   */
+  private shape(course: {
+    id: number;
+    organizationId: number;
+    name: string;
+    description: string | null;
+    thumbnailUrl: string | null;
+    isActive: number;
+    sessionId: number | null;
+    createdAt: unknown;
+    updatedAt: unknown;
+  }) {
+    return {
+      id: course.id,
+      organization_id: course.organizationId,
+      name: course.name,
+      description: course.description,
+      thumbnail_url: course.thumbnailUrl,
+      is_active: Number(course.isActive) === 1,
+      session_id: course.sessionId,
+      created_at: course.createdAt,
+      updated_at: course.updatedAt,
+    };
+  }
+
   async get(scope: OrgScope, courseId: number) {
     const course = await this.repository.findById(scope, courseId);
     if (!course) throw new NotFoundException('Course not found');
-    return { course };
+    return { course: this.shape(course) };
   }
 
   /** Content: takes the OWNER's org — `scope.organizationId` for the admin creating it. */
@@ -261,13 +297,15 @@ export class CoursesService {
       organizationId: scope.organizationId,
       name: dto.name,
       description: dto.description ?? null,
-      thumbnailUrl: dto.thumbnail_url ?? null,
+      thumbnailUrl: dto.thumbnail_url
+        ? this.media.assertCourseThumbnail(dto.thumbnail_url)
+        : null,
       // `is_active` is optional, and `Boolean(undefined)` is false — so a
       // course created without the flag used to be born hidden, contradicting
       // the column's own DEFAULT 1. Omitted now means active.
       isActive: dto.is_active ?? true,
     });
-    return { course };
+    return { course: this.shape(course) };
   }
 
   async update(scope: OrgScope, courseId: number, dto: CourseDto) {
@@ -276,22 +314,48 @@ export class CoursesService {
     this.assertNotGlobalContent(scope, existing.organizationId, 'course');
     this.assertNotSessionTraining(existing.sessionId);
 
+    /**
+     * Omitted means "leave it alone" — for the picture as much as for the
+     * flag below it. The settings form sends name, description and the
+     * publish switch; before this, that patch also blanked the thumbnail,
+     * so an admin lost the course's picture by renaming it.
+     *
+     * An explicit null is a removal, and only then is the stored file dropped.
+     */
+    const thumbnailUrl =
+      dto.thumbnail_url === undefined
+        ? existing.thumbnailUrl
+        : dto.thumbnail_url === null
+          ? null
+          : this.media.assertCourseThumbnail(dto.thumbnail_url);
+
     const course = await this.repository.updateCourse(scope, courseId, {
       name: dto.name,
       description: dto.description ?? null,
-      thumbnailUrl: dto.thumbnail_url ?? null,
+      thumbnailUrl,
       // Omitted means "leave it alone". Renaming a course must not hide it
       // from every learner as a side effect.
       isActive: dto.is_active ?? existing.isActive === 1,
     });
-    return { course };
+
+    // Only once the row is written, and only for the picture it no longer
+    // points at (§8.4 — a failed delete must not fail the edit).
+    if (existing.thumbnailUrl && existing.thumbnailUrl !== thumbnailUrl) {
+      await this.media.discardCourseThumbnail(existing.thumbnailUrl);
+    }
+
+    return { course: this.shape(course) };
   }
 
   async remove(scope: OrgScope, courseId: number) {
     this.assertNotSessionTraining(
       await this.repository.findSessionIdForCourse(scope, courseId),
     );
+    // Read before the delete — once the row is gone nothing records which
+    // file was its picture.
+    const existing = await this.repository.findById(scope, courseId);
     await this.repository.deleteCourse(scope, courseId);
+    await this.media.discardCourseThumbnail(existing?.thumbnailUrl);
     return { message: 'Course deleted' };
   }
 

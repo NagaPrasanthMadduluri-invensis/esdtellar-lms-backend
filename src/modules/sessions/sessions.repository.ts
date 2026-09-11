@@ -32,6 +32,9 @@ export class SessionsRepository {
     return this.db.all(sql`
       SELECT s.*, c.name AS course_name,
         tc.id AS training_course_id,
+        -- A session's picture IS its training course's picture (§10.7):
+        -- the learner's card for a session is that course.
+        tc.thumbnail_url AS thumbnail_url,
         (SELECT COUNT(*) FROM session_roster sr
          WHERE sr.session_id = s.id) AS roster_count,
         (SELECT COUNT(*) FROM session_attendance sa
@@ -61,6 +64,9 @@ export class SessionsRepository {
     return this.db.all(sql`
       SELECT s.*, c.name AS course_name,
         tc.id AS training_course_id,
+        -- A session's picture IS its training course's picture (§10.7):
+        -- the learner's card for a session is that course.
+        tc.thumbnail_url AS thumbnail_url,
         (SELECT COUNT(*) FROM session_roster sr
          WHERE sr.session_id = s.id) AS roster_count,
         (SELECT COUNT(*) FROM session_attendance sa
@@ -83,7 +89,8 @@ export class SessionsRepository {
     trainerUserId: number,
   ) {
     const rows = await this.db.all(sql`
-      SELECT s.*, c.name AS course_name, tc.id AS training_course_id
+      SELECT s.*, c.name AS course_name, tc.id AS training_course_id,
+        tc.thumbnail_url AS thumbnail_url
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
       LEFT JOIN courses tc ON tc.session_id = s.id
@@ -106,7 +113,8 @@ export class SessionsRepository {
 
   async findWithCourse(scope: OrgScope, sessionId: number) {
     const rows = await this.db.all(sql`
-      SELECT s.*, c.name AS course_name, tc.id AS training_course_id
+      SELECT s.*, c.name AS course_name, tc.id AS training_course_id,
+        tc.thumbnail_url AS thumbnail_url
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
       LEFT JOIN courses tc ON tc.session_id = s.id
@@ -425,6 +433,41 @@ export class SessionsRepository {
       SELECT ${scope.organizationId}, id, ${values.lessonTitle}, ${values.description}, 'session',
              ${values.contentUrl}, ${values.durationMinutes}, 0, 0, 1
       FROM new_module
+    `);
+  }
+
+  /**
+   * The picture currently on this session's training course, if any.
+   *
+   * Read before a write so a replaced file can be deleted, and before a delete
+   * for the same reason — the cascade takes the row, not the bytes on disk.
+   */
+  async findTrainingThumbnail(scope: OrgScope, sessionId: number) {
+    const rows = await this.db.all<{ thumbnail_url: string | null }>(sql`
+      SELECT c.thumbnail_url
+      FROM courses c
+      WHERE c.session_id = ${sessionId} AND ${orgScope('c', scope)}
+      LIMIT 1
+    `);
+    return rows[0]?.thumbnail_url ?? null;
+  }
+
+  /**
+   * Sets the training course's picture.
+   *
+   * Its own statement rather than another column on `updateTraining`, because
+   * the two have different rules: name, description and active state are
+   * rewritten from the session on every save, while the picture is only
+   * touched when the admin actually changed it (§10.10).
+   */
+  async setTrainingThumbnail(
+    scope: OrgScope,
+    sessionId: number,
+    thumbnailUrl: string | null,
+  ): Promise<void> {
+    await this.db.run(sql`
+      UPDATE courses SET thumbnail_url = ${thumbnailUrl}, updated_at = now()
+      WHERE session_id = ${sessionId} AND ${orgScope('courses', scope)}
     `);
   }
 

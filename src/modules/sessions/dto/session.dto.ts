@@ -6,9 +6,15 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  MaxLength,
   MinLength,
   ValidateNested,
 } from 'class-validator';
+
+import {
+  DESCRIPTION_MAX_LENGTH,
+  DESCRIPTION_TOO_LONG,
+} from '@/common/content-limits';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -20,6 +26,15 @@ const nullable = ({ value }: { value: unknown }) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+/**
+ * Like `nullable`, but keeps an absent value absent — so "the admin did not
+ * touch the picture" can be told apart from "the admin removed it" (§10.10).
+ */
+const keepUndefined = ({ value }: { value: unknown }) => {
+  if (value === undefined) return undefined;
+  return nullable({ value });
+};
+
 export class SessionDto {
   @IsString()
   @MinLength(1, { message: 'title is required' })
@@ -27,6 +42,17 @@ export class SessionDto {
   title!: string;
 
   @IsOptional() @IsIn(['ILT', 'Virtual']) session_type?: 'ILT' | 'Virtual';
+
+  /**
+   * The session's cover picture, stored on its companion training course —
+   * which IS the card the learner sees (§10.7), so there is no second column
+   * and nothing new to render.
+   *
+   * Absent leaves it alone, null removes it, a string sets it. Every other
+   * field here is rewritten from the form on every save; this one must not be,
+   * or editing the venue would delete the picture.
+   */
+  @IsOptional() @Transform(keepUndefined) thumbnail_url?: string | null;
   @IsOptional() @Transform(nullable) department?: string | null;
   @IsOptional() @IsInt() course_id?: number | null;
   @IsOptional() @IsInt() capacity?: number;
@@ -70,7 +96,10 @@ export class SessionDto {
   @Transform(trim)
   end_time!: string;
 
-  @IsOptional() @Transform(nullable) description?: string | null;
+  @IsOptional()
+  @MaxLength(DESCRIPTION_MAX_LENGTH, { message: DESCRIPTION_TOO_LONG })
+  @Transform(nullable)
+  description?: string | null;
   @IsOptional()
   @IsIn(['upcoming', 'completed', 'cancelled'])
   status?: 'upcoming' | 'completed' | 'cancelled';

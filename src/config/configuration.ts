@@ -16,6 +16,12 @@ export interface AppConfig {
   storage: {
     driver: 'local' | 's3';
     localPath: string;
+    /**
+     * Root for files this process writes and serves itself, rather than
+     * handing to R2 — currently course thumbnails. Local disk, like the
+     * `local` SCORM driver above and with the same single-instance caveat.
+     */
+    uploadsPath: string;
   };
   reporting: {
     /**
@@ -63,6 +69,7 @@ export default (): AppConfig => ({
   storage: {
     driver: (process.env.SCORM_STORAGE_DRIVER as 'local' | 's3') ?? 'local',
     localPath: process.env.SCORM_STORAGE_PATH ?? './storage/scorm',
+    uploadsPath: process.env.UPLOAD_STORAGE_PATH ?? './storage/uploads',
   },
   reporting: {
     referenceDate: process.env.REPORTING_REFERENCE_DATE || null,

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
+import { MediaService } from '@/modules/media/media.service';
 
 import type {
   RosterAddDto,
@@ -41,7 +42,40 @@ const CREDITING_STATUSES = ['present', 'late', 'partial'] as const;
  */
 @Injectable()
 export class SessionsService {
-  constructor(private readonly repository: SessionsRepository) {}
+  constructor(
+    private readonly repository: SessionsRepository,
+    private readonly media: MediaService,
+  ) {}
+
+  /**
+   * Puts the session's picture on its companion training course.
+   *
+   * The picture lives there rather than on `sessions` because the learner's
+   * card for a session IS that course (§10.7) — storing it anywhere else would
+   * mean a second column and a second place to render it. `CoursesService`
+   * refuses edits to a session training, so this is the one writer.
+   *
+   * The three states are the ones §10.10 defines: an absent `thumbnail_url`
+   * leaves the picture alone, null removes it, a string sets it. That matters
+   * more here than on a course, because every other field on a session is
+   * rewritten from the form on every save — without this, editing the venue
+   * would delete the picture.
+   */
+  private async syncTrainingThumbnail(
+    scope: OrgScope,
+    sessionId: number,
+    requested: string | null | undefined,
+  ): Promise<void> {
+    if (requested === undefined) return;
+
+    const next = requested === null ? null : this.media.assertCourseThumbnail(requested);
+    const previous = await this.repository.findTrainingThumbnail(scope, sessionId);
+    if (previous === next) return;
+
+    await this.repository.setTrainingThumbnail(scope, sessionId, next);
+    // After the write, and best-effort (§8.4).
+    await this.media.discardCourseThumbnail(previous);
+  }
 
   async list(scope: OrgScope) {
     const rows = (await this.repository.list(scope)) as Record<
@@ -82,6 +116,7 @@ export class SessionsService {
     // a session with no training would show in the calendar and nowhere else,
     // which is the behaviour this replaces.
     await this.repository.createTraining(scope, id, this.trainingValues(dto));
+    await this.syncTrainingThumbnail(scope, id, dto.thumbnail_url);
     return {
       session: this.withDisplayStatus(
         await this.repository.findWithCourse(scope, id),
@@ -116,6 +151,7 @@ export class SessionsService {
       sessionId,
       this.trainingValues(dto),
     );
+    await this.syncTrainingThumbnail(scope, sessionId, dto.thumbnail_url);
 
     if (requested === 'completed') {
       await this.repository.syncCompletions(scope, sessionId);
@@ -134,10 +170,20 @@ export class SessionsService {
   /**
    * Deleting a session deletes its training with it — `courses.session_id` is
    * ON DELETE CASCADE, which takes the module, lesson, assignments and
-   * completions with it. No application-side cleanup to forget.
+   * completions with it.
+   *
+   * The one thing the cascade cannot reach is the cover picture on disk, so
+   * that is read before the delete and dropped after.
    */
   async remove(scope: OrgScope, sessionId: number) {
+    // The cascade takes the training course row; it does not take the picture
+    // off disk, so read it while the row still exists.
+    const thumbnailUrl = await this.repository.findTrainingThumbnail(
+      scope,
+      sessionId,
+    );
     await this.repository.deleteSession(scope, sessionId);
+    await this.media.discardCourseThumbnail(thumbnailUrl);
     return { message: 'Session deleted' };
   }
 

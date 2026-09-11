@@ -11,6 +11,7 @@ import { setReferenceDate } from './modules/learning-hours/periods';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ScormContentHandler } from './modules/scorm/scorm-content.handler';
 import { ScormContentMiddleware } from './modules/scorm/scorm-content.middleware';
+import { ImageStorageService } from './modules/media/storage/image-storage.service';
 import { ScormStorageService } from './modules/scorm/storage/scorm-storage.service';
 
 async function bootstrap(): Promise<void> {
@@ -93,6 +94,27 @@ async function bootstrap(): Promise<void> {
         'before running more than one instance.',
     );
   }
+
+  /**
+   * Course thumbnails, served at /uploads/course-thumbnails/<uuid>.<ext>.
+   *
+   * Deliberately NOT behind the auth middleware `/scorm` gets, and the reason
+   * is `next/image`: the optimizer fetches the source server-side, with no
+   * user cookie, so an authenticated thumbnail would render as a broken image
+   * for everyone. What is exposed is a course's cover picture addressed by a
+   * random UUID — not learner data, not course content — and the filename is
+   * never derived from anything guessable.
+   *
+   * `immutable` is safe because a replacement is written under a NEW uuid and
+   * the old file is deleted, so a cached URL can never show the wrong picture.
+   */
+  const imageStorage = app.get(ImageStorageService);
+  app.useStaticAssets(imageStorage.rootPath, {
+    prefix: '/uploads',
+    maxAge: '365d',
+    immutable: true,
+    index: false,
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({

@@ -53,3 +53,9 @@ Thumbs.db
 *.swp
 
 deploy.sh
+# ── Uploaded course thumbnails ──
+# Written at runtime by POST /api/admin/media/course-thumbnail and served
+# statically at /uploads. Runtime data, not source — same reasoning as
+# storage/scorm/ above.
+storage/uploads/*
+!storage/uploads/.gitkeep

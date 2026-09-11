@@ -6,9 +6,15 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  MaxLength,
   MinLength,
   ValidateNested,
 } from 'class-validator';
+
+import {
+  DESCRIPTION_MAX_LENGTH,
+  DESCRIPTION_TOO_LONG,
+} from '@/common/content-limits';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -26,7 +32,10 @@ export class AssessmentDto {
   @Transform(trim)
   title!: string;
 
-  @IsOptional() @Transform(nullable) description?: string | null;
+  @IsOptional()
+  @MaxLength(DESCRIPTION_MAX_LENGTH, { message: DESCRIPTION_TOO_LONG })
+  @Transform(nullable)
+  description?: string | null;
   @IsOptional() @IsInt() passing_score?: number;
   @IsOptional() @IsBoolean() is_active?: boolean;
 }

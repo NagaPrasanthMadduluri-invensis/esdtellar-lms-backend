@@ -17,7 +17,9 @@ import { CurrentScope, Permissions, Roles } from '@/common/decorators';
 import type { OrgScope } from '@/database/org-scope';
 
 import {
+  COURSE_THUMBNAIL_MAX_BYTES,
   ConfirmVideoDto,
+  DiscardThumbnailDto,
   PresignDocumentDto,
   PresignVideoDto,
 } from './dto/media.dto';
@@ -60,6 +62,53 @@ export class AdminMediaUploadController {
   @Permissions('upload_content')
   async presignDocument(@Body() dto: PresignDocumentDto) {
     return this.media.presignDocumentUpload(dto);
+  }
+
+  /**
+   * A cover picture, posted as multipart rather than presigned.
+   *
+   * One endpoint for courses AND sessions, because a session's picture is
+   * stored on its companion training course (§10.7) — the destination really
+   * is `courses.thumbnail_url` in both cases.
+   *
+   * That is also why it is guarded by `upload_content` rather than
+   * `manage_courses`, which the first version used on the argument that the
+   * image had exactly one destination. It has two audiences now, the guard
+   * has no "any of" form (`PermissionsGuard`), and requiring `manage_courses`
+   * to put a picture on a session would be surprising. `upload_content` is the
+   * permission that already guards every other file upload here — video,
+   * documents, SCORM — and an upload on its own changes nothing: the row that
+   * references the key is saved behind `manage_courses` or `manage_sessions`
+   * respectively.
+   *
+   * The multer limit is what actually enforces the size cap: it refuses an
+   * oversized body before it is buffered, with a bare 413. The admin does not
+   * normally see that — the browser checks the same limit before sending, and
+   * says which file and what the limit is. MediaService checks it a third
+   * time, so the cap survives this interceptor option being changed.
+   */
+  @Post('course-thumbnail')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('upload_content')
+  @UseInterceptors(
+    FileInterceptor('image', { limits: { fileSize: COURSE_THUMBNAIL_MAX_BYTES } }),
+  )
+  async uploadCourseThumbnail(@UploadedFile() file: Express.Multer.File) {
+    return this.media.uploadCourseThumbnail(file);
+  }
+
+  /**
+   * Drops a thumbnail whose course or session then failed to save.
+   *
+   * The client's own rollback, the same shape as the lesson editor's SCORM
+   * rollback: the browser knows at once that the save failed, and it is the
+   * only party that knows the upload is now pointing at nothing.
+   */
+  @Delete('course-thumbnail')
+  @Permissions('upload_content')
+  async deleteCourseThumbnail(@Body() dto: DiscardThumbnailDto) {
+    await this.media.discardCourseThumbnail(dto.url);
+    return { ok: true };
   }
 }
 

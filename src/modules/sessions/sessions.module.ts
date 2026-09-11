@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { MediaModule } from '@/modules/media/media.module';
+
 import {
   AdminSessionsController,
   LearnerSessionsController,
@@ -9,6 +11,9 @@ import { SessionsRepository } from './sessions.repository';
 import { SessionsService } from './sessions.service';
 
 @Module({
+  // MediaService validates a thumbnail before it is stored on the training
+  // course, and deletes the file when it is replaced or the session goes.
+  imports: [MediaModule],
   controllers: [
     AdminSessionsController,
     LearnerSessionsController,

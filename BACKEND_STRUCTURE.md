@@ -486,6 +486,23 @@ lesson complete. Log the reason; do not propagate.
 
 ---
 
+### 8.5 Length caps on free text
+
+`common/content-limits.ts` holds them, and a `description` is capped at 450
+characters on every DTO that has one — course, module, lesson, assessment,
+session. One limit, so an admin never discovers by being refused that one form
+is stricter than another.
+
+The columns behind them stay `text`. The cap is a product rule that may move,
+and a rule that moves does not belong in a type that needs a migration to
+change. Nothing was over the limit when it was introduced — the longest
+description in the database was 198 characters — so no existing row became
+uneditable, which is the check to repeat before lowering it.
+
+The browser applies the same number as a `maxLength` (`client/lib/content-limits.js`)
+so the admin is stopped while typing rather than refused after writing three
+paragraphs. That is courtesy; this is enforcement.
+
 ## 9. Configuration & secrets
 
 - **`config/configuration.ts` is the only file that reads `process.env`.**
@@ -519,6 +536,7 @@ lesson complete. Log the reason; do not propagate.
 | `VIDEO_MAX_BYTES` | no (2 GiB) | Rejected at presign, re-checked against R2 on confirm |
 | `CAPTION_MAX_BYTES` | no (2 MiB) | Caption uploads are proxied, so this is a real body cap |
 | `DOCUMENT_MAX_BYTES` | no (100 MiB) | Cap for an uploaded document — a slide deck, not a feature film |
+| `UPLOAD_STORAGE_PATH` | no (`./storage/uploads`) | Root for files this process stores and serves itself — course thumbnails (§10.10) |
 | `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
 | `ORG_NAME` | no (`Edstellar`) | Name of the first real organization created by `db:migrate:tenancy` |
 | `ORG_SLUG` | no (`edstellar`) | Organization `db:seed` seeds into |
@@ -560,6 +578,7 @@ Update this table with every module you move.
 | trainer portal (own sessions, participants, attendance) | 4 | `server/src/modules/sessions` |
 | team learning (manager) | 1 | `server/src/modules/learner` |
 | change password (any authenticated role) | 1 | `server/src/modules/auth` |
+| course thumbnail (upload + rollback) | 2 | `server/src/modules/media` |
 
 ### 10.9 SCORM object storage, and the granular data-model log
 
@@ -685,6 +704,82 @@ disk-vs-database comparison finds them). It refuses to touch a package with
 tracking, attempts or data-model rows even when no lesson carries it — that
 history is the record of someone's training.
 
+### 10.10 Course thumbnails
+
+A course may carry a cover picture (`courses.thumbnail_url`). It is optional
+everywhere: without one, `client/components/shared/course-art.jsx` derives a
+fallback illustration from the course's content, which is what the learner has
+always seen.
+
+**A session has one too, and it is the same column.** A session's picture is
+stored on its companion training course (§10.7) — which IS the card the learner
+sees — so there is no `sessions.thumbnail_url`, no migration, and nothing new
+to render: My Courses picked it up the day the field was added, through the
+definition it already uses. The admin session list reads it back off the `tc`
+join it already makes. `SessionsService.syncTrainingThumbnail` is the only
+writer, because `CoursesService` refuses edits to a session training.
+
+**Local disk, not R2, and that is deliberate.** Lesson video and documents are
+private per learner, so they are handed out as short-lived presigned URLs
+minted per click. A thumbnail is the opposite — rendered by `next/image` on
+every course card, from an optimizer that runs server-side and carries no
+cookie — so its URL has to be stable and anonymously fetchable. The R2
+variables are also optional (§9.1), so an R2-only thumbnail would be a dead
+button in any deployment that has not configured them. The cost is the `local`
+SCORM driver's cost: a second API process cannot see what this one wrote. Put
+`UPLOAD_STORAGE_PATH` on shared storage before running more than one instance.
+
+| | |
+|---|---|
+| Uploaded by | `POST /api/admin/media/course-thumbnail` (multipart, `upload_content`) |
+| Attached by | the course save (`manage_courses`) or the session save (`manage_sessions`) |
+| Stored at | `<UPLOAD_STORAGE_PATH>/course-thumbnails/<uuid>.<ext>` |
+| Served at | `/uploads/course-thumbnails/<uuid>.<ext>`, `useStaticAssets`, no auth |
+| Cap | `COURSE_THUMBNAIL_MAX_BYTES` — 5 MiB, a constant, not an env var |
+| Formats | JPG, PNG, WebP, GIF. **Not SVG** — it can carry script, and this is our origin |
+
+Three things are load-bearing:
+
+- **The declared content type is not trusted.** The multipart `Content-Type` is
+  written by the client, so the bytes are checked against the format's own
+  magic number before anything is written into a directory this server
+  publishes. Without that, an HTML file labelled `image/png` would be hosted on
+  the API origin.
+- **The filename is a fresh UUID on every upload**, never derived from the
+  uploaded name. A caller cannot steer the write out of the directory, and a
+  replacement never reuses a path — which is what lets the static handler serve
+  it `immutable` with no risk of a cached URL showing the previous picture.
+- **An omitted `thumbnail_url` means "leave it alone"; an explicit `null` means
+  "remove it".** `CourseDto` and `SessionDto` both keep those apart (neither can
+  use the shared `nullable` transform, which collapses both to null) and the
+  services act on the difference. When the field collapsed, the settings form —
+  which sends name, description and the publish flag — blanked the picture, so
+  renaming a course deleted its thumbnail. It matters more on a session, where
+  every other field IS rewritten from the form on every save.
+- **The upload is guarded by `upload_content`, not by the permission that saves
+  the row.** The first version used `manage_courses`, on the argument that the
+  image had exactly one destination; it has two audiences now, `PermissionsGuard`
+  has deliberately no "any of" form, and making an admin hold `manage_courses`
+  to put a picture on a session would be surprising. `upload_content` already
+  guards every other file upload here, and an upload on its own changes nothing
+  — the row that references the key is saved behind `manage_courses` or
+  `manage_sessions` respectively.
+
+The stored file is dropped when it is replaced, when it is cleared, and when
+the course or session is deleted — all after the row is written, all
+best-effort (§8.4). A session delete is the case that needs care: the cascade
+on `courses.session_id` takes the row but not the bytes, so the path is read
+before the delete.
+The browser also rolls back its own upload if the course then fails to save
+(`DELETE /api/admin/media/course-thumbnail`), the same shape as the lesson
+editor's SCORM rollback, because it is the only party that knows at once.
+
+`GET /api/admin/courses/:id` now returns the same snake_case shape the list
+does. It previously handed back the raw Drizzle row, so the page reading it saw
+`undefined` for every field it named the list's way: a published course
+rendered as a draft, and its edit dialog saved that back — renaming a course
+quietly unpublished it.
+
 ### 10.8 Lesson content: video, SCORM, document — plus resources
 
 A lesson has **one primary content**, and may carry any number of **supporting
@@ -743,6 +838,7 @@ one module and one lesson of `content_type = 'session'` whose
 | Session event | What is written |
 |---|---|
 | session created / edited | training course + lesson created / kept in step |
+| session given a cover picture | `courses.thumbnail_url` on that training course (§10.10) |
 | learner added to roster | `user_course_assignments` row (this is the course card) |
 | learner removed from roster | assignment and any completion withdrawn |
 | admin marks session completed | `user_lesson_completions` for those who attended |
@@ -815,9 +911,9 @@ npm run db:reset-to-admin -- --commit
 npm run db:seed -- --confirm
 ```
 
-Neither script touches `server/storage/scorm/` or the R2 bucket — extracted
-packages and uploaded videos outlive a database wipe and must be cleared
-separately.
+Neither script touches `server/storage/scorm/`, `server/storage/uploads/` or
+the R2 bucket — extracted packages, uploaded videos and course thumbnails
+outlive a database wipe and must be cleared separately.
 
 ### 10.5 Leaderboard
 
@@ -951,6 +1047,9 @@ Answer these before writing code:
 - [ ] Does every filtered/joined column have an index, in both schema and migration (§6.3, §7.4)?
 - [ ] Are all list endpoints paginated (§7.6)?
 - [ ] Is input validated by a DTO with `class-validator`?
+- [ ] Does any free-text field need a length cap? A `description` always
+      does — `DESCRIPTION_MAX_LENGTH` from `common/content-limits.ts`,
+      never a number typed into the DTO (§8.5).
 - [ ] Are the status codes right (§8.2), and does the envelope match (§8.1)?
 - [ ] Does any response contain PII the caller should not see?
 - [ ] Are secrets read only through `ConfigService` (§9)?
