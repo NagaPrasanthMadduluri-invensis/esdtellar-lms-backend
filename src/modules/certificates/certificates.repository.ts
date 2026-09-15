@@ -8,6 +8,7 @@ import {
   certificates,
   courseModules,
   courses,
+  journeys,
   lessons,
   userAssessmentAttempts,
   userLessonCompletions,
@@ -202,6 +203,22 @@ export class CertificatesRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * A journey certificate's counterpart to `findByUserAndCourse` — checked
+   * before issuing so a replayed completion trigger never duplicates one,
+   * including a revoked row (§3.4, matching `autoIssue`'s own rule for
+   * course certificates).
+   */
+  async findByUserAndJourney(scope: OrgScope, userId: number, journeyId: number) {
+    const rows = await this.db.all<{ id: number; is_revoked: number }>(sql`
+      SELECT id, is_revoked FROM certificates
+      WHERE user_id = ${userId} AND journey_id = ${journeyId}
+        AND organization_id = ${scope.organizationId}
+      LIMIT 1
+    `);
+    return rows[0] ? { id: rows[0].id, isRevoked: rows[0].is_revoked } : null;
+  }
+
   /** `certificates` is an activity table — the row always takes the learner's org (§3.3). */
   async insert(
     scope: OrgScope,
@@ -221,19 +238,54 @@ export class CertificatesRepository {
     return created.id;
   }
 
-  /** Learner's own certificates. One join, no per-row follow-up queries. */
+  /**
+   * A journey certificate's `course_id` is NULL, which the Drizzle schema
+   * still types as NOT NULL until `scripts/migrate-journey-certificates.mjs`
+   * (a human checkpoint, §3.4) relaxes the live column — so this goes around
+   * the query builder with an explicit NULL rather than fighting that type.
+   */
+  async insertJourney(
+    scope: OrgScope,
+    input: {
+      userId: number;
+      journeyId: number;
+      certificateCode: string;
+      issuedAt: string;
+      finalScore: number | null;
+    },
+  ): Promise<number> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      INSERT INTO certificates
+        (organization_id, user_id, course_id, journey_id, certificate_code, issued_at, final_score, is_revoked)
+      VALUES (${scope.organizationId}, ${input.userId}, NULL, ${input.journeyId},
+              ${input.certificateCode}, ${input.issuedAt}, ${input.finalScore}, 0)
+      RETURNING id
+    `);
+    return rows[0].id;
+  }
+
+  /**
+   * Learner's own certificates. One join, no per-row follow-up queries.
+   *
+   * Both `courses` and `journeys` are LEFT joins, and both name columns are
+   * returned — a course certificate carries `courseName` and a NULL
+   * `journeyName`, a journey certificate the reverse. Additive: existing
+   * readers that only look at `courseName` are unaffected (§5).
+   */
   async listForLearner(scope: OrgScope, userId: number) {
     return this.db
       .select({
         id: certificates.id,
         certificateCode: certificates.certificateCode,
         courseName: courses.name,
+        journeyName: journeys.title,
         issuedAt: certificates.issuedAt,
         finalScore: certificates.finalScore,
         isRevoked: certificates.isRevoked,
       })
       .from(certificates)
-      .innerJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(journeys, eq(journeys.id, certificates.journeyId))
       .where(
         and(
           eq(certificates.userId, userId),
@@ -252,12 +304,14 @@ export class CertificatesRepository {
         firstName: users.firstName,
         lastName: users.lastName,
         courseName: courses.name,
+        journeyName: journeys.title,
         issuedAt: certificates.issuedAt,
         finalScore: certificates.finalScore,
         isRevoked: certificates.isRevoked,
       })
       .from(certificates)
-      .innerJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(journeys, eq(journeys.id, certificates.journeyId))
       .innerJoin(users, eq(users.id, certificates.userId))
       .where(
         and(
@@ -290,13 +344,15 @@ export class CertificatesRepository {
         firstName: users.firstName,
         lastName: users.lastName,
         courseName: courses.name,
+        journeyName: journeys.title,
         certificateCode: certificates.certificateCode,
         issuedAt: certificates.issuedAt,
         finalScore: certificates.finalScore,
         isRevoked: certificates.isRevoked,
       })
       .from(certificates)
-      .innerJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(journeys, eq(journeys.id, certificates.journeyId))
       .innerJoin(users, eq(users.id, certificates.userId))
       .where(and(...conditions))
       .orderBy(desc(certificates.issuedAt));
@@ -313,11 +369,13 @@ export class CertificatesRepository {
     const rows = await this.db
       .select({
         courseName: courses.name,
+        journeyName: journeys.title,
         issuedAt: certificates.issuedAt,
         isRevoked: certificates.isRevoked,
       })
       .from(certificates)
-      .innerJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(courses, eq(courses.id, certificates.courseId))
+      .leftJoin(journeys, eq(journeys.id, certificates.journeyId))
       .where(eq(certificates.certificateCode, code))
       .limit(1);
 
@@ -369,6 +427,7 @@ export class CertificatesRepository {
         id: certificates.id,
         userId: certificates.userId,
         courseId: certificates.courseId,
+        journeyId: certificates.journeyId,
         isRevoked: certificates.isRevoked,
       })
       .from(certificates)

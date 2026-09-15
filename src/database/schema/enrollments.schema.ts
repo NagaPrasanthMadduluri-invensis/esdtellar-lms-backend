@@ -1,6 +1,7 @@
 import { index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { courses, lessons } from './courses.schema';
+import { journeys } from './journeys.schema';
 import { users } from './users.schema';
 
 /** Admin -> learner course assignment. One row per learner per course. */
@@ -21,6 +22,19 @@ export const userCourseAssignments = pgTable(
       .notNull()
       .defaultNow(),
     dueDate: text('due_date'),
+    /**
+     * NULL means an admin assigned this course directly. A value means the
+     * row exists only because that journey assigned it, and is what makes the
+     * owner's sequential-gating rule work: a direct assignment (NULL) is
+     * always open, one carrying a journey id is gated by that journey's order
+     * (`specs/learning-journeys.md` §3.5, §4.3). Assigning a journey never
+     * overwrites an existing row, so a pre-existing direct assignment keeps
+     * its NULL.
+     */
+    sourceJourneyId: integer('source_journey_id').references(
+      () => journeys.id,
+      { onDelete: 'set null' },
+    ),
   },
   (table) => [
     unique('user_course_assignments_user_course_unique').on(

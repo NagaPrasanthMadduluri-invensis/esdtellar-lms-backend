@@ -84,9 +84,10 @@ export class MediaRepository {
       url: string | null;
       is_preview: number;
       assigned: number;
+      course_id: number;
     }>(sql`
       SELECT r.id, r.lesson_id, r.title, r.source, r.file_key, r.file_name,
-             r.mime_type, r.url, l.is_preview,
+             r.mime_type, r.url, l.is_preview, cm.course_id,
              (SELECT COUNT(*) FROM user_course_assignments uca
               WHERE uca.user_id = ${userId}
                 AND uca.course_id = cm.course_id) AS assigned

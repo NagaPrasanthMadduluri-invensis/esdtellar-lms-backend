@@ -1015,6 +1015,66 @@ export async function seedProfileMigration(db) {
    Idempotent — skips if any sessions exist
 ───────────────────────────────────────────── */
 
+/**
+ * One demo learning journey, built from courses this script already seeded.
+ *
+ * COUNT-gated like every other seeder here, so re-running is safe. It seeds the
+ * path and its ordering only — NOT enrollments: who is on a journey is a
+ * decision an admin makes in the UI, and seeding it would put a half-finished
+ * path in front of someone evaluating the feature.
+ */
+export async function seedJourneys(db, orgId) {
+  const existing = await db.execute({
+    sql: "SELECT COUNT(*)::int AS n FROM journeys WHERE organization_id = $1",
+    args: [orgId],
+  });
+  if (Number(existing.rows[0].n) > 0) return;
+
+  // Resolve by name so the journey survives whatever ids the courses got.
+  const wanted = [
+    "Project Management Fundamentals",
+    "Agile & Scrum Essentials",
+    "Leadership & Communication",
+  ];
+  const found = await db.execute({
+    sql: `SELECT id, name FROM courses
+           WHERE organization_id = $1 AND name = ANY($2::text[])`,
+    args: [orgId, wanted],
+  });
+  const byName = new Map(found.rows.map((r) => [r.name, Number(r.id)]));
+  const ordered = wanted.filter((n) => byName.has(n));
+  if (ordered.length < 2) return;   // nothing worth showing
+
+  const journey = await db.execute({
+    sql: `INSERT INTO journeys
+            (organization_id, title, description, tag, skills, badge_label,
+             badge_icon, points_bonus, is_active)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)
+          RETURNING id`,
+    args: [
+      orgId,
+      "Project Leadership Path",
+      "Three courses that take a new manager from running a project to leading the people on it. Finish all three to earn the Project Leader badge and a journey certificate.",
+      "Management · Role Path",
+      "Project Planning, Agile Delivery, Team Leadership",
+      "Project Leader",
+      "award",
+      300,
+    ],
+  });
+  const journeyId = Number(journey.rows[0].id);
+
+  for (const [index, name] of ordered.entries()) {
+    await db.execute({
+      sql: `INSERT INTO journey_courses
+              (organization_id, journey_id, course_id, sort_order, is_required)
+            VALUES ($1, $2, $3, $4, 1)
+            ON CONFLICT (journey_id, course_id) DO NOTHING`,
+      args: [orgId, journeyId, byName.get(name), index],
+    });
+  }
+}
+
 export async function seedSessions(db, orgId) {
   // Sessions always carry a real org, never the platform org (spec §3.3).
   // Activity — roster, attendance — carries the learner's org; see
@@ -1217,6 +1277,7 @@ const steps = [
   ["profile fields", seedProfileMigration],
   ["draft course", seedDraftCourse],
   ["training sessions", seedSessions],
+  ["learning journeys", seedJourneys],
 ];
 
 for (const [label, fn] of steps) {

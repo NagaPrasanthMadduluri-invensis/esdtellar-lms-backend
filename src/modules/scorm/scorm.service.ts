@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { JourneyGateService } from '@/modules/journeys/journey-gate.service';
 
 import type {
   AssignScormDto,
@@ -20,6 +21,7 @@ import type {
 import { parseInteractions } from './interactions.util';
 import { parseManifest } from './manifest.parser';
 import type { OrgScope } from '@/database/org-scope';
+import { JourneysService } from '@/modules/journeys/journeys.service';
 
 import { ScormRepository } from './scorm.repository';
 import { ScormDatamodelRepository } from './scorm-datamodel.repository';
@@ -60,6 +62,8 @@ export class ScormService {
     private readonly storage: ScormStorageService,
     private readonly datamodel: ScormDatamodelRepository,
     private readonly certificates: CertificatesService,
+    private readonly journeys: JourneysService,
+    private readonly gate: JourneyGateService,
   ) {}
 
   /* ── Admin ── */
@@ -602,12 +606,24 @@ export class ScormService {
       if (lesson) {
         await this.repository.markLessonComplete(scope, userId, Number(lesson.id));
         await this.certificates.autoIssue(scope, userId, Number(lesson.course_id));
+        // Passing the assessment can be what finishes the course, and the
+        // course can be the last step of a journey (spec §4.2).
+        await this.journeys.onCourseProgress(scope, userId, Number(lesson.course_id));
       }
     }
 
     return { message: 'Tracking saved' };
   }
 
+  /**
+   * The one chokepoint every learner-facing SCORM route already goes through,
+   * which is why the journey gate belongs here rather than on each route: a
+   * package attached to a locked lesson must not launch, track or commit, and
+   * a commit is what completes the lesson and advances the journey.
+   *
+   * A standalone package (assigned directly, in no lesson) has no course to
+   * gate, so `courseIdForPackage` returns null and the gate is skipped.
+   */
   private async assertAccess(
     scope: OrgScope,
     userId: number,
@@ -615,6 +631,10 @@ export class ScormService {
   ): Promise<void> {
     if (!(await this.repository.hasAccess(scope, userId, packageId))) {
       throw new ForbiddenException('Not enrolled in this package');
+    }
+    const courseId = await this.repository.courseIdForPackage(scope, packageId);
+    if (courseId !== null) {
+      await this.gate.assertUnlocked(scope, userId, courseId);
     }
   }
 }

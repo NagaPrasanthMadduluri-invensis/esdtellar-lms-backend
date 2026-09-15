@@ -68,6 +68,11 @@ export const PERMISSIONS = {
   view_certificates: 'View certificates',
   manage_certificates: 'Issue and revoke certificates',
   manage_sessions: 'Create and edit training sessions',
+  // Enforced by `@Permissions('manage_journeys')` on every journey write
+  // route (create, update, delete, reorder courses) in
+  // `modules/journeys/admin-journeys.controller.ts`. The two assign routes
+  // use `assign_learning` instead, matching how courses are assigned.
+  manage_journeys: 'Create and edit learning journeys',
   manage_roles: 'Manage roles and permissions',
   view_team_learning: 'View team learning',
   // Trainer portal (`specs/rbac.md` §3.6.1). Each is additionally scoped to

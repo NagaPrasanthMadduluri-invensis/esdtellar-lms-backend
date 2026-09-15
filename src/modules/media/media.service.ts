@@ -14,6 +14,8 @@ import { ConfigService } from '@nestjs/config';
 import type { OrgScope } from '@/database/org-scope';
 
 import { toWebVtt } from './captions.util';
+import { JourneyGateService } from '@/modules/journeys/journey-gate.service';
+
 import { MediaRepository } from './media.repository';
 import { ImageStorageService } from './storage/image-storage.service';
 import { R2StorageService } from './storage/r2-storage.service';
@@ -44,6 +46,7 @@ export class MediaService {
     private readonly repository: MediaRepository,
     private readonly storage: R2StorageService,
     private readonly images: ImageStorageService,
+    private readonly gate: JourneyGateService,
     private readonly config: ConfigService,
   ) {}
 
@@ -541,6 +544,11 @@ export class MediaService {
       throw new ForbiddenException('You are not enrolled in this course.');
     }
 
+    // A journey's sequence gates CONTENT, not just the lesson page. Signing a
+    // URL for a locked lesson would hand over exactly what the lock exists to
+    // withhold (spec §4.3).
+    await this.gate.assertUnlocked(scope, userId, Number(resource.course_id));
+
     if (resource.source === 'link') {
       return { url: resource.url, expiresIn: 0, title: resource.title };
     }
@@ -575,6 +583,11 @@ export class MediaService {
       throw new ForbiddenException('You are not enrolled in this course.');
     }
 
+    // A journey's sequence gates CONTENT, not just the lesson page. Signing a
+    // URL for a locked lesson would hand over exactly what the lock exists to
+    // withhold (spec §4.3).
+    await this.gate.assertUnlocked(scope, userId, Number(lesson.course_id));
+
     const cap = lesson.video_duration_seconds;
     const watched =
       cap && cap > 0
@@ -602,6 +615,11 @@ export class MediaService {
     if (!lesson.assigned && !lesson.is_preview) {
       throw new ForbiddenException('You are not enrolled in this course.');
     }
+
+    // A journey's sequence gates CONTENT, not just the lesson page. Signing a
+    // URL for a locked lesson would hand over exactly what the lock exists to
+    // withhold (spec §4.3).
+    await this.gate.assertUnlocked(scope, userId, Number(lesson.course_id));
 
     // A document lesson has no video, so the player never asks — but the same
     // endpoint is what hands back a link to the document, and it must be signed

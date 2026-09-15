@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { type SQL, and, asc, eq, inArray, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
 import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
@@ -10,6 +10,19 @@ import {
   userCourseAssignments,
   lessonResources,
 } from '@/database/schema';
+
+/**
+ * An `IN (...)` list of integer ids.
+ *
+ * NOT `= ANY(${ids})`: Drizzle's `sql` template does not bind a JS array as a
+ * single Postgres array parameter — it expands it into comma-separated bound
+ * params, which is `IN`'s shape and not `ANY`'s. The result parsed as a record
+ * and the query failed at runtime with `operator does not exist: integer =
+ * record`, so every caller 500'd. Same idiom as `JourneysRepository.idList`.
+ */
+function idList(ids: number[]): SQL {
+  return sql`(${sql.join(ids.map((id) => sql`${id}::int`), sql`, `)})`;
+}
 
 @Injectable()
 export class CoursesRepository {
@@ -543,7 +556,7 @@ export class CoursesRepository {
     if (userIds.length === 0) return [];
     const rows = await this.db.all<{ id: number }>(sql`
       SELECT id FROM users
-      WHERE id = ANY(${userIds}) AND role = 'learner' AND ${orgScope('users', scope)}
+      WHERE id IN ${idList(userIds)} AND role = 'learner' AND ${orgScope('users', scope)}
     `);
     return rows.map((r) => Number(r.id));
   }
@@ -605,7 +618,20 @@ export class CoursesRepository {
           dueDate: input.dueDate,
         })),
       )
-      .onConflictDoNothing()
+      /**
+       * A direct assignment CLEARS `source_journey_id`.
+       *
+       * The row may already exist because a journey put it there, in which
+       * case it is gated by that journey's sequence. An admin assigning the
+       * course by hand is deliberately opening it — that is the rule: a course
+       * is never locked globally, only its position inside a journey is
+       * (BACKEND_STRUCTURE.md §10.11). `DO NOTHING` left the journey's lock in
+       * place and the admin's action silently did nothing.
+       */
+      .onConflictDoUpdate({
+        target: [userCourseAssignments.userId, userCourseAssignments.courseId],
+        set: { sourceJourneyId: null },
+      })
       .returning({ id: userCourseAssignments.id });
 
     return rows.length;
@@ -618,13 +644,20 @@ export class CoursesRepository {
     assignedBy: number;
     dueDate: string | null;
   }): Promise<void> {
-    await this.db.insert(userCourseAssignments).values({
-      organizationId: input.organizationId,
-      userId: input.userId,
-      courseId: input.courseId,
-      assignedBy: input.assignedBy,
-      dueDate: input.dueDate,
-    });
+    // Same rule as createAssignments above: assigning by hand opens the course.
+    await this.db
+      .insert(userCourseAssignments)
+      .values({
+        organizationId: input.organizationId,
+        userId: input.userId,
+        courseId: input.courseId,
+        assignedBy: input.assignedBy,
+        dueDate: input.dueDate,
+      })
+      .onConflictDoUpdate({
+        target: [userCourseAssignments.userId, userCourseAssignments.courseId],
+        set: { sourceJourneyId: null },
+      });
   }
 
   async updateAssignmentDueDate(

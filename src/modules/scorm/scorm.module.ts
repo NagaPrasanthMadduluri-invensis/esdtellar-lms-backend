@@ -18,6 +18,8 @@ import { LocalScormStorageDriver } from './storage/local-scorm-storage.driver';
 import { S3ScormStorageDriver } from './storage/s3-scorm-storage.driver';
 import { SCORM_STORAGE_DRIVER } from './storage/scorm-storage.driver';
 import { ScormStorageService } from './storage/scorm-storage.service';
+import { JourneyGateModule } from '@/modules/journeys/journey-gate.module';
+import { JourneysModule } from '@/modules/journeys/journeys.module';
 
 /**
  * ScormStorageService, ScormContentMiddleware and ScormContentHandler are all
@@ -36,8 +38,7 @@ import { ScormStorageService } from './storage/scorm-storage.service';
     AuthModule,
     CertificatesModule,
     OrganizationsModule,
-    MediaModule,
-  ],
+    MediaModule, JourneysModule, JourneyGateModule],
   controllers: [AdminScormController, LearnerScormController],
   providers: [
     ScormService,

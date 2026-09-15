@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { type SQL, and, eq, sql } from 'drizzle-orm';
 
 import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
 import { DatabaseService } from '@/database/database.service';
@@ -8,6 +8,19 @@ import {
   userLessonCompletions,
   userScormAssignments,
 } from '@/database/schema';
+
+/**
+ * An `IN (...)` list of integer ids.
+ *
+ * NOT `= ANY(${ids})`: Drizzle's `sql` template does not bind a JS array as a
+ * single Postgres array parameter — it expands it into comma-separated bound
+ * params, which is `IN`'s shape and not `ANY`'s. The result parsed as a record
+ * and the query failed at runtime with `operator does not exist: integer =
+ * record`, so every caller 500'd. Same idiom as `JourneysRepository.idList`.
+ */
+function idList(ids: number[]): SQL {
+  return sql`(${sql.join(ids.map((id) => sql`${id}::int`), sql`, `)})`;
+}
 
 @Injectable()
 export class ScormRepository {
@@ -351,7 +364,7 @@ export class ScormRepository {
     if (userIds.length === 0) return [];
     const rows = await this.db.all<{ id: number }>(sql`
       SELECT id FROM users
-      WHERE id = ANY(${userIds}) AND role = 'learner' AND ${orgScope('users', scope)}
+      WHERE id IN ${idList(userIds)} AND role = 'learner' AND ${orgScope('users', scope)}
     `);
     return rows.map((r) => Number(r.id));
   }
@@ -427,6 +440,22 @@ export class ScormRepository {
    * A learner reaches a package either by direct assignment or because it is
    * embedded as a lesson in a course they are enrolled on.
    */
+  /**
+   * The course a package is delivered through, or null when it is standalone.
+   * Used by the journey gate — a standalone package has no course to lock.
+   */
+  async courseIdForPackage(scope: OrgScope, packageId: number): Promise<number | null> {
+    const rows = await this.db.all<{ course_id: number }>(sql`
+      SELECT cm.course_id
+      FROM lessons l
+      JOIN course_modules cm ON cm.id = l.module_id
+      WHERE l.scorm_package_id = ${packageId} AND l.is_active = 1 AND cm.is_active = 1
+        AND ${contentScope('cm', scope)}
+      LIMIT 1
+    `);
+    return rows[0] ? Number(rows[0].course_id) : null;
+  }
+
   async hasAccess(
     scope: OrgScope,
     userId: number,

@@ -12,11 +12,13 @@ import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { AssessmentsModule } from './modules/assessments/assessments.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { BadgesModule } from './modules/badges/badges.module';
 import { CertificatesModule } from './modules/certificates/certificates.module';
 import { CoursesModule } from './modules/courses/courses.module';
 import { LearnerModule } from './modules/learner/learner.module';
 import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { LearningHoursModule } from './modules/learning-hours/learning-hours.module';
+import { JourneysModule } from './modules/journeys/journeys.module';
 import { MediaModule } from './modules/media/media.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { ReportsModule } from './modules/reports/reports.module';
@@ -49,6 +51,8 @@ import { UsersModule } from './modules/users/users.module';
     MediaModule,
     LearningHoursModule,
     LeaderboardModule,
+    JourneysModule,
+    BadgesModule,
   ],
   providers: [
     // Order matters, and all four are global so a new controller is covered

@@ -69,10 +69,12 @@ export class LeaderboardService {
         dept: row.department || 'Unknown',
         points:
           Number(row.lessons) * POINTS_PER_LESSON +
-          passed * POINTS_PER_PASSED_ASSESSMENT,
+          passed * POINTS_PER_PASSED_ASSESSMENT +
+          Number(row.journey_points),
         monthPoints:
           Number(row.lessons_month) * POINTS_PER_LESSON +
-          Number(row.passed_month) * POINTS_PER_PASSED_ASSESSMENT,
+          Number(row.passed_month) * POINTS_PER_PASSED_ASSESSMENT +
+          Number(row.journey_points_month),
         badges: passed,
         attempts,
         avgScore: row.avg_score !== null ? Math.round(Number(row.avg_score)) : null,

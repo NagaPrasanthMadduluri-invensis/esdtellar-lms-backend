@@ -7,8 +7,11 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 
+import { BADGE_CATALOGUE, BADGES, type BadgeDescriptor } from '@/common/badges';
 import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
 import type { OrgScope } from '@/database/org-scope';
+import { badgeHint } from '@/modules/badges/badge-hint.util';
+import { BadgesService } from '@/modules/badges/badges.service';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
 // The points model itself, not the ranking: the card promises what the board
@@ -18,6 +21,7 @@ import { LearningHoursService } from '@/modules/learning-hours/learning-hours.se
 // A pure derivation, not a service: "in progress" has to mean the same thing on
 // the course card as it does in the calendar, so both read the one function.
 import { displayStatus } from '@/modules/sessions/session-status.util';
+import { JourneysService } from '@/modules/journeys/journeys.service';
 
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import {
@@ -44,37 +48,22 @@ import {
 } from './learner.constants';
 import { LearnerRepository } from './learner.repository';
 
-/** Synthetic per-course metadata for the My Courses cards. */
-const BADGE_DEFS = [
-  { id: 'first_steps', tier: 'BRONZE', title: 'First Steps', desc: 'Completed your first course', icon: 'target' },
-  { id: 'quick_learner', tier: null, title: 'Quick Learner', desc: 'Completed a course before its due date', icon: 'zap' },
-  { id: 'assessment_topper', tier: 'GOLD', title: 'Assessment Topper', desc: 'Scored 90% or higher on an assessment', icon: 'trophy' },
-  { id: 'perfectionist', tier: 'PLATINUM', title: 'Perfectionist', desc: 'Achieved a perfect 100% on an assessment', icon: 'perfect' },
-  { id: 'committed_learner', tier: 'SILVER', title: 'Committed Learner', desc: 'Completed 3 or more courses', icon: 'books' },
-  { id: 'scholar', tier: 'GOLD', title: 'Scholar', desc: 'Completed 5 or more courses', icon: 'scholar' },
-  { id: 'feedback_hero', tier: null, title: 'Feedback Hero', desc: 'Submitted feedback on 3 or more courses', icon: 'feedback' },
-  { id: 'high_flyer', tier: 'SILVER', title: 'High Flyer', desc: 'Earned 500 or more points', icon: 'rocket' },
-  { id: 'learning_champion', tier: 'GOLD', title: 'Learning Champion', desc: 'Earned 1000 or more points', icon: 'crown' },
-] as const;
-
 /**
- * The badges reached purely by finishing courses, keyed by the completed-course
- * count that earns them. The card nudge ("finishing this earns Committed
- * Learner") is derived from this, so it stays in step with `hasBadge` below —
- * a threshold changed there and not here would advertise a badge that is not
- * awarded. Point-total badges (high_flyer, learning_champion) are deliberately
- * absent: they need the learner's org-wide points, which the courses page does
- * not fetch, and the achievements page already tracks them.
+ * The badges reached purely by finishing courses, read from the catalogue
+ * (`common/badges.ts`) rather than a second copy of their thresholds — a
+ * number changed there and not here would advertise a badge that is not
+ * actually awarded (`BadgesService.syncFor` is the one place that decides).
+ * Point-total badges (high_flyer, learning_champion) are deliberately absent
+ * from the course-card nudge: they need the learner's org-wide points, which
+ * the courses page does not fetch, and the achievements page already tracks
+ * them.
  */
-const COURSE_COUNT_BADGES: Record<number, string> = {
-  1: 'first_steps',
-  3: 'committed_learner',
-  5: 'scholar',
-};
+const COURSE_COUNT_MILESTONES = BADGE_CATALOGUE.filter(
+  (b) => b.metric === 'completedCourses',
+).sort((a, b) => a.threshold - b.threshold);
 
-const BADGE_BY_ID = new Map<string, (typeof BADGE_DEFS)[number]>(
-  BADGE_DEFS.map((b) => [b.id as string, b]),
-);
+const toDisplayTier = (tier: BadgeDescriptor['tier']): string | null =>
+  tier ? tier.toUpperCase() : null;
 
 /** The advertised reward on a course card: points, plus what they unlock. */
 interface CourseRewardView extends CourseReward {
@@ -92,15 +81,6 @@ interface CourseRewardView extends CourseReward {
   onTimeBadge: { id: string; title: string; by: string } | null;
 }
 
-interface BadgeStats {
-  points: number;
-  completedCourses: number;
-  completedBeforeDue: number;
-  hasScore90Plus: boolean;
-  hasScore100: boolean;
-  feedbackCount: number;
-}
-
 @Injectable()
 export class LearnerService {
   constructor(
@@ -108,6 +88,8 @@ export class LearnerService {
     private readonly certificates: CertificatesService,
     private readonly hours: LearningHoursService,
     private readonly leaderboard_: LeaderboardService,
+    private readonly badges: BadgesService,
+    private readonly journeys: JourneysService,
   ) {}
 
   /* ─────────────────────────────────────────────
@@ -125,7 +107,8 @@ export class LearnerService {
    * (§7.1) — the alternative was asking the badge logic per card.
    *
    * Every threshold here is read from the same place the award is decided
-   * (`COURSE_COUNT_BADGES` / `hasBadge`, `courseReward`), because a card that
+   * (`common/badges.ts`'s catalogue, via `BadgesService.syncFor`; `courseReward`
+   * for the points), because a card that
    * over-promises is worse than a card that says nothing.
    */
   private rewardMapper(
@@ -151,14 +134,7 @@ export class LearnerService {
     // same badge and the same distance to it — the nearest threshold ABOVE the
     // current count, not only an exact next-course hit, or a learner sitting on
     // one completed course would be told nothing until they reached two.
-    const nextThreshold = Object.keys(COURSE_COUNT_BADGES)
-      .map(Number)
-      .sort((a, b) => a - b)
-      .find((n) => n > completedCourses);
-    const nextBadge =
-      nextThreshold === undefined
-        ? undefined
-        : BADGE_BY_ID.get(COURSE_COUNT_BADGES[nextThreshold]);
+    const nextMilestone = COURSE_COUNT_MILESTONES.find((b) => b.threshold > completedCourses);
     const now = today();
 
     return (row) => {
@@ -175,13 +151,13 @@ export class LearnerService {
       return {
         ...reward,
         unlocksBadge:
-          complete || !nextBadge || nextThreshold === undefined
+          complete || !nextMilestone
             ? null
             : {
-                id: nextBadge.id,
-                title: nextBadge.title,
-                tier: nextBadge.tier,
-                coursesToGo: nextThreshold - completedCourses,
+                id: nextMilestone.id,
+                title: nextMilestone.label,
+                tier: toDisplayTier(nextMilestone.tier),
+                coursesToGo: nextMilestone.threshold - completedCourses,
               },
         // Suppressed for a session training: the learner cannot finish one
         // themselves (§10.7), so dangling a deadline badge in front of them
@@ -191,7 +167,7 @@ export class LearnerService {
         onTimeBadge:
           complete || quickLearnerEarned || row.session_id !== null || due < now
             ? null
-            : { id: 'quick_learner', title: 'Quick Learner', by: formatDate(due) },
+            : { id: 'quick_learner', title: BADGES.quick_learner.label, by: formatDate(due) },
       };
     };
   }
@@ -578,6 +554,16 @@ export class LearnerService {
       throw new ForbiddenException('Access denied');
     }
 
+    /**
+     * A journey's sequence is enforced here, not only drawn in the UI.
+     * Otherwise the lock is a CSS rule and the next course is one URL away.
+     *
+     * This only ever refuses a course the learner reached THROUGH a journey
+     * (`source_journey_id` set). A course an admin assigned directly is open
+     * regardless of where it sits in someone's path — spec §4.3.
+     */
+    await this.journeys.assertCourseUnlocked(scope, userId, Number(lesson.course_id));
+
     // One query gives every lesson in the course with its completion state,
     // which is enough to resolve both the lock check and the next-lesson link.
     // The resources come alongside it rather than after — they are needed on
@@ -700,9 +686,19 @@ export class LearnerService {
       );
     }
 
+    // Enforce the journey sequence on the WRITE too. Gating only the lesson
+    // read left the lock trivially bypassable: POST the completion directly
+    // and the course completes, crediting hours, a certificate and the journey
+    // itself (spec §4.3).
+    await this.journeys.assertCourseUnlocked(scope, userId, courseId);
+
     await this.repository.markLessonComplete(scope, userId, lessonId);
-    // Finishing the last lesson can complete the course. Best-effort.
+    // Finishing the last lesson can complete the course, and completing the
+    // course can complete a journey. All best-effort — a certificate, badge or
+    // journey failure must never break marking a lesson complete (§8.4).
     await this.certificates.autoIssue(scope, userId, courseId);
+    await this.badges.syncForBestEffort(scope, userId);
+    await this.journeys.onCourseProgress(scope, userId, courseId);
 
     return { message: 'Lesson marked as complete' };
   }
@@ -977,46 +973,35 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async achievements(scope: OrgScope, userId: number) {
-    const [standings, assigned, attempts, lessonEvents, passedEvents] =
-      await Promise.all([
-        this.leaderboard_.standings(scope),
-        this.repository.assignedCourses(scope, userId),
-        this.repository.allAttempts(scope, userId),
-        this.repository.lessonEvents(scope, userId, 10),
-        this.repository.assessmentEvents(scope, userId, 100, true),
-      ]);
+    const [standings, lessonEvents, passedEvents] = await Promise.all([
+      this.leaderboard_.standings(scope),
+      this.repository.lessonEvents(scope, userId, 10),
+      this.repository.assessmentEvents(scope, userId, 100, true),
+    ]);
 
     const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
     const points = myStanding?.points ?? 0;
     const rank = myStanding?.rank ?? standings.entries.length + 1;
 
-    let completedCourses = 0;
-    let completedBeforeDue = 0;
-    for (const course of assigned) {
-      const total = Number(course.total_lessons);
-      const done = Number(course.completed_lessons);
-      if (total > 0 && done >= total) {
-        completedCourses++;
-        const due = addDays(course.assigned_at, DUE_DAYS);
-        if (course.last_activity && course.last_activity.slice(0, 10) <= due) {
-          completedBeforeDue++;
-        }
-      }
-    }
+    // Persisted on award, never recomputed (spec §4.5) — `points` is passed in
+    // so this does not re-run the leaderboard's own bulk query a second time.
+    const { stats } = await this.badges.syncFor(scope, userId, points);
+    const earned = await this.badges.earnedKeys(scope, userId);
 
-    const stats: BadgeStats = {
-      points,
-      completedCourses,
-      completedBeforeDue,
-      hasScore90Plus: attempts.some((a) => Number(a.score) >= 90),
-      hasScore100: attempts.some((a) => Number(a.score) === 100),
-      feedbackCount: 0,
-    };
-
-    const badges = BADGE_DEFS.map((badge) => ({
-      ...badge,
-      earned: this.hasBadge(badge.id, stats),
-    }));
+    // The nine badges this page has always shown — the three journey
+    // milestones (`journeysCompleted`) are new, and belong to the dedicated
+    // `GET /learner/badges` endpoint instead of changing what this one has
+    // always returned (spec: "keep the SAME response shape").
+    const badges = BADGE_CATALOGUE.filter((def) => def.metric !== 'journeysCompleted').map(
+      (def) => ({
+        id: def.id,
+        tier: toDisplayTier(def.tier),
+        title: def.label,
+        desc: def.description,
+        icon: def.icon,
+        earned: earned.has(def.id),
+      }),
+    );
     const next = badges.find((b) => !b.earned) ?? null;
 
     const pointsHistory = [
@@ -1048,40 +1033,9 @@ export class LearnerService {
         earnedCount: badges.filter((b) => b.earned).length,
       },
       badges,
-      nextBadge: next ? { ...next, hint: this.badgeHint(next.id, stats) } : null,
+      nextBadge: next ? { ...next, hint: badgeHint(BADGES[next.id], stats[BADGES[next.id].metric]) } : null,
       pointsHistory,
     };
-  }
-
-  private hasBadge(id: string, s: BadgeStats): boolean {
-    switch (id) {
-      case 'first_steps': return s.completedCourses >= 1;
-      case 'quick_learner': return s.completedBeforeDue >= 1;
-      case 'assessment_topper': return s.hasScore90Plus;
-      case 'perfectionist': return s.hasScore100;
-      case 'committed_learner': return s.completedCourses >= 3;
-      case 'scholar': return s.completedCourses >= 5;
-      case 'feedback_hero': return s.feedbackCount >= 3;
-      case 'high_flyer': return s.points >= 500;
-      case 'learning_champion': return s.points >= 1000;
-      default: return false;
-    }
-  }
-
-  private badgeHint(id: string, s: BadgeStats): string {
-    const plural = (n: number) => (n !== 1 ? 's' : '');
-    switch (id) {
-      case 'first_steps': return `Complete ${1 - s.completedCourses} more course`;
-      case 'quick_learner': return 'Finish a course before its due date';
-      case 'assessment_topper': return 'Score 90% or higher on any assessment';
-      case 'perfectionist': return 'Score 100% on any assessment';
-      case 'committed_learner': return `Complete ${3 - s.completedCourses} more course${plural(3 - s.completedCourses)}`;
-      case 'scholar': return `Complete ${5 - s.completedCourses} more course${plural(5 - s.completedCourses)}`;
-      case 'feedback_hero': return `Submit feedback on ${3 - s.feedbackCount} more course${plural(3 - s.feedbackCount)}`;
-      case 'high_flyer': return `Earn ${500 - s.points} more points`;
-      case 'learning_champion': return `Earn ${1000 - s.points} more points`;
-      default: return '';
-    }
   }
 
   /* ─────────────────────────────────────────────

@@ -18,6 +18,13 @@ export interface LeaderboardRow {
   attempts: number;
   avg_score: number | null;
   courses_month: number;
+  /**
+   * Sum of `points_bonus` over this learner's COMPLETED journeys (spec §4.4)
+   * — a journey's own bonus, not a flat constant, because a 3-course path and
+   * a 12-course path are not worth the same.
+   */
+  journey_points: number;
+  journey_points_month: number;
 }
 
 @Injectable()
@@ -40,6 +47,11 @@ export class LeaderboardRepository {
    *  - `is_active = 1`. Deactivated learners used to keep competing, and the
    *    admin dashboard's own user count already excluded them, so the same
    *    admin saw two different totals.
+   *
+   * `journey_points` / `journey_points_month` are the ONLY place a journey's
+   * `points_bonus` is summed (spec §4.4, BACKEND_STRUCTURE.md §10.5) — folded
+   * into `points`/`monthPoints` by `LeaderboardService`, never recomputed a
+   * second way, so the learner board and the admin board cannot disagree.
    */
   async standings(
     scope: OrgScope,
@@ -66,7 +78,16 @@ export class LeaderboardRepository {
          JOIN lessons l ON l.id = c.lesson_id
          JOIN course_modules cm ON cm.id = l.module_id
          WHERE c.user_id = u.id
-           AND to_char(c.completed_at, 'YYYY-MM') = ${thisMonth}) AS courses_month
+           AND to_char(c.completed_at, 'YYYY-MM') = ${thisMonth}) AS courses_month,
+        (SELECT COALESCE(SUM(j.points_bonus), 0)
+         FROM journey_enrollments je
+         JOIN journeys j ON j.id = je.journey_id
+         WHERE je.user_id = u.id AND je.completed_at IS NOT NULL) AS journey_points,
+        (SELECT COALESCE(SUM(j.points_bonus), 0)
+         FROM journey_enrollments je
+         JOIN journeys j ON j.id = je.journey_id
+         WHERE je.user_id = u.id AND je.completed_at IS NOT NULL
+           AND to_char(je.completed_at, 'YYYY-MM') = ${thisMonth}) AS journey_points_month
       FROM users u
       WHERE u.role = 'learner' AND u.is_active = 1 AND ${orgScope('u', scope)}
     `);

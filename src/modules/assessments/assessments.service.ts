@@ -7,6 +7,8 @@ import {
 
 import type { OrgScope } from '@/database/org-scope';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { JourneyGateService } from '@/modules/journeys/journey-gate.service';
+import { JourneysService } from '@/modules/journeys/journeys.service';
 
 import { AssessmentsRepository } from './assessments.repository';
 import type {
@@ -20,6 +22,8 @@ export class AssessmentsService {
   constructor(
     private readonly repository: AssessmentsRepository,
     private readonly certificates: CertificatesService,
+    private readonly journeys: JourneysService,
+    private readonly gate: JourneyGateService,
   ) {}
 
   /* ── Admin ── */
@@ -247,6 +251,9 @@ export class AssessmentsService {
 
     const courseId = Number(assessment.course_id);
     await this.assertAssigned(scope, userId, courseId);
+    // Passing an assessment completes a course, which can advance a journey —
+    // so a locked course's assessment must be refused like its lessons.
+    await this.gate.assertUnlocked(scope, userId, courseId);
 
     const key = await this.repository.answerKey(scope, assessmentId);
 
@@ -300,6 +307,9 @@ export class AssessmentsService {
     // Passing can complete the course. Best-effort — never breaks the attempt.
     if (isPassed === 1) {
       await this.certificates.autoIssue(scope, userId, courseId);
+      // Passing the assessment can be what finishes the course, and the
+      // course can be the last step of a journey (spec §4.2).
+      await this.journeys.onCourseProgress(scope, userId, courseId);
     }
 
     return {

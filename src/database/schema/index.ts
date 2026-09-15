@@ -12,6 +12,9 @@ export * from './organizations.schema';
 export * from './users.schema';
 export * from './roles.schema';
 export * from './courses.schema';
+// Depends on courses + users; certificates and enrollments below depend on it
+// in turn, so it must be exported here, before either.
+export * from './journeys.schema';
 export * from './enrollments.schema';
 export * from './assessments.schema';
 export * from './sessions.schema';

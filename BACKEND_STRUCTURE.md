@@ -579,6 +579,8 @@ Update this table with every module you move.
 | team learning (manager) | 1 | `server/src/modules/learner` |
 | change password (any authenticated role) | 1 | `server/src/modules/auth` |
 | course thumbnail (upload + rollback) | 2 | `server/src/modules/media` |
+| learning journeys (admin CRUD, assign, learner path) | 11 | `server/src/modules/journeys` |
+| badges (learner list; awards fire from completion triggers) | 1 | `server/src/modules/badges` |
 
 ### 10.9 SCORM object storage, and the granular data-model log
 
@@ -703,6 +705,81 @@ directories with no row at all (invisible to the application, so only a
 disk-vs-database comparison finds them). It refuses to touch a package with
 tracking, attempts or data-model rows even when no lesson carries it — that
 history is the record of someone's training.
+
+### 10.11 Learning journeys
+
+A **journey** is an ordered path of existing courses, with a badge, a points
+bonus and a standalone certificate at the end. `specs/learning-journeys.md` is
+the design; this section is what a maintainer needs to not break it.
+
+**Everything is derived except `completed_at`.** `journey_enrollments` stores
+who is on a journey and when they finished it, and nothing else. Percentage,
+per-course status and "current step" come from `user_lesson_completions` and
+the same completion definition `CertificatesService.evaluate()` already uses.
+This is §10.7's lesson applied again: teach nothing new about what "complete"
+means, and the dashboards, hours and leaderboard pick a journey up through
+definitions that already work.
+
+**The gate is on the assignment row, not the course.**
+`user_course_assignments.source_journey_id` is what makes the owner's rule
+work:
+
+| The learner's assignment row | Gate |
+|---|---|
+| `source_journey_id IS NULL` — an admin assigned it directly | **open, always** |
+| `source_journey_id = J` — the journey put it there | open only once every required earlier step in J is complete |
+
+So a course is never locked *globally*; only its position inside a journey is.
+An admin who assigns step 3 directly to somebody has deliberately opened it, and
+the journey view shows it open. Assigning a journey uses
+`ON CONFLICT (user_id, course_id) DO NOTHING`, so a pre-existing direct
+assignment keeps its NULL and stays open — the journey can never take a course
+away from someone who already had it.
+
+**The lock is enforced on every content path, not just the lesson page.**
+`JourneyGateService` (its own dependency-free module, so anything may import it
+— including the modules `JourneysModule` itself depends on) guards all six:
+the lesson read, the lesson-complete write, lesson media, video progress,
+resource URLs, SCORM (`assertAccess`, the one chokepoint every learner SCORM
+route already passes through) and assessment attempts. Gating only the read was
+the first version, and it was worth nothing: `GET` returned 403 while `POST
+.../complete` returned 200, so the whole course could be finished — hours,
+certificate and journey included — by skipping the page that checked.
+
+**A direct assignment clears the gate.** `createAssignments` /
+`createAssignment` do `ON CONFLICT ... DO UPDATE SET source_journey_id = NULL`,
+not `DO NOTHING`. An admin assigning a course by hand is deliberately opening
+it, and with `DO NOTHING` that action silently did nothing when the journey had
+already created the row.
+
+**Completion fires from the three triggers that already exist** — lesson
+complete, assessment submitted, SCORM commit — beside `autoIssue`, never on a
+schedule. `JourneysService.onCourseProgress()` is best-effort throughout (§8.4):
+a badge or certificate failure must not break marking a lesson complete.
+
+**Points are not written anywhere.** `LeaderboardRepository.standings()` sums
+`journeys.points_bonus` over completed enrollments as one subquery, so stamping
+`completed_at` IS the award. That is what keeps §10.5's single formula true —
+do not add a `points` column to an enrollment. Each journey carries its own
+bonus because a 3-course path and a 12-course path are not worth the same.
+
+**The journey certificate shares the `certificates` table**, coded
+`EDS-J<journeyId>-<userId>-<hash>` so it is tellable from a course certificate
+by eye. `course_id` is now nullable, with a CHECK that exactly one of
+`course_id` / `journey_id` is set and a partial unique index on each. That half
+was **not** additive, so it lives in `scripts/migrate-journey-certificates.mjs`
+(dry-run by default, `--commit` to apply) rather than the boot migration.
+
+**Badges are now stored, not derived.** `user_badges` records what was earned
+and when. The nine badges that predate journeys were recomputed on every
+request from thresholds written out three times in `learner.service.ts`, so a
+badge silently un-earned whenever the underlying data moved. They now live in
+`common/badges.ts` — the catalogue is code, for the same reason
+`common/permissions.ts` is — with each threshold stated once, and awards
+persisted. `GET /learner/achievements` keeps its original response shape.
+
+Note `LeaderboardEntry.badges` still means "distinct assessments passed". It is
+not a badge and never was; do not conflate the two.
 
 ### 10.10 Course thumbnails
 

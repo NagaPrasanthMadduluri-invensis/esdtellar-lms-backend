@@ -49,6 +49,23 @@ export class CertificatesService {
   }
 
   /**
+   * A journey certificate's code — same hash construction as `generateCode`,
+   * with the `J` (and the journey id in the `J<id>` slot rather than a course
+   * id) so the two are tellable apart by eye in a support ticket (§3.4).
+   */
+  generateJourneyCode(journeyId: number, userId: number): string {
+    const shorthash = createHash('sha256')
+      .update(
+        `J${journeyId}:${userId}:${Date.now()}:${randomBytes(8).toString('hex')}`,
+      )
+      .digest('hex')
+      .slice(0, 8)
+      .toUpperCase();
+
+    return `EDS-J${journeyId}-${userId}-${shorthash}`;
+  }
+
+  /**
    * Single source of truth for "has this learner earned a certificate?".
    *
    * A course is certifiable when every active lesson is complete AND, if the
@@ -145,6 +162,54 @@ export class CertificatesService {
   }
 
   /**
+   * Best-effort issuance for a completed journey (spec §3.4, §4.2), called by
+   * `JourneysService.onCourseProgress` the moment every required course in the
+   * journey is complete for this learner.
+   *
+   * Unlike `autoIssue`, this does NOT re-evaluate completion itself — the
+   * caller has already decided the journey is complete against the one
+   * definition of "complete" (§4.1), and re-deriving it here would be a
+   * second one. It only guards against a duplicate: ANY certificate row for
+   * (user, journey), including a revoked one, means this is a replay and
+   * nothing is issued (mirrors `autoIssue`'s own rule for a course).
+   *
+   * MUST NOT throw into the caller (§8.4) — a certificate failure cannot
+   * break marking a lesson complete. A journey has no assessment of its own,
+   * so `finalScore` is always null.
+   *
+   * Returns the new certificate id, or null when nothing was issued.
+   */
+  async issueForJourney(
+    scope: OrgScope,
+    userId: number,
+    journeyId: number,
+  ): Promise<number | null> {
+    try {
+      const existing = await this.repository.findByUserAndJourney(
+        scope,
+        userId,
+        journeyId,
+      );
+      if (existing) return null;
+
+      return await this.repository.insertJourney(scope, {
+        userId,
+        journeyId,
+        certificateCode: this.generateJourneyCode(journeyId, userId),
+        issuedAt: new Date().toISOString(),
+        finalScore: null,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Journey certificate issuance skipped for user=${userId} journey=${journeyId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Admin-issued certificate.
    *
    * Deliberately does NOT require completion. Auto-issue already covers the
@@ -220,12 +285,14 @@ export class CertificatesService {
     };
   }
 
+  /** `journeyName` is additive — set only on a `J`-code row (§5). */
   async listForLearner(scope: OrgScope, userId: number) {
     const rows = await this.repository.listForLearner(scope, userId);
     return rows.map((row) => ({
       id: row.id,
       certificateCode: row.certificateCode,
       courseName: row.courseName,
+      journeyName: row.journeyName,
       issuedAt: row.issuedAt,
       finalScore: row.finalScore,
       isRevoked: row.isRevoked === 1,
@@ -242,6 +309,7 @@ export class CertificatesService {
       certificateCode: row.certificateCode,
       learnerName: `${row.firstName} ${row.lastName}`,
       courseName: row.courseName,
+      journeyName: row.journeyName,
       issuedAt: row.issuedAt,
       finalScore: row.finalScore,
       isRevoked: row.isRevoked === 1,
@@ -257,6 +325,7 @@ export class CertificatesService {
       id: row.id,
       learnerName: `${row.firstName} ${row.lastName}`,
       courseName: row.courseName,
+      journeyName: row.journeyName,
       certificateCode: row.certificateCode,
       issuedAt: row.issuedAt,
       finalScore: row.finalScore,
@@ -278,7 +347,12 @@ export class CertificatesService {
       throw new ConflictException('Certificate is not revoked');
     }
 
-    const certificateCode = this.generateCode(cert.courseId, cert.userId);
+    // Exactly one of the two is set (§3.4's CHECK constraint) — the journey
+    // code format is picked the same way `verify()` tells the two apart.
+    const certificateCode =
+      cert.journeyId !== null
+        ? this.generateJourneyCode(cert.journeyId, cert.userId)
+        : this.generateCode(cert.courseId, cert.userId);
     const issuedAt = new Date().toISOString();
     await this.repository.reinstate(scope, id, certificateCode, issuedAt);
 
@@ -286,10 +360,11 @@ export class CertificatesService {
   }
 
   /**
-   * Public lookup. Returns course name, issue date and validity only — no
-   * learner name, email or employee id. Unknown codes return the same shape
-   * with `valid: false` rather than a 404, so the endpoint cannot be used to
-   * probe which codes exist.
+   * Public lookup. Returns course (or journey) name, issue date and validity
+   * only — no learner name, email or employee id. Unknown codes return the
+   * same shape with `valid: false` rather than a 404, so the endpoint cannot
+   * be used to probe which codes exist. `journeyName` is additive: a `J` code
+   * carries it and a NULL `courseName`, a course code the reverse (§5).
    */
   async verify(code: string) {
     const row = await this.repository.findByCodeForVerification(code);
@@ -297,6 +372,7 @@ export class CertificatesService {
       return {
         valid: false,
         courseName: null,
+        journeyName: null,
         issuedAt: null,
         isRevoked: null,
       };
@@ -306,6 +382,7 @@ export class CertificatesService {
     return {
       valid: !isRevoked,
       courseName: row.courseName,
+      journeyName: row.journeyName,
       issuedAt: row.issuedAt,
       isRevoked,
     };

@@ -1,6 +1,7 @@
 import { index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
+import { journeys } from './journeys.schema';
 import { users } from './users.schema';
 
 /**
@@ -16,9 +17,25 @@ export const certificates = pgTable(
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * NOT NULL here still — a course certificate. A journey certificate
+     * (`journeyId` below) is the exception, and relaxing this to nullable plus
+     * the `(course_id IS NULL) <> (journey_id IS NULL)` CHECK is a non-additive
+     * change left to `scripts/migrate-journey-certificates.mjs`, a human
+     * checkpoint (`specs/learning-journeys.md` §3.4).
+     */
     courseId: integer('course_id')
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
+    /**
+     * Set for a journey certificate instead of a course one — mutually
+     * exclusive with `courseId` once the checkpoint script's CHECK constraint
+     * lands (§3.4). Code: `EDS-J<journeyId>-<userId>-<shorthash>`, the `J`
+     * telling the two apart by eye in a support ticket.
+     */
+    journeyId: integer('journey_id').references(() => journeys.id, {
+      onDelete: 'cascade',
+    }),
     /** Server-generated only: EDS-<courseId>-<userId>-<shorthash>. */
     certificateCode: text('certificate_code').notNull().unique(),
     issuedAt: timestamp('issued_at', {

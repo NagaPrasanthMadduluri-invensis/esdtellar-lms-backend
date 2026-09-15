@@ -8,6 +8,8 @@ import {
   LearnerMediaController,
   LearnerResourcesController,
 } from './learner-media.controller';
+import { JourneyGateModule } from '@/modules/journeys/journey-gate.module';
+
 import { MediaRepository } from './media.repository';
 import { MediaService } from './media.service';
 import { ImageStorageService } from './storage/image-storage.service';
@@ -20,6 +22,7 @@ import { R2StorageService } from './storage/r2-storage.service';
  * through the checks in MediaService (§3.2).
  */
 @Module({
+  imports: [JourneyGateModule],
   controllers: [
     AdminMediaUploadController,
     AdminMediaController,
