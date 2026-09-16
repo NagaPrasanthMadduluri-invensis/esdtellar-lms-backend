@@ -76,11 +76,33 @@ export class AnalyticsService {
     return this.hours.minutesByUser(scope);
   }
 
-  /** Shared status rule — identical across every analytics endpoint. */
+  /**
+   * Shared status rule — identical across every analytics endpoint.
+   *
+   * COMPLETED MEANS THE COURSEWORK IS DONE, not that an assessment was passed
+   * somewhere. The rule used to read `has_passed === 1 -> completed`, which
+   * asked a different question from the one the label answers: a learner who
+   * passed one quiz and had touched none of their other five courses counted
+   * as complete, and a learner who had finished every lesson of a course
+   * carrying no assessment never could. With sparse data that mostly looked
+   * plausible; with eighteen months of it the donut collapsed to 90% complete
+   * and stopped distinguishing anybody.
+   *
+   * It now matches what "complete" means everywhere else in this product —
+   * every assigned lesson finished, the same definition
+   * `CertificatesService.evaluate()` uses (§10.11: teach nothing new about
+   * what complete means).
+   *
+   * `failed` outranks `in-progress` deliberately. Someone who sat an
+   * assessment and did not pass it needs attention now; "in progress" would
+   * file them alongside people who are simply still working.
+   */
   private statusOf(row: LearnerStatsRow): LearnerStatus {
-    if (Number(row.has_passed) === 1) return 'completed';
-    if (Number(row.attempt_count) > 0) return 'failed';
-    if (Number(row.completed_lessons) > 0) return 'in-progress';
+    const assigned = Number(row.assigned_lessons);
+    const done = Number(row.completed_lessons);
+    if (assigned > 0 && done >= assigned) return 'completed';
+    if (Number(row.attempt_count) > 0 && Number(row.has_passed) !== 1) return 'failed';
+    if (done > 0) return 'in-progress';
     return 'not-started';
   }
 
@@ -89,25 +111,130 @@ export class AnalyticsService {
   }
 
   async dashboard(scope: OrgScope) {
-    const [counts, recentUsers, recentAttempts] = await Promise.all([
+    const [raw, recentUsers, recentAttempts, snap, certificates] = await Promise.all([
       this.repository.dashboardCounts(scope),
       this.repository.recentUsers(scope),
       this.repository.recentAttempts(scope),
+      this.snapshot(scope),
+      this.repository.certificateCount(scope),
     ]);
 
+    const {
+      counts, scores, total, avgScore, deptCompletion,
+      minutesByUser, activeCourses, overdueCourses,
+    } = snap;
+
+    const totalMinutes = [...minutesByUser.values()].reduce((a, m) => a + m.all, 0);
+    const monthMinutes = [...minutesByUser.values()].reduce((a, m) => a + m.thisMonth, 0);
+    const passRate = scores.length
+      ? Math.round((scores.filter((s) => s >= 60).length / scores.length) * 100)
+      : 0;
+    const compRate = total ? Math.round((counts.completed / total) * 100) : 0;
+
     return {
+      // The original four, unchanged — the shape predates this page and other
+      // callers read it.
       stats: {
-        totalCourses: Number(counts.total_courses),
-        totalUsers: Number(counts.total_users),
-        totalAssigned: Number(counts.total_assigned),
-        totalCompleted: Number(counts.total_completed),
+        totalCourses: Number(raw.total_courses),
+        totalUsers: Number(raw.total_users),
+        totalAssigned: Number(raw.total_assigned),
+        totalCompleted: Number(raw.total_completed),
       },
       recentUsers,
       recentAttempts,
+
+      // The KPI strip, the donut and the engagement tiles. All from the same
+      // snapshot `reports()` reads, so the two pages cannot disagree about a
+      // completion rate an admin sees on both.
+      headline: {
+        totalLearners: total,
+        activeLearners: counts.completed + counts.inProgress + counts.failed,
+        assigned: Number(raw.total_assigned),
+        completionRate: compRate,
+        inProgress: counts.inProgress,
+        overdue: overdueCourses,
+      },
+      engagement: {
+        avgScore,
+        passRate,
+        totalHours: round1(totalMinutes / 60),
+        avgHoursPerLearner: total ? round1(totalMinutes / 60 / total) : 0,
+        hoursThisMonth: round1(monthMinutes / 60),
+        certificatesIssued: certificates,
+        activeCourses,
+      },
+      statusBreakdown: [
+        { status: 'Completed', value: counts.completed },
+        { status: 'In Progress', value: counts.inProgress },
+        { status: 'Not Started', value: counts.notStarted },
+        { status: 'Failed', value: counts.failed },
+      ],
+      deptCompletion,
+      insights: this.dashboardInsights({
+        compRate, avgScore, passRate, total,
+        scored: scores.length,
+        hours: round1(totalMinutes / 60),
+        deptCompletion,
+      }),
     };
   }
 
-  async reports(scope: OrgScope) {
+  /**
+   * The "key insights" panel.
+   *
+   * Sentences, not numbers — every one restates a figure already on the page
+   * so the panel can never assert something the charts contradict. Built here
+   * because the leader/laggard comparison needs the whole department list, and
+   * doing it in the browser would mean shipping the reasoning to five
+   * different components.
+   */
+  private dashboardInsights(d: {
+    compRate: number;
+    avgScore: number;
+    passRate: number;
+    total: number;
+    scored: number;
+    hours: number;
+    deptCompletion: { dept: string; pct: number; hours_learning: number }[];
+  }) {
+    const out: { icon: string; text: string }[] = [];
+    out.push({
+      icon: 'check',
+      text: `Overall completion is ${d.compRate}% across ${d.total} learner${d.total === 1 ? '' : 's'}.`,
+    });
+    if (d.scored > 0) {
+      out.push({
+        icon: 'edit',
+        text: `Average assessment score is ${d.avgScore}% across ${d.scored} scored learner${d.scored === 1 ? '' : 's'}, with a ${d.passRate}% pass rate.`,
+      });
+    }
+    out.push({
+      icon: 'clock',
+      text: `${d.hours}h of learning recorded organisation-wide.`,
+    });
+    if (d.deptCompletion.length >= 2) {
+      const sorted = [...d.deptCompletion].sort((a, b) => b.pct - a.pct);
+      const top = sorted[0];
+      const bottom = sorted[sorted.length - 1];
+      out.push({
+        icon: 'trophy',
+        text: `${top.dept} leads on completion at ${top.pct}%; ${bottom.dept} is furthest behind at ${bottom.pct}% and may need a nudge.`,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * The per-learner aggregate plus everything derived from it, computed ONCE.
+   *
+   * `reports()` and `dashboard()` both need the same counts, the same status
+   * split and the same per-department roll-up. Before this they would have
+   * been two near-identical blocks, and the dashboard's completion rate would
+   * eventually have disagreed with the reports page's — the same failure §10.4
+   * records for learning hours, one layer up. Neither caller recomputes any of
+   * it; they only choose what to return.
+   */
+  private async snapshot(scope: OrgScope) {
     const minutesByUser = await this.minutes(scope);
     const [rows, activeCourses, overdueCourses] = await Promise.all([
       this.stats(scope),
@@ -179,6 +306,26 @@ export class AnalyticsService {
           : null,
       };
     });
+
+    return {
+      learners,
+      counts,
+      scores,
+      total,
+      bins,
+      avgScore,
+      deptCompletion,
+      minutesByUser,
+      activeCourses,
+      overdueCourses,
+    };
+  }
+
+  async reports(scope: OrgScope) {
+    const {
+      learners, counts, scores, total, bins, avgScore,
+      deptCompletion, activeCourses, overdueCourses,
+    } = await this.snapshot(scope);
 
     return {
       stats: {

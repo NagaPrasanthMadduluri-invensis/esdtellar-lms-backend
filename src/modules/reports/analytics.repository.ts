@@ -203,6 +203,19 @@ export class AnalyticsRepository {
   }
 
   /** Assignments due within two days whose lessons are not all complete. */
+  /**
+   * Certificates this organization has issued. Revoked ones are excluded — a
+   * revoked certificate is not an award, and counting it would let the
+   * dashboard's figure rise when an admin takes one away.
+   */
+  async certificateCount(scope: OrgScope): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*) AS n FROM certificates
+      WHERE is_revoked = 0 AND ${orgScope('certificates', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
   async overdueCourseCount(scope: OrgScope): Promise<number> {
     const rows = await this.db.all<{ n: number }>(sql`
       SELECT COUNT(*) AS n FROM user_course_assignments uca

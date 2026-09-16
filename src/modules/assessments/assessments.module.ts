@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { ActivityModule } from '@/modules/activity/activity.module';
+
 import { CertificatesModule } from '@/modules/certificates/certificates.module';
 
 import {
@@ -16,7 +18,7 @@ import { JourneysModule } from '@/modules/journeys/journeys.module';
 
 /** Imports CertificatesModule so a passing attempt can auto-issue a certificate. */
 @Module({
-  imports: [CertificatesModule, JourneysModule, JourneyGateModule],
+  imports: [ActivityModule, CertificatesModule, JourneysModule, JourneyGateModule],
   controllers: [
     AllAssessmentsController,
     CourseAssessmentsController,

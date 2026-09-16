@@ -63,6 +63,7 @@ export class AdminCertificatesController {
         dto.userId,
         dto.courseId,
         admin.userId,
+        admin,
       ),
     };
   }
@@ -75,7 +76,7 @@ export class AdminCertificatesController {
     @CurrentUser() admin: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
-    await this.certificates.revoke(scope, id, admin.userId);
+    await this.certificates.revoke(scope, id, admin.userId, admin);
     return { ok: true };
   }
 

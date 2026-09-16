@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { ActivityModule } from '@/modules/activity/activity.module';
 import { ReportsModule } from '@/modules/reports/reports.module';
 import { RolesModule } from '@/modules/roles/roles.module';
 
@@ -14,7 +15,7 @@ import { UsersService } from './users.service';
  * this one.
  */
 @Module({
-  imports: [ReportsModule, RolesModule],
+  imports: [ActivityModule, ReportsModule, RolesModule],
   controllers: [UsersController, EmployeesController],
   providers: [UsersService, UsersRepository],
   exports: [UsersService],

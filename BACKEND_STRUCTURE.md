@@ -555,8 +555,8 @@ Update this table with every module you move.
 | Module | Handlers | Location |
 |---|---|---|
 | auth | 4 | `server/src/modules/auth` |
-| users / employees | 9 | `server/src/modules/users` |
-| courses / modules / lessons / assignments | 16 | `server/src/modules/courses` |
+| users / employees | 10 | `server/src/modules/users` |
+| courses / modules / lessons / assignments | 17 | `server/src/modules/courses` |
 | assessments / questions | 12 | `server/src/modules/assessments` |
 | sessions / roster / attendance | 11 | `server/src/modules/sessions` |
 | learner (dashboard, courses, lessons, progress, achievements, leaderboard, learning-hours, change-password) | 10 | `server/src/modules/learner` |
@@ -581,6 +581,475 @@ Update this table with every module you move.
 | course thumbnail (upload + rollback) | 2 | `server/src/modules/media` |
 | learning journeys (admin CRUD, assign, learner path) | 11 | `server/src/modules/journeys` |
 | badges (learner list; awards fire from completion triggers) | 1 | `server/src/modules/badges` |
+| activity log (dashboard Recent Activity; written from six modules) | 1 | `server/src/modules/activity` |
+| admin analytics page + reports builder (group / individual / comparison) | 6 | `server/src/modules/reports` |
+| course authoring (course-level lessons, staged/link, assessment placement) | 3 | `server/src/modules/courses` |
+| edstellar services (catalogue requests, org-scoped) | 3 | `server/src/modules/services` |
+
+### 10.14 Edstellar Services
+
+An org admin asks Edstellar for a service — a TNA, a leadership programme, a
+platform — and the request is tracked until somebody at Edstellar closes it.
+`0021_service_requests.sql` adds the one table; `0022_services_permission.sql`
+grants the new permission to existing admin roles.
+
+```
+GET  /api/admin/services/requests       this org's requests + a count per status
+GET  /api/admin/services/requests/:id   one, with its full questionnaire
+POST /api/admin/services/requests       file one
+```
+
+**The CATALOGUE is not served from here.** `common/edstellar-services.ts` holds
+the 42 service NAMES and nothing else; the browser's mirror
+(`client/lib/edstellar-services.js`) holds the same names plus the grouping,
+the descriptions and the 14 per-service question sets — about 70KB. None of
+that is enforceable: the grouping is navigation, the descriptions are copy, and
+the question sets decide what to render while the answers are stored as one
+JSON blob either way. An endpoint returning it would be a round trip to fetch a
+constant, and copying it server-side would double the maintenance to validate
+nothing.
+
+What IS enforced is the name, because that is the field a human at Edstellar
+routes by. A request naming something not offered is refused with a 422 — which
+is also how a drift between the two files announces itself.
+
+**`answers` is a `jsonb` document, and that is a deliberate trade with a stated
+cost.** Each service asks different questions, 14 sets exist today, and they
+change whenever Edstellar changes its offering. Relationally that is ~200
+mostly-null columns or an answers table keyed by questions that are not rows.
+The cost: `answers` is **not queryable as structured data**, and nothing should
+start filtering or reporting on it without first promoting the field it needs
+to a real column. `timeline` and `budget` were promoted for exactly that
+reason — the list screen shows them, and a JSON path in a WHERE clause is how a
+document column quietly becomes a schema.
+
+**A request is ACTIVITY, so `orgScope`, never `contentScope`** (§10.12's rule,
+applied before rather than after a leak). The catalogue is shared by every
+tenant; a request against it belongs to one. Verified: each org gets its own
+`REQ-2026-0001`, a cross-tenant read 404s, and neither org sees the other's.
+
+**There is no route that moves a request past `pending`.** Only Edstellar does
+that, and Edstellar is a platform admin. A status write on this controller
+would let a tenant mark its own request "Proposal sent". The reference mock's
+super-admin view — every tenant's requests in one list — is a `@PlatformAdmin`
+route that does not exist yet, and must never be built by widening this one.
+
+**Everything identifying comes from the verified token**, never the body: the
+organization, the user id, and the name and email the request is signed with. A
+body-supplied `contact_email` would let an admin file in a colleague's name,
+and this is the one feature whose output leaves the building.
+
+`request_services` is a new permission with guards on both routes in the same
+change (§5.2.1). It is separate from every other permission because it is the
+one action that reaches OUTSIDE the tenant — an org may well want content
+admins building courses without being able to open a commercial conversation on
+its behalf. `0022` grants it to existing `is_system` admin roles and bumps
+`perm_version`, the same shape as `0016_journeys_permission.sql`; read that
+file's header for why an automatic backfill is safe here.
+
+A fourth shape bug of the §10.10 family was caught while testing this: `create`
+and `findById` are Drizzle calls returning camelCase while `list` names its
+columns in snake_case. Both are shaped now. That is three occurrences in one
+day — when a repository mixes `.select()` with raw SQL, assume the casings
+disagree until checked.
+
+### 10.13 Course authoring: staged lessons, and assessments at three levels
+
+`0020_course_authoring.sql` turns the course detail page into the one place a
+course is built. Read the migration itself first — its comments carry the
+safety argument. The summary:
+
+**A lesson belongs to a COURSE and may belong to a module.** `lessons.course_id`
+is new and NOT NULL; `lessons.module_id` is now nullable. Both module foreign
+keys changed from `ON DELETE CASCADE` to `ON DELETE SET NULL`, because cascade
+was only coherent while a lesson could not exist without a module — deleting a
+grouping must not destroy the work inside it.
+
+**A lesson with no module is STAGED, and staged means invisible.** It is not
+delivered, earns no learning hours (§10.4), counts toward no completion
+(§10.11) and cannot earn a certificate. That is what made the change safe:
+roughly 89 queries across 14 modules reach a lesson through
+`JOIN course_modules cm ON cm.id = l.module_id`, and a NULL `module_id` drops
+out of every one of them unchanged. Deciding that a staged lesson SHOULD count
+is not a one-line change — it is 89 rewrites and four re-proved invariants.
+
+**Assessments attach at three levels plus none.** `link_type` is STORED, not
+derived from which id is set, because `course` (the final) and `none` (being
+written) both carry neither id and mean opposite things. `module_id` and
+`lesson_id` are `ON DELETE SET NULL` with a backfill to `none`: deleting the
+module an assessment hung on must not delete the assessment and its questions.
+
+**Five question types across two storage shapes** — `common/assessment-questions.ts`,
+the sixth catalogue-as-code. `mcq`, `truefalse` and `multiselect` keep their
+choices as `assessment_options` rows; `fillblank` and `matching` store the
+expected answer in `assessment_questions.correct_answer`. `assertQuestionShape`
+replaced `assertHasCorrectOption`, whose rule ("at least one correct option")
+was right for multiple choice and impossible for the two types that have no
+options at all.
+
+**Seven lesson content types** — `common/lesson-content.ts`, mirrored by
+`client/lib/lesson-content.js`. Each entry carries its own `durationRequired`
+rule, which is what makes it code rather than data: video measures its own
+runtime, everything else must declare one or be worth zero hours (§10.4).
+
+Endpoints added:
+
+```
+GET   /api/admin/courses/:courseId/lessons     lessons of a course, staged flagged
+POST  /api/admin/courses/:courseId/lessons     create, module optional
+PATCH /api/admin/lessons/:lessonId/module      link / unlink (null = staged)
+```
+
+#### Four shape bugs fixed alongside it
+
+All four were the §10.10 defect — handing a raw Drizzle row to a caller that
+reads the API's snake_case — and all four were silent:
+
+- **`createQuestion` never wrote `question_type` or `correct_answer`.** The
+  input interface declared both and the `.values()` omitted both, so every
+  question saved as `mcq`. A fill-in-the-blank passed validation and then
+  landed as an mcq with zero options: ungradeable, and nothing said so.
+  `updateQuestion` had always written them, which is why editing a question
+  fixed it and creating one did not.
+- **`attachOptions` mixed two casings.** Questions came from a Drizzle
+  `.select()` (camelCase), options from raw SQL (snake_case). Both admin and
+  learner quiz pages read `question.question_text`, so **every question
+  rendered with a blank title on both portals**. It now maps to snake_case.
+- **`listOptionsForQuestion` disagreed with its own sibling.** A `.select()`
+  where `listOptionsForAssessment` used raw SQL, so the same option arrived
+  under two different names depending on which read produced it. Now raw SQL.
+- **`getForAdmin` returned the raw assessment row.** Shaped now, like the
+  learner's read already was.
+
+**Module reorder now exists.** `course_modules.sort_order` was in the table and
+the Outline numbers by it, but no DTO carried it and no `.set()` wrote it, so a
+course's modules could not be reordered at all. `ModuleDto.sort_order` and the
+repository's `.set()` close it; the service passes the module's current value
+when the caller omits the field, so an ordinary title edit cannot shuffle the
+course.
+
+`GET /api/admin/courses/:id` also gained `enrolled_count`, **org-scoped** for
+the reason §10.12 and `listWithStats` both record: the course may be
+platform-owned and shared, but an assignment is activity and belongs to one
+tenant. Unscoped, the detail header would have contradicted the library card
+next to it.
+
+#### The Assessment Builder is gone
+
+There is no `/admin/assessments` page and no sidebar entry. An assessment only
+means something in the context of what it tests, so it is authored on the
+course page, where the placement control can offer the real modules and
+lessons. The API routes and the `build_assessments` permission are unchanged —
+§5.2.1's invariant still holds, every entry in `common/permissions.ts` still
+has a guard behind it.
+
+One consequence to know: the course page is reached with `manage_courses`, and
+its Assessments tab writes behind `build_assessments`. A role holding the first
+without the second sees the tab and is refused on save. That is two permissions
+on one screen, and the refusal is legible rather than silent, but it is the
+kind of thing to fix by hiding the tab if the roles UI ever makes that
+combination common.
+
+### 10.12 Admin analytics, the reports builder, and the activity log
+
+Three admin screens — Dashboard, Analytics and Reports — read from
+`modules/reports`. Dashboard says what is true now, Analytics says how it got
+there, Reports is the evidence. They share one aggregate and one definition of
+an hour, deliberately.
+
+**`AnalyticsService.snapshot()` is computed once and read twice.** The
+dashboard and the reports page both need the per-learner aggregate, the status
+split and the department roll-up. Before this they would have been two
+near-identical blocks and their completion rates would eventually have
+disagreed — the same failure §10.4 records for hours, one layer up. Neither
+caller recomputes; they only choose what to return.
+
+**`statusOf()` now means the coursework is done.** It used to read
+`has_passed === 1 -> completed`, which answers a different question from the
+one the label asks: a learner who passed one quiz and had opened none of their
+other courses counted as complete, and a learner who finished a course carrying
+no assessment never could. With sparse data that mostly looked plausible; with
+a real history the donut collapsed to 90% complete and stopped distinguishing
+anybody. It is now "every assigned lesson finished" — what complete means
+everywhere else (§10.11).
+
+**Hours still come only from `LearningHoursService`.** The Analytics trend
+charts needed minutes bucketed by calendar period and split by mode, which the
+fixed month/week buckets could not express. Rather than write a second sum,
+three consumers were added to the same `lessonSource` fragment —
+`minutesByPeriod`, `minutesByPeriodAndMode`, `minutesByUserInWindow` — and the
+fragment gained `lesson_id` and `content_type` to support them. §10.4 stands:
+there is still exactly one place that knows what an hour is.
+
+**The period axis is folded from months, never re-truncated.** Five
+granularities (monthly · quarterly · half-yearly · yearly · multi-year) are
+built by folding monthly rows in `periods.util.ts`, not by issuing five
+differently-`date_trunc`ed queries. Five variants would be five chances for a
+quarterly total to disagree with the sum of its own months. The axis is also
+trimmed to the data's real extent before the per-granularity cap, because an
+axis padded with empty buckets reads as a collapse in activity that never
+happened.
+
+**`sufficient: false` is part of the contract.** When fewer than three buckets
+carry data the response says so and the page shows a note in place of a claim.
+Two points are a line segment, not a trend, and a chart drawn anyway invites a
+conclusion the data cannot support.
+
+**Mode of learning is derived, not stored.** `lessons.content_type` says what a
+lesson is, except for `session`, where the delivery mode belongs to the session
+(`sessions.session_type`) and the lesson is only its companion (§10.7). The
+CASE reaches through the training course for that one type and takes the
+lesson's word for every other.
+
+#### The reports builder
+
+Three scopes behind three routes, all `@Permissions('view_reports')`:
+
+```
+POST /api/admin/reports/group        one section per selected report type
+POST /api/admin/reports/individual   one person's whole record
+POST /api/admin/reports/comparison   N items of a dimension x M metrics
+GET  /api/admin/reports/options      what the controls may offer
+```
+
+POST for a read is deliberate: a comparison carries two arrays and a group
+carries one plus four filters, which as a query string meets a proxy's URL cap.
+They return 200, not 201 — nothing was created.
+
+**Five report types, not the eight the reference mock offered.** The three left
+out have nothing behind them, and a type that always returns an empty table is
+the screen-that-lies failure §5.2.1 exists to prevent: Learning Path Progress
+(`journeys` is empty), Certificates Issued (folded into Course Completion,
+since every certificate here follows a completion already in it) and Enrolments
+self-vs-assigned (there is no self-enrolment in this product, so the split
+would be 100%/0% by construction). Adding one back means adding its builder in
+the same change, the rule `common/permissions.ts` already follows.
+
+**The row cap is applied after the KPIs.** `ROW_CAP` shortens the table only;
+the summary always describes the whole result. A truncated table beside a
+truncated total would be wrong twice.
+
+**Every report downloads as .xlsx, and the download is NOT capped.** Three
+routes mirror the three builders:
+
+```
+POST /api/admin/reports/group/export
+POST /api/admin/reports/individual/export
+POST /api/admin/reports/comparison/export
+```
+
+Each takes the same DTO as its JSON counterpart and rebuilds the report through
+the same service, so the file can never describe a different query from the one
+the admin just looked at. The group export passes `full`, which skips
+`ROW_CAP`: the cap exists so a browser is not asked to lay out 20,000 table
+rows, and a spreadsheet has no such problem. Serialising the on-screen rows
+instead would have produced a file silently stopping at row 500 while its own
+SUMMARY block described the whole population — wrong, and wrong in a file that
+leaves the building. Verified by dropping `ROW_CAP` to 10: the screen showed 10
+of 112 and said so; the file carried 112.
+
+They are separate routes rather than a `format` flag, because the response is a
+binary stream with its own headers and an `@Res()` handler — folding that into
+a route that usually returns JSON gives one method two contradictory return
+types.
+
+One sheet per report section, so a Group report over three types arrives as
+three tabs. Each sheet repeats what the screen shows in the same order — title,
+window, generated-at, the KPI summary, then the table — because a bare grid of
+numbers with no window on it cannot be checked against anything later. Excel
+caps a sheet name at 31 characters and rejects duplicates, so titles go through
+`sheetName()` rather than straight onto the tab; both limits are hit by real
+data ("Individual report — Manish Gupta" is 33).
+
+**`Access-Control-Expose-Headers: Content-Disposition` is load-bearing.** CORS
+exposes only a handful of response headers to page JavaScript by default, and
+the API is a different origin from the UI — so the server was naming every file
+carefully and the `fetch` that saved it could not read the name. Downloads
+landed under whatever fallback the caller had hardcoded. This affected the two
+pre-existing xlsx downloads too, which is why they hardcode their filenames.
+
+**`job_level` and `location` are closed lists** (`common/workforce.ts`, mirrored
+by `client/lib/workforce.js`), because both are Reports filter and comparison
+dimensions and a dimension is only useful if its values repeat. That is the
+lesson from `job_role`, which is free text: 18 distinct values across 20
+learners, so filtering by one returns one person. `department` works as a
+dimension by luck, not design. There is deliberately no table behind either
+list — a table would let an org invent a value, which is exactly what makes
+`job_role` useless.
+
+`common/course-taxonomy.ts` is the fourth catalogue-as-code in this codebase,
+after `permissions.ts`, `badges.ts` and `workforce.ts`. Same argument every
+time: a value means something only because something reads it, and here two
+things do — the library's colour map, and the `Compliance` rule above.
+
+`0018_workforce_and_activity_log.sql` also rewrites two legacy location
+spellings. A row holding a value the filter cannot offer is invisible to every
+location-filtered report — a silent omission, not an empty cell.
+
+#### The Course Library
+
+`0019_course_library.sql` adds five columns to `courses` and the admin library
+reads all of them: `category`, `is_mandatory`, `expiry_months`, `tags`,
+`archived_at`.
+
+**`Compliance` is a category with behaviour.** `isMandatory()` in
+`common/course-taxonomy.ts` returns true for it whether or not the flag is
+set, and it is the only category where a renewal cadence means anything. That
+implication lives in one function — never re-stated at a call site — so the
+card ribbon, the KPI count and any future report cannot disagree about whether
+a course is compulsory. The create/edit form locks the Mandatory switch on for
+compliance for the same reason: an unticked box there would be a lie.
+
+`expiry_months` is **recorded, not enforced**. The card prints "Renews every 12
+mo" and nothing ages a completion out — that needs a scheduled re-assignment
+and there is no scheduler here. Do not read the column as though completions
+were expiring.
+
+Moving a course out of Compliance CLEARS its cadence (`nextExpiryMonths`).
+Otherwise a Technical course would keep printing a renewal it no longer has.
+
+**Archive is a third state, orthogonal to published/draft**, which is why it is
+`archived_at` and not a third value of `is_active`: an archived course
+remembers whether it was published, and restoring returns it to that rather
+than to a guess. The list never mixes the two sets — `?archived=true` swaps
+between them — because an archived course appearing in the assign-learning
+picker is the thing archiving exists to prevent.
+
+**Archiving does not withdraw a learner's assignment.** It removes the course
+from the library's default view and stops it being assigned again; somebody
+halfway through keeps their progress. Deleting an in-progress training because
+an admin was tidying up has no undo.
+
+`POST /admin/courses/bulk` does publish / unpublish / archive / restore over a
+selection, one statement per action (§7.1). Its predicates are the guards:
+`organization_id` (not `contentScope` — a platform-owned course must not be
+publishable by a tenant), `session_id IS NULL` (a session training follows its
+session, §10.7), and for publish `archived_at IS NULL`. A request naming ids
+that fail those simply affects fewer rows and reports the count, rather than
+erroring on the first one.
+
+Single-card actions call the same endpoint with one id, so there is one code
+path and one result shape for both.
+
+The card's Enrolled count opens a roster popup backed by the EXISTING
+`GET /admin/courses/:id/assignments` — the card needed a dialog, not a new
+endpoint. It is fetched on open rather than with the library: eleven rosters
+nobody asked for is eleven queries and a payload several times the size of the
+grid.
+
+**Every activity subquery over shared content is `orgScope`, not
+`contentScope` — and this is a CLASS of bug, not one query.** The course row itself is content and may be platform-owned;
+its assignments, completions and attempts are activity and belong to one
+tenant each. Unscoped, an org admin's card showed 13 enrolments on a global
+course of which 2 were another tenant's — a cross-tenant count, and a number
+that disagreed with the roster popup beside it, which was scoped correctly.
+The mismatch is what exposed it: two figures for the same thing on one screen
+is a useful alarm, and worth preserving rather than reconciling by making the
+roster agree with the wrong number.
+
+**The same pattern was then found and fixed in three more places**, all latent
+because no platform-owned assessment or SCORM package exists in the demo data
+yet — one publish away from being live:
+
+| Query | Was | Now |
+|---|---|---|
+| `AssessmentsRepository.listByCourse` | attempts counted across tenants | `orgScope` on the attempt |
+| `ScormRepository.listPackages` | assigned / completed counted across tenants | `orgScope` on assignment and tracking |
+| `ScormRepository.packageAssignments` | listed **every tenant's learners** by name, email and department | `orgScope` on the assignment, beside the existing `contentScope` on the package |
+
+That last one was a PII leak, not a miscount. The rule to apply when reading
+any of these queries:
+
+> If the outer row is CONTENT (`contentScope` — a course, assessment, SCORM
+> package) and the subquery counts ACTIVITY, the subquery needs its own
+> `orgScope`. The content predicate answers "may this admin see this thing";
+> it says nothing about whose activity is being counted against it.
+
+Two places were checked and deliberately left alone: `SessionsRepository.list`
+(sessions are org-owned, so a roster count correlated to one is already
+confined) and `ScormRepository.sweepUnclaimed` (the server tidying up after
+itself — its NOT EXISTS checks MUST span tenants, or a package another tenant
+has history on would be deleted).
+
+**`needs_attention`** — no assessment attached, or enrolments with completion
+under 40% — is the reference's "Red Flags" tile. It is a prompt, not a verdict:
+a course published yesterday is legitimately at 0%, which is why the tile reads
+"need attention".
+
+#### The Manage Users directory
+
+`GET /api/admin/users/directory` backs the Manage Users table: every account in
+the organization — admin, manager, trainer, learner — with the progress figures
+the table shows, plus the KPI counts above it.
+
+**Deliberately separate from `GET /api/admin/employees`**, which stays
+learners-only. That endpoint also feeds the assign-learning picker and the
+session roster, and both mean "people who can be given a course": widening it
+would have quietly offered admins and trainers as assignees. Two callers, two
+questions, two methods (`UsersRepository.listDirectory`).
+
+Three things are load-bearing:
+
+- **`role_label` comes from the RBAC role, not `users.role`.** The portal
+  selector collapses a Manager into `learner` (`specs/rbac.md` decision 2), so
+  a table rendering `users.role` shows every Manager as a Learner and gives an
+  admin no way to tell them apart.
+- **`last_activity` is the latest completion or attempt, and null when there is
+  none.** The column existed before but printed `created_at`, so every row
+  claimed the person had last been active on the day they joined — a date that
+  was always wrong and never looked it.
+- **`can_manage` is `role === 'learner'`, and the UI disables on it.**
+  `assertMutableLearner` refuses to edit, deactivate or delete anything else,
+  so those actions must render disabled rather than fail with a 403 when
+  clicked — §5.2.1's screen-that-lies rule applied to a button. The API is
+  still what enforces it; the flag only stops the UI offering what it knows
+  will be refused.
+
+The KPI counts are reduced from the rows already fetched rather than from five
+`COUNT(*)` queries beside them, so the tiles can never disagree with the table
+underneath. The browser refetches after every mutation for the same reason —
+patching a row locally moved the status chip and left "Inactive users" saying
+zero.
+
+#### The activity log
+
+`activity_log` backs the dashboard's Recent Activity panel. `ActivityService`
+is exported by a dependency-free module (like `JourneyGateService`, §10.11) so
+any module may import it, and six do: users, courses, assessments, sessions and
+certificates write to it on create, publish, assign, deactivate, issue and
+revoke.
+
+**`record()` never throws.** It is best-effort (§8.4), so no caller wraps it and
+publishing a course can never fail because a log row did not write. The cost is
+stated where it matters: **this is a product feature, not an audit trail** —
+the entries that are missing are precisely the ones whose write failed. If a
+real audit trail is needed it is a different table with different guarantees;
+do not quietly promote this one.
+
+Activity is `orgScope`, never `contentScope`. A platform-owned course uploaded
+once must not appear in every tenant's feed as though their own admin did it.
+
+#### Seeding a history
+
+`npm run db:seed-history` backdates and thickens one organization's learning
+history so the trend charts have something to draw. Dry-run by default,
+`--commit` to apply, matching `db:reset-to-admin` and `db:clean-orphan-scorm`.
+
+**It is destructive to learner progress in the target org** — completions,
+attempts, certificates, rosters, attendance and activity are deleted and
+regenerated, because a coherent history cannot be layered on top of an
+incoherent one: a completion dated before its own assignment is worse than no
+history. Courses, lessons, assessments and accounts are never touched. The PRNG
+is fixed-seed, so two runs produce identical data.
+
+It exists because the demo organization held four lumpy months with 83% of all
+completions inside one of them. Every window coarser than Monthly collapsed to
+a single bar, and no amount of frontend work fixes that.
+
+One consequence worth knowing: it issues certificates, which broke
+`test:isolation`'s certificate fixture — that fixture assumed its learner held
+none and got a 409. The fixture now picks a course the learner has no
+certificate for, which is what a fixture should have done anyway.
 
 ### 10.9 SCORM object storage, and the granular data-model log
 
@@ -987,6 +1456,10 @@ rather than seeding on top:
 npm run db:reset-to-admin -- --commit
 npm run db:seed -- --confirm
 ```
+
+`npm run db:seed-history` is the third data script and the only destructive one
+that targets a SINGLE organization — see §10.12. Dry-run by default like the
+other two.
 
 Neither script touches `server/storage/scorm/`, `server/storage/uploads/` or
 the R2 bucket — extracted packages, uploaded videos and course thumbnails

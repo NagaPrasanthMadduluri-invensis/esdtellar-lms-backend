@@ -6,7 +6,14 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
+import {
+  JOB_LEVELS,
+  LOCATION_ALIASES,
+  LOCATIONS,
+} from '@/common/workforce';
 import { RolesService } from '@/modules/roles/roles.service';
+import { ActivityService } from '@/modules/activity/activity.service';
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import type {
   BulkCreateUsersDto,
@@ -31,6 +38,12 @@ export class UsersService {
      * `RolesRepository` — `BACKEND_STRUCTURE.md` §3.2.
      */
     private readonly roles: RolesService,
+    /**
+     * Best-effort recording for the dashboard's Recent Activity panel. Every
+     * call is fire-and-forget by contract (`ActivityService.record` never
+     * throws), so no write here is wrapped in a try/catch of its own.
+     */
+    private readonly activity: ActivityService,
   ) {}
 
   async listLearners(scope: OrgScope) {
@@ -63,6 +76,7 @@ export class UsersService {
           department: row.department,
           location: row.location ?? null,
           job_role: row.job_role ?? null,
+          job_level: row.job_level ?? null,
           is_active: Number(row.is_active) === 1,
           created_at: row.created_at,
           assigned_courses: Number(row.assigned_courses),
@@ -71,6 +85,81 @@ export class UsersService {
           score: row.best_score !== null ? Math.round(Number(row.best_score)) : null,
         };
       }),
+    };
+  }
+
+
+  /**
+   * The Manage Users directory — every account in the organization, plus the
+   * KPI tiles above the table.
+   *
+   * The counts are derived from the rows already fetched rather than from five
+   * `COUNT(*)` queries beside them (§7.2 in spirit): the table always renders
+   * every row, so the numbers are a reduce over data that is already here, and
+   * a separate query could disagree with the list beneath it.
+   *
+   * `can_manage` is the important field. `assertMutableLearner` refuses to
+   * edit or delete anything but a learner, so an admin or trainer row must
+   * show those actions DISABLED rather than let a click return 403 — a control
+   * that is enabled and always fails is the screen-that-lies failure
+   * BACKEND_STRUCTURE §5.2.1 exists to prevent. The API is still what enforces
+   * it; this only stops the UI offering what it knows will be refused.
+   */
+  async directory(scope: OrgScope) {
+    const rows = await this.repository.listDirectory(scope);
+
+    const users = rows.map((row) => {
+      const total = Number(row.total_lessons);
+      const completed = Number(row.completed_lessons);
+      const attemptCount = Number(row.attempt_count);
+      const hasPassed = Number(row.has_passed) === 1;
+
+      let status: string;
+      if (hasPassed) status = 'completed';
+      else if (attemptCount > 0) status = 'failed';
+      else if (completed > 0) status = 'in-progress';
+      else status = 'not-started';
+
+      return {
+        id: row.id,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        email: row.email,
+        department: row.department,
+        location: row.location ?? null,
+        job_role: row.job_role ?? null,
+        job_level: row.job_level ?? null,
+        role: row.role,
+        role_key: row.role_key ?? row.role,
+        role_label: row.role_label ?? titleCase(row.role),
+        is_active: Number(row.is_active) === 1,
+        created_at: row.created_at,
+        last_activity: row.last_activity,
+        assigned_courses: Number(row.assigned_courses),
+        progress: total > 0 ? Math.round((completed / total) * 100) : 0,
+        status,
+        score: row.best_score !== null ? Math.round(Number(row.best_score)) : null,
+        can_manage: row.role === 'learner',
+      };
+    });
+
+    const by = (predicate: (u: (typeof users)[number]) => boolean) =>
+      users.filter(predicate).length;
+
+    return {
+      users,
+      stats: {
+        total: users.length,
+        active: by((u) => u.is_active),
+        inactive: by((u) => !u.is_active),
+        admins: by((u) => u.role === 'admin'),
+        learners: by((u) => u.role === 'learner'),
+        trainers: by((u) => u.role === 'trainer'),
+        // Managers ride in the learner portal (rbac.md decision 2), so they
+        // are counted in `learners` above too. Surfaced separately because an
+        // admin looking at this table can otherwise not tell they exist.
+        managers: by((u) => u.role_key === 'manager'),
+      },
     };
   }
 
@@ -89,7 +178,7 @@ export class UsersService {
    * `RolesService.assign` stays the one method that MOVES a user between
    * roles (§8.3) and the one that decides which portal they land in.
    */
-  async create(scope: OrgScope, dto: CreateUserDto) {
+  async create(scope: OrgScope, dto: CreateUserDto, actor?: AuthenticatedUser) {
     if (await this.repository.emailExists(dto.email)) {
       throw new ConflictException('Email already in use');
     }
@@ -104,11 +193,22 @@ export class UsersService {
       department: dto.department ?? null,
       location: dto.location ?? null,
       jobRole: dto.job_role ?? null,
+      jobLevel: dto.job_level ?? null,
       roleId: learnerRole.id,
       // Derived from the role, never assumed to be the string 'learner' — if
       // an organization ever points its `learner` key at another portal, the
       // portal selector follows the role rather than contradicting it.
       role: learnerRole.portal,
+    });
+
+    await this.activity.record(scope, {
+      type: 'user_created',
+      detail: `Added ${dto.first_name} ${dto.last_name} (learner${
+        dto.department ? `, ${dto.department}` : ''
+      })`,
+      actor: actor ?? null,
+      subjectType: 'user',
+      subjectId: user.id,
     });
 
     return { user };
@@ -125,16 +225,32 @@ export class UsersService {
       firstName: dto.first_name,
       lastName: dto.last_name,
       email: dto.email,
+      department: dto.department ?? null,
       location: dto.location ?? null,
       jobRole: dto.job_role ?? null,
+      jobLevel: dto.job_level ?? null,
     });
 
     return { user: { ...updated, is_active: updated.is_active === 1 } };
   }
 
-  async setActive(scope: OrgScope, userId: number, isActive: boolean) {
+  async setActive(
+    scope: OrgScope,
+    userId: number,
+    isActive: boolean,
+    actor?: AuthenticatedUser,
+  ) {
     await this.assertMutableLearner(scope, userId);
     const updated = await this.repository.setActive(scope, userId, isActive);
+
+    await this.activity.record(scope, {
+      type: isActive ? 'user_reactivated' : 'user_deactivated',
+      detail: `${isActive ? 'Reactivated' : 'Deactivated'} ${updated.first_name} ${updated.last_name}`,
+      actor: actor ?? null,
+      subjectType: 'user',
+      subjectId: userId,
+    });
+
     return { user: { ...updated, is_active: updated.is_active === 1 } };
   }
 
@@ -342,6 +458,32 @@ export class UsersService {
         continue;
       }
 
+      // A CSV reaches this loop without the `@IsIn` the admin form has, so the
+      // closed lists are enforced here or not at all — and an import is
+      // exactly how a location nobody can filter on got into the table the
+      // first time. Known alternative spellings are accepted and rewritten;
+      // anything else fails the row, with the valid values in the reason, so
+      // the admin fixes the CSV rather than discovering months later that
+      // these learners are missing from every location report.
+      const location = normaliseLocation(row.location ?? null);
+      if (location === INVALID) {
+        failed.push({
+          row: rowNum,
+          email,
+          reason: `Location must be one of: ${LOCATIONS.join(', ')}`,
+        });
+        continue;
+      }
+      const jobLevel = row.job_level ?? null;
+      if (jobLevel !== null && !(JOB_LEVELS as readonly string[]).includes(jobLevel)) {
+        failed.push({
+          row: rowNum,
+          email,
+          reason: `Job level must be one of: ${JOB_LEVELS.join(', ')}`,
+        });
+        continue;
+      }
+
       try {
         await this.repository.createLearner(scope, {
           employeeId: row.employee_id ?? null,
@@ -350,8 +492,9 @@ export class UsersService {
           email,
           passwordHash: hashPassword(password),
           department: row.department ?? null,
-          location: row.location ?? null,
+          location,
           jobRole: row.job_role ?? null,
+          jobLevel,
           roleId: learnerRole.id,
           role: learnerRole.portal,
         });
@@ -374,4 +517,29 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found');
     if (user.role === 'admin') throw new ForbiddenException(message);
   }
+}
+
+/** Sentinel for "present but not a value we accept". `null` means "not given". */
+const INVALID = Symbol('invalid-location') as unknown as string;
+
+/**
+ * Accept a known alternative spelling, reject anything else.
+ *
+ * Forgiving where it safely can be (`Bengaluru` and `Bangalore` are the same
+ * office) and strict where it cannot: an unrecognised value is not silently
+ * nulled, because a learner with no location and a learner with a location the
+ * filter cannot offer look identical afterwards and only one of them is a
+ * mistake somebody can find.
+ */
+function normaliseLocation(value: string | null): string | null {
+  if (value === null) return null;
+  const canonical = LOCATION_ALIASES[value] ?? value;
+  return (LOCATIONS as readonly string[]).includes(canonical)
+    ? canonical
+    : INVALID;
+}
+
+/** `admin` -> `Admin`. Only a fallback for a user whose role row is missing. */
+function titleCase(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }

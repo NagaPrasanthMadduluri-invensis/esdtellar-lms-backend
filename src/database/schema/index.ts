@@ -20,3 +20,7 @@ export * from './assessments.schema';
 export * from './sessions.schema';
 export * from './scorm.schema';
 export * from './certificates.schema';
+// Depends on users only. Last because nothing depends on it.
+export * from './activity.schema';
+// Depends on organizations + users. Nothing depends on it.
+export * from './services.schema';

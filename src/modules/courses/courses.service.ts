@@ -6,10 +6,22 @@ import {
 
 import type { OrgScope } from '@/database/org-scope';
 import { ScormService } from '../scorm/scorm.service';
+import { ActivityService } from '@/modules/activity/activity.service';
+import { COMPLIANCE_CATEGORY, isMandatory } from '@/common/course-taxonomy';
+import {
+  contentTypeOf,
+  durationRequiredFor,
+  isDocumentLike,
+} from '@/common/lesson-content';
+
+/** Below this, a course with enrolments is flagged as needing attention. */
+const LOW_COMPLETION_PCT = 40;
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { MediaService } from '@/modules/media/media.service';
 
 import { CoursesRepository } from './courses.repository';
 import type {
+  BulkCourseActionDto,
   CourseDto,
   BulkAssignmentDto,
   CreateAssignmentDto,
@@ -20,15 +32,12 @@ import type {
 } from './dto/course.dto';
 
 /**
- * Content types that ARE a document. `document` is what the lesson form writes
- * now; the rest are older values still in the data, and they behave the same —
- * no runtime of their own, so their duration is typed rather than measured.
+ * Document-likeness and the duration rule now live in
+ * `common/lesson-content.ts`, beside the rest of the type catalogue — the
+ * local copy predated it and had drifted (it knew `doc`/`xls` but not `word`
+ * or `image`, so an image lesson was not required to declare a duration and
+ * was silently worth zero learning hours).
  */
-const DOCUMENT_TYPES = new Set(['document', 'pdf', 'ppt', 'doc', 'xls']);
-
-function isDocumentType(contentType: string): boolean {
-  return DOCUMENT_TYPES.has((contentType || '').toLowerCase());
-}
 
 @Injectable()
 export class CoursesService {
@@ -36,6 +45,8 @@ export class CoursesService {
     private readonly repository: CoursesRepository,
     private readonly media: MediaService,
     private readonly scorm: ScormService,
+    /** Best-effort (§8.4) — never wrapped, `record` cannot throw. */
+    private readonly activity: ActivityService,
   ) {}
 
   /* ── Lesson content rules ── */
@@ -67,39 +78,66 @@ export class CoursesService {
    *     would be worse than an absent stated length — the hours come from
    *     measured watch time regardless.
    */
+  /**
+   * The one place both lesson rules live, run on create and on update against
+   * the MERGED state, so a partial edit cannot leave a lesson invalid (§10.8).
+   *
+   * Driven by `common/lesson-content.ts` rather than a chain of `if`s here:
+   * each type declares whether it can be uploaded and whether it must state a
+   * duration, so adding a type is one entry there and no change in this file.
+   */
   private assertLessonContent(lesson: {
     contentType: string;
     contentUrl: string | null;
     documentKey: string | null;
+    videoKey?: string | null;
     scormPackageId: number | null;
     durationMinutes: number | null;
   }): void {
     const { contentType, contentUrl, documentKey, durationMinutes } = lesson;
-    const isScorm = contentType === 'scorm';
-    const isDocument = isDocumentType(contentType);
+    const type = contentTypeOf(contentType);
 
-    if (isDocument && !documentKey && !contentUrl) {
-      throw new UnprocessableEntityException(
-        'Upload a document or provide a link to one.',
-      );
+    if (contentType === 'scorm') {
+      if (!lesson.scormPackageId) {
+        throw new UnprocessableEntityException(
+          'A SCORM lesson needs an uploaded package.',
+        );
+      }
+    } else if (contentType === 'link') {
+      // Link-only: there is nothing to upload, so a URL is the whole content.
+      if (!contentUrl) {
+        throw new UnprocessableEntityException(
+          'Enter the URL this lesson links to.',
+        );
+      }
+    } else if (contentType === 'video') {
+      if (!lesson.videoKey && !contentUrl) {
+        throw new UnprocessableEntityException(
+          'Upload a video or provide a link to one.',
+        );
+      }
+    } else if (isDocumentLike(contentType)) {
+      if (!documentKey && !contentUrl) {
+        throw new UnprocessableEntityException(
+          `Upload ${type ? `a ${type.label.toLowerCase()}` : 'a file'} or provide a link to one.`,
+        );
+      }
     }
 
-    if (isScorm && !lesson.scormPackageId) {
+    // Duration. Everything except video must declare one: nothing else has a
+    // runtime to measure, and a null is worth zero learning hours (§10.4),
+    // which is a lesson that silently pays nothing.
+    if (durationRequiredFor(contentType) && !(Number(durationMinutes) > 0)) {
       throw new UnprocessableEntityException(
-        'A SCORM lesson needs an uploaded package.',
-      );
-    }
-
-    if ((isDocument || isScorm) && !(Number(durationMinutes) > 0)) {
-      throw new UnprocessableEntityException(
-        isDocument
-          ? 'Enter how long this document takes, in minutes. It has no runtime ' +
-            'to read, and this is the time it contributes to learning hours.'
-          : 'This package does not declare how long it takes, so enter the ' +
-            'duration in minutes.',
+        contentType === 'scorm'
+          ? 'This package does not declare how long it takes, so enter the ' +
+            'duration in minutes.'
+          : 'Enter how long this lesson takes, in minutes. It has no runtime ' +
+            'to measure, and this is the time it contributes to learning hours.',
       );
     }
   }
+
 
   /* ── Lesson resources ───────────────────────────────────────────────────
      Supporting material alongside a lesson's primary content: the slide deck
@@ -221,32 +259,130 @@ export class CoursesService {
 
   /* ── Courses ── */
 
-  async list(scope: OrgScope) {
-    const rows = (await this.repository.listWithStats(scope)) as Record<
-      string,
-      unknown
-    >[];
+  /**
+   * The Course Library list, plus the KPI tiles above it.
+   *
+   * `archived: true` swaps to the archive; the two are never mixed (see
+   * `listWithStats`). The stats are reduced from the rows already fetched
+   * rather than counted again in SQL, so the tiles and the grid beneath them
+   * cannot disagree — the same reason the Manage Users tiles work that way.
+   */
+  async list(scope: OrgScope, archived = false) {
+    const [rawRows, archivedCount] = await Promise.all([
+      this.repository.listWithStats(scope, archived) as Promise<
+        Record<string, unknown>[]
+      >,
+      this.repository.archivedCount(scope),
+    ]);
+
+    const courses = rawRows.map((row) => {
+      const enrolled = Number(row.enrollments_count);
+      const completedEnrollments = Number(row.completed_enrollments);
+      const lessonsCount = Number(row.lessons_count);
+      const completionPct =
+        enrolled > 0 && lessonsCount > 0
+          ? Math.round((completedEnrollments / enrolled) * 100)
+          : 0;
+
+      return {
+        ...row,
+        // Restated as numbers rather than left to the spread: `row` is
+        // Record<string, unknown>, so anything read off it downstream is
+        // `unknown` and every reduce below would need a cast.
+        enrollments_count: enrolled,
+        lessons_count: lessonsCount,
+        assessments_count: Number(row.assessments_count ?? 0),
+        is_active: Number(row.is_active) === 1,
+        is_mandatory: Number(row.is_mandatory ?? 0) === 1,
+        mandatory: isMandatory({
+          isMandatory: Number(row.is_mandatory ?? 0),
+          category: (row.category as string | null) ?? null,
+        }),
+        avg_score:
+          row.avg_score !== null && row.avg_score !== undefined
+            ? Math.round(Number(row.avg_score))
+            : null,
+        completion_pct: completionPct,
+        // Completed / in progress / not started, for the card's segmented bar.
+        // Derived here rather than in the browser so the three always sum to
+        // the enrolment count the card prints beside them.
+        completed_count: completedEnrollments,
+        in_progress_count: Number(row.in_progress_enrollments ?? 0),
+        not_started_count: Math.max(
+          0,
+          enrolled - completedEnrollments - Number(row.in_progress_enrollments ?? 0),
+        ),
+        /**
+         * Worth an admin's attention: nothing to assess, or nobody finishing.
+         *
+         * A COUNT of these is the reference's "Red Flags" tile. It is a
+         * prompt, not a verdict — a course published yesterday is legitimately
+         * at 0%, which is why the tile is labelled "need attention" rather
+         * than something accusatory.
+         */
+        needs_attention:
+          Number(row.assessments_count) === 0 ||
+          (enrolled > 0 && completionPct < LOW_COMPLETION_PCT),
+      };
+    });
+
+    const scored = courses.filter((c) => (c.avg_score ?? 0) > 0);
 
     return {
-      courses: rows.map((row) => {
-        const enrolled = Number(row.enrollments_count);
-        const completedEnrollments = Number(row.completed_enrollments);
-        const lessonsCount = Number(row.lessons_count);
-
-        return {
-          ...row,
-          is_active: Number(row.is_active) === 1,
-          avg_score:
-            row.avg_score !== null && row.avg_score !== undefined
-              ? Math.round(Number(row.avg_score))
-              : null,
-          completion_pct:
-            enrolled > 0 && lessonsCount > 0
-              ? Math.round((completedEnrollments / enrolled) * 100)
-              : 0,
-        };
-      }),
+      courses,
+      archived_count: archivedCount,
+      stats: {
+        total: courses.length,
+        published: courses.filter((c) => c.is_active).length,
+        draft: courses.filter((c) => !c.is_active).length,
+        enrolled: courses.reduce((a, c) => a + c.enrollments_count, 0),
+        avg_completion: courses.length
+          ? Math.round(
+              courses.reduce((a, c) => a + c.completion_pct, 0) / courses.length,
+            )
+          : 0,
+        avg_score: scored.length
+          ? Math.round(
+              scored.reduce((a, c) => a + (c.avg_score ?? 0), 0) / scored.length,
+            )
+          : 0,
+        mandatory: courses.filter((c) => c.mandatory).length,
+        needs_attention: courses.filter((c) => c.needs_attention).length,
+      },
     };
+  }
+
+  /**
+   * Archive, restore, publish or unpublish any number of courses at once.
+   *
+   * One statement per action rather than a loop of single updates (§7.1), and
+   * the repository's predicates are what refuse a session training or another
+   * tenant's course — so a request naming twenty ids of which three are not
+   * the caller's simply affects seventeen, and says so.
+   */
+  async bulk(scope: OrgScope, dto: BulkCourseActionDto, actor?: AuthenticatedUser) {
+    const ids = dto.course_ids;
+    const affected =
+      dto.action === 'archive'
+        ? await this.repository.setArchived(scope, ids, true)
+        : dto.action === 'restore'
+          ? await this.repository.setArchived(scope, ids, false)
+          : await this.repository.setPublished(scope, ids, dto.action === 'publish');
+
+    await this.activity.record(scope, {
+      type: dto.action === 'publish' ? 'course_published' : 'course_updated',
+      title:
+        dto.action === 'archive' ? 'Courses archived'
+        : dto.action === 'restore' ? 'Courses restored'
+        : dto.action === 'publish' ? 'Courses published'
+        : 'Courses unpublished',
+      detail: `${affected} course${affected === 1 ? '' : 's'}`,
+      actor: actor ?? null,
+      subjectType: 'course',
+      subjectId: ids.length === 1 ? ids[0] : null,
+    });
+
+    return { action: dto.action, affected, requested: ids.length };
   }
 
   /**
@@ -269,6 +405,11 @@ export class CoursesService {
     thumbnailUrl: string | null;
     isActive: number;
     sessionId: number | null;
+    category?: string | null;
+    isMandatory?: number | null;
+    expiryMonths?: number | null;
+    tags?: string | null;
+    archivedAt?: string | null;
     createdAt: unknown;
     updatedAt: unknown;
   }) {
@@ -280,6 +421,18 @@ export class CoursesService {
       thumbnail_url: course.thumbnailUrl,
       is_active: Number(course.isActive) === 1,
       session_id: course.sessionId,
+      category: course.category ?? null,
+      // The STORED flag, so an edit dialog round-trips what the admin ticked.
+      is_mandatory: Number(course.isMandatory ?? 0) === 1,
+      // The DERIVED one, which is what a card ribbon or a count should read:
+      // compliance is mandatory whether or not the box was ticked.
+      mandatory: isMandatory({
+        isMandatory: course.isMandatory ?? 0,
+        category: course.category ?? null,
+      }),
+      expiry_months: course.expiryMonths ?? null,
+      tags: course.tags ?? null,
+      archived_at: course.archivedAt ?? null,
       created_at: course.createdAt,
       updated_at: course.updatedAt,
     };
@@ -288,11 +441,16 @@ export class CoursesService {
   async get(scope: OrgScope, courseId: number) {
     const course = await this.repository.findById(scope, courseId);
     if (!course) throw new NotFoundException('Course not found');
-    return { course: this.shape(course) };
+    return {
+      course: {
+        ...this.shape(course),
+        enrolled_count: await this.repository.enrolledCount(scope, courseId),
+      },
+    };
   }
 
   /** Content: takes the OWNER's org — `scope.organizationId` for the admin creating it. */
-  async create(scope: OrgScope, dto: CourseDto) {
+  async create(scope: OrgScope, dto: CourseDto, actor?: AuthenticatedUser) {
     const course = await this.repository.createCourse({
       organizationId: scope.organizationId,
       name: dto.name,
@@ -304,7 +462,23 @@ export class CoursesService {
       // course created without the flag used to be born hidden, contradicting
       // the column's own DEFAULT 1. Omitted now means active.
       isActive: dto.is_active ?? true,
+      category: dto.category ?? null,
+      isMandatory: dto.is_mandatory ?? false,
+      // A renewal cadence outside Compliance is meaningless, so it is dropped
+      // rather than stored — otherwise a course could be filed under
+      // Technical and still print "Renews every 12 mo" on its card.
+      expiryMonths: dto.category === COMPLIANCE_CATEGORY ? (dto.expiry_months ?? null) : null,
+      tags: dto.tags ?? null,
     });
+
+    await this.activity.record(scope, {
+      type: dto.is_active === false ? 'course_created' : 'course_published',
+      detail: `${dto.is_active === false ? 'Created' : 'Published'} "${dto.name}"`,
+      actor: actor ?? null,
+      subjectType: 'course',
+      subjectId: course.id,
+    });
+
     return { course: this.shape(course) };
   }
 
@@ -336,6 +510,15 @@ export class CoursesService {
       // Omitted means "leave it alone". Renaming a course must not hide it
       // from every learner as a side effect.
       isActive: dto.is_active ?? existing.isActive === 1,
+      // Same rule for all four new fields: the settings form does not send
+      // them, and a partial patch must not clear a course's category.
+      category: dto.category === undefined ? existing.category : dto.category,
+      isMandatory:
+        dto.is_mandatory === undefined
+          ? existing.isMandatory === 1
+          : dto.is_mandatory,
+      expiryMonths: nextExpiryMonths(dto, existing),
+      tags: dto.tags === undefined ? existing.tags : dto.tags,
     });
 
     // Only once the row is written, and only for the picture it no longer
@@ -416,6 +599,7 @@ export class CoursesService {
       title: dto.title,
       description: dto.description ?? null,
       isActive: dto.is_active ?? current.isActive === 1,
+      sortOrder: dto.sort_order ?? current.sortOrder,
     });
     if (!module) throw new NotFoundException('Module not found');
     return { module };
@@ -466,6 +650,75 @@ export class CoursesService {
     }));
   }
 
+  /**
+   * Every lesson in a course — placed and staged — for the authoring page.
+   */
+  async listCourseLessons(scope: OrgScope, courseId: number) {
+    const course = await this.repository.findById(scope, courseId);
+    if (!course) throw new NotFoundException('Course not found');
+    const rows = await this.repository.listCourseLessons(scope, courseId);
+    return {
+      lessons: rows.map((r) => ({
+        ...r,
+        is_active: Number(r.is_active) === 1,
+        is_preview: Number(r.is_preview) === 1,
+        // The field the authoring UI actually branches on. Derived here so
+        // the browser never has to know that "staged" means a null module.
+        staged: r.module_id === null,
+      })),
+    };
+  }
+
+  /**
+   * Move a lesson into a module, or back to staged (`moduleId: null`).
+   *
+   * UNLINKING IS NOT DELETING, and that distinction is the whole feature: the
+   * lesson keeps its content, its resources and its attached assessment, and
+   * stops being delivered until it is placed again.
+   */
+  async setLessonModule(
+    scope: OrgScope,
+    lessonId: number,
+    moduleId: number | null,
+  ) {
+    const lesson = await this.repository.findLessonById(scope, lessonId);
+    if (!lesson) throw new NotFoundException('Lesson not found');
+    this.assertNotSessionTraining(
+      await this.repository.findSessionIdForLesson(scope, lessonId),
+    );
+
+    let sortOrder: number;
+    if (moduleId === null) {
+      sortOrder = await this.repository.nextCourseLessonSortOrder(
+        scope,
+        lesson.courseId,
+      );
+    } else {
+      const module = await this.repository.findModuleById(scope, moduleId);
+      if (!module) throw new NotFoundException('Module not found');
+      // Both belong to the same course, or the lesson would be in two places.
+      if (module.courseId !== lesson.courseId) {
+        throw new UnprocessableEntityException(
+          'That module belongs to a different course.',
+        );
+      }
+      sortOrder = await this.repository.nextLessonSortOrder(scope, moduleId);
+    }
+
+    const updated = await this.repository.setLessonModule(
+      scope,
+      lessonId,
+      moduleId,
+      sortOrder,
+    );
+    if (!updated) throw new NotFoundException('Lesson not found');
+    return { lesson: { ...updated, staged: updated.moduleId === null } };
+  }
+
+  /**
+   * Create a lesson INSIDE a module. The course is taken from the module, so
+   * the two can never disagree.
+   */
   async createLesson(scope: OrgScope, moduleId: number, dto: CreateLessonDto) {
     // Existence AND ownership in one read — a foreign module id must 404
     // rather than let a cross-org lesson get created against it (§5.3).
@@ -474,13 +727,61 @@ export class CoursesService {
     this.assertNotSessionTraining(
       await this.repository.findSessionIdForModule(scope, moduleId),
     );
+    return this.insertLesson(scope, module.courseId, moduleId, dto);
+  }
+
+  /**
+   * Create a lesson at COURSE level, optionally already in a module.
+   *
+   * This is what the authoring flow uses: write the lesson, arrange it later.
+   * A lesson with no module is STAGED — invisible to learners and counting for
+   * nothing until it is linked (see migration 0020, which explains why that is
+   * what keeps the rest of the system correct).
+   */
+  async createCourseLesson(
+    scope: OrgScope,
+    courseId: number,
+    dto: CreateLessonDto,
+  ) {
+    const course = await this.repository.findById(scope, courseId);
+    if (!course) throw new NotFoundException('Course not found');
+    this.assertNotGlobalContent(scope, course.organizationId, 'course');
+    this.assertNotSessionTraining(course.sessionId);
+
+    let moduleId: number | null = null;
+    if (dto.module_id != null) {
+      const module = await this.repository.findModuleById(scope, dto.module_id);
+      if (!module) throw new NotFoundException('Module not found');
+      // A module from another course would put the lesson in two places at
+      // once — its own course_id and its module's.
+      if (module.courseId !== courseId) {
+        throw new UnprocessableEntityException(
+          'That module belongs to a different course.',
+        );
+      }
+      moduleId = module.id;
+    }
+    return this.insertLesson(scope, courseId, moduleId, dto);
+  }
+
+  /** Everything both create paths share. */
+  private async insertLesson(
+    scope: OrgScope,
+    courseId: number,
+    moduleId: number | null,
+    dto: CreateLessonDto,
+  ) {
 
     const contentType = dto.content_type || 'video';
     const isScorm = contentType === 'scorm';
-    const isDocument = isDocumentType(contentType);
+    const isDocument = isDocumentLike(contentType);
     const sortOrder =
       dto.sort_order ??
-      (await this.repository.nextLessonSortOrder(scope, moduleId));
+      (moduleId === null
+        // A staged lesson is ordered within the course's staging list, not
+        // within a module it is not in.
+        ? await this.repository.nextCourseLessonSortOrder(scope, courseId)
+        : await this.repository.nextLessonSortOrder(scope, moduleId));
 
     const documentKey = isDocument ? (dto.document_key ?? null) : null;
     // Proven to exist in storage before the row records it: otherwise a failed
@@ -509,6 +810,7 @@ export class CoursesService {
 
     const lesson = await this.repository.createLesson({
       organizationId: scope.organizationId,
+      courseId,
       moduleId,
       title: dto.title,
       description: dto.description ?? null,
@@ -549,7 +851,7 @@ export class CoursesService {
 
     const contentType = dto.content_type ?? current.contentType;
     const isScorm = contentType === 'scorm';
-    const isDocument = isDocumentType(contentType);
+    const isDocument = isDocumentLike(contentType);
 
     const contentUrl = isScorm
       ? null
@@ -705,6 +1007,7 @@ export class CoursesService {
     courseId: number,
     dto: BulkAssignmentDto,
     adminId: number,
+    actor?: AuthenticatedUser,
   ) {
     // A foreign course id must 404 rather than create activity rows that
     // point at another org's course under this org's organization_id (§5.3).
@@ -729,6 +1032,17 @@ export class CoursesService {
       assignedBy: adminId,
       dueDate: dto.due_date ?? null,
     });
+
+    // ONE row for the whole action, never one per learner (§7.1 in spirit —
+    // and the panel would otherwise be fifteen identical lines).
+    await this.activity.record(scope, {
+      type: 'learning_assigned',
+      detail: `Assigned a course to ${assigned} learner${assigned === 1 ? '' : 's'}`,
+      actor: actor ?? null,
+      subjectType: 'course',
+      subjectId: courseId,
+    });
+
     return { assigned, requested: dto.user_ids.length };
   }
 
@@ -784,4 +1098,26 @@ export class CoursesService {
     await this.repository.deleteAssignment(scope, assignmentId);
     return { message: 'Assignment removed' };
   }
+}
+
+/**
+ * The renewal cadence a course should end up with after an edit.
+ *
+ * Three rules, in order, and the last one is why this is a function rather
+ * than an inline `??` chain:
+ *
+ *   1. moved OUT of Compliance  -> cleared. A Technical course printing
+ *      "Renews every 12 mo" is a lie the card would tell forever.
+ *   2. field omitted            -> left alone (the settings form never sends it).
+ *   3. field sent               -> taken, but only if the course is compliance.
+ */
+function nextExpiryMonths(
+  dto: { category?: string | null; expiry_months?: number | null },
+  existing: { category: string | null; expiryMonths: number | null },
+): number | null {
+  const category = dto.category === undefined ? existing.category : dto.category;
+  if (category !== COMPLIANCE_CATEGORY) return null;
+  return dto.expiry_months === undefined
+    ? existing.expiryMonths
+    : (dto.expiry_months ?? null);
 }

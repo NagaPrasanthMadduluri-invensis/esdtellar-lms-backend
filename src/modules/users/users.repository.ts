@@ -14,9 +14,25 @@ export interface LearnerListRow {
   department: string | null;
   location: string | null;
   job_role: string | null;
+  job_level: string | null;
   is_active: number;
   created_at: string;
   assigned_courses: number;
+}
+
+/**
+ * A row of the Manage Users directory — every account in the organization,
+ * whatever portal it belongs to, with the progress figures the table shows.
+ */
+export interface DirectoryRow extends EmployeeAggregateRow {
+  /** The portal selector: 'admin' | 'learner' | 'trainer'. */
+  role: string;
+  /** The RBAC role's label — Admin, Manager, Learner, Trainer. */
+  role_label: string | null;
+  /** The role key, so the UI can style without matching on a display string. */
+  role_key: string | null;
+  /** Most recent lesson completion or assessment attempt. Null if neither. */
+  last_activity: string | null;
 }
 
 export interface EmployeeAggregateRow extends LearnerListRow {
@@ -39,7 +55,7 @@ export class UsersRepository {
   async listLearners(scope: OrgScope): Promise<LearnerListRow[]> {
     return this.db.all<LearnerListRow>(sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department,
-             u.location, u.job_role, u.is_active, u.created_at,
+             u.location, u.job_role, u.job_level, u.is_active, u.created_at,
              (SELECT COUNT(*) FROM user_course_assignments uca
               WHERE uca.user_id = u.id) AS assigned_courses
       FROM users u
@@ -59,7 +75,7 @@ export class UsersRepository {
   ): Promise<EmployeeAggregateRow[]> {
     return this.db.all<EmployeeAggregateRow>(sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department,
-             u.location, u.job_role, u.is_active, u.created_at,
+             u.location, u.job_role, u.job_level, u.is_active, u.created_at,
              (SELECT COUNT(DISTINCT uca.course_id) FROM user_course_assignments uca
               WHERE uca.user_id = u.id) AS assigned_courses,
              (SELECT COUNT(*)
@@ -87,6 +103,73 @@ export class UsersRepository {
     `);
   }
 
+
+  /**
+   * The Manage Users directory: EVERY account in the organization, not just
+   * learners.
+   *
+   * Deliberately a separate method from `listEmployeesWithProgress` rather
+   * than a role filter on it. That one feeds the assign-learning picker and
+   * the session roster, and both mean "people who can be given a course" —
+   * widening it would have quietly offered admins and trainers as assignees.
+   * Two callers, two questions, two methods.
+   *
+   * `role_label` comes from the RBAC role, not from `users.role`: the portal
+   * selector collapses a Manager into `learner` (specs/rbac.md decision 2), so
+   * a table rendering `users.role` would show four Managers as Learners and
+   * give an admin no way to tell them apart.
+   *
+   * Still one query. The progress subqueries are the same correlated pattern
+   * `listEmployeesWithProgress` uses (§7.1) and evaluate to 0 for an account
+   * with no assignments, which is what an admin or trainer has.
+   */
+  async listDirectory(scope: OrgScope): Promise<DirectoryRow[]> {
+    return this.db.all<DirectoryRow>(sql`
+      SELECT u.id, u.first_name, u.last_name, u.email, u.department,
+             u.location, u.job_role, u.job_level, u.is_active, u.created_at,
+             u.role,
+             r.label AS role_label,
+             r.key AS role_key,
+             (SELECT COUNT(DISTINCT uca.course_id) FROM user_course_assignments uca
+              WHERE uca.user_id = u.id) AS assigned_courses,
+             (SELECT COUNT(*)
+              FROM lessons l
+              JOIN course_modules cm ON cm.id = l.module_id
+              JOIN user_course_assignments uca
+                ON uca.course_id = cm.course_id AND uca.user_id = u.id
+              WHERE l.is_active = 1 AND cm.is_active = 1) AS total_lessons,
+             (SELECT COUNT(*)
+              FROM user_lesson_completions ulc
+              JOIN lessons l ON l.id = ulc.lesson_id
+              JOIN course_modules cm ON cm.id = l.module_id
+              JOIN user_course_assignments uca
+                ON uca.course_id = cm.course_id AND uca.user_id = u.id
+              WHERE ulc.user_id = u.id) AS completed_lessons,
+             (SELECT MAX(percentage) FROM user_assessment_attempts
+              WHERE user_id = u.id) AS best_score,
+             (SELECT MAX(is_passed) FROM user_assessment_attempts
+              WHERE user_id = u.id) AS has_passed,
+             (SELECT COUNT(*) FROM user_assessment_attempts
+              WHERE user_id = u.id) AS attempt_count,
+             -- Last ACTIVITY, not last login: there is no last_login column,
+             -- and the table used to print created_at under this header, so
+             -- every row claimed the person had been active on the day they
+             -- joined. The latest thing they actually did is the honest
+             -- answer, and null when they have done nothing.
+             GREATEST(
+               (SELECT MAX(ulc.completed_at) FROM user_lesson_completions ulc
+                 WHERE ulc.user_id = u.id),
+               (SELECT MAX(t.submitted_at) FROM user_assessment_attempts t
+                 WHERE t.user_id = u.id)
+             )::text AS last_activity
+      FROM users u
+      LEFT JOIN roles r
+        ON r.id = u.role_id AND r.organization_id = u.organization_id
+      WHERE ${orgScope('u', scope)}
+      ORDER BY u.first_name, u.last_name
+    `);
+  }
+
   async findRoleById(scope: OrgScope, id: number) {
     const rows = await this.db
       .select({ id: users.id, role: users.role })
@@ -108,6 +191,7 @@ export class UsersRepository {
         department: users.department,
         location: users.location,
         job_role: users.jobRole,
+        job_level: users.jobLevel,
         is_active: users.isActive,
         created_at: users.createdAt,
       })
@@ -165,6 +249,7 @@ export class UsersRepository {
       department: string | null;
       location: string | null;
       jobRole: string | null;
+      jobLevel: string | null;
       roleId: number;
       role: RolePortal;
     },
@@ -186,6 +271,7 @@ export class UsersRepository {
         department: input.department,
         location: input.location,
         jobRole: input.jobRole,
+        jobLevel: input.jobLevel,
       })
       .returning({
         id: users.id,
@@ -205,8 +291,10 @@ export class UsersRepository {
       firstName: string;
       lastName: string;
       email: string;
+      department: string | null;
       location: string | null;
       jobRole: string | null;
+      jobLevel: string | null;
     },
   ) {
     const [updated] = await this.db
@@ -215,8 +303,10 @@ export class UsersRepository {
         firstName: input.firstName,
         lastName: input.lastName,
         email: input.email,
+        department: input.department,
         location: input.location,
         jobRole: input.jobRole,
+        jobLevel: input.jobLevel,
       })
       .where(
         and(eq(users.id, id), eq(users.organizationId, scope.organizationId)),
@@ -226,8 +316,10 @@ export class UsersRepository {
         first_name: users.firstName,
         last_name: users.lastName,
         email: users.email,
+        department: users.department,
         location: users.location,
         job_role: users.jobRole,
+        job_level: users.jobLevel,
         is_active: users.isActive,
       });
     return updated;

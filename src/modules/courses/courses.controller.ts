@@ -7,8 +7,10 @@ import {
   HttpStatus,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Put,
+  Query,
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
@@ -31,6 +33,9 @@ import {
   ModuleDto,
   UpdateLessonDto,
   CreateResourceDto,
+  BulkCourseActionDto,
+  CourseListQueryDto,
+  LinkLessonDto,
 } from './dto/course.dto';
 
 @Controller('admin/courses')
@@ -39,15 +44,71 @@ export class CoursesController {
   constructor(private readonly courses: CoursesService) {}
 
   @Get()
-  async list(@CurrentScope() scope: OrgScope) {
-    return this.courses.list(scope);
+  async list(
+    @CurrentScope() scope: OrgScope,
+    @Query() query: CourseListQueryDto,
+  ) {
+    return this.courses.list(scope, query.archived ?? false);
+  }
+
+  /**
+   * Archive / restore / publish / unpublish, over a selection.
+   *
+   * Declared before `:courseId` — Nest matches in declaration order, so a
+   * literal segment after a parameter one is swallowed by it.
+   *
+   * `manage_courses`, the same permission a single edit needs: doing twenty at
+   * once is not a different capability from doing one.
+   */
+  /**
+   * Every lesson on a course — placed and staged — for the authoring page.
+   * Declared before `:courseId` routes that could swallow it is unnecessary
+   * here (the literal is deeper in the path), but the order still matters for
+   * `bulk` above.
+   */
+  @Get(':courseId/lessons')
+  async courseLessons(
+    @Param('courseId', ParseIntPipe) courseId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.courses.listCourseLessons(scope, courseId);
+  }
+
+  /**
+   * Create a lesson at COURSE level. `module_id` in the body places it
+   * straight away; omitted, it is staged until linked.
+   */
+  @Post(':courseId/lessons')
+  @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_courses')
+  async createCourseLesson(
+    @Param('courseId', ParseIntPipe) courseId: number,
+    @Body() dto: CreateLessonDto,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.courses.createCourseLesson(scope, courseId, dto);
+  }
+
+  @Post('bulk')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('manage_courses')
+  async bulk(
+    @Body() dto: BulkCourseActionDto,
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.courses.bulk(scope, dto, admin);
   }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_courses')
-  async create(@Body() dto: CourseDto, @CurrentScope() scope: OrgScope) {
-    return this.courses.create(scope, dto);
+  async create(
+    @Body() dto: CourseDto,
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.courses.create(scope, dto, admin);
   }
 
   @Get(':courseId')
@@ -114,7 +175,7 @@ export class CoursesController {
     @CurrentUser() admin: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
-    return this.courses.createAssignments(scope, courseId, dto, admin.userId);
+    return this.courses.createAssignments(scope, courseId, dto, admin.userId, admin);
   }
 
   @Post(':courseId/assignments')
@@ -191,6 +252,23 @@ export class LessonsController {
     @CurrentScope() scope: OrgScope,
   ) {
     return this.courses.updateLesson(scope, lessonId, dto);
+  }
+
+  /**
+   * Move a lesson into a module, or back to staged (`module_id: null`).
+   *
+   * PATCH, not PUT: this changes one relationship and leaves the lesson's
+   * content untouched, so a caller that sends only this cannot blank a field
+   * it did not mention.
+   */
+  @Patch(':lessonId/module')
+  @Permissions('manage_courses')
+  async link(
+    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Body() dto: LinkLessonDto,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.courses.setLessonModule(scope, lessonId, dto.module_id ?? null);
   }
 
   /* ── Supporting resources ──

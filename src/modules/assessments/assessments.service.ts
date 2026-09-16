@@ -7,8 +7,11 @@ import {
 
 import type { OrgScope } from '@/database/org-scope';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { ActivityService } from '@/modules/activity/activity.service';
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { JourneyGateService } from '@/modules/journeys/journey-gate.service';
 import { JourneysService } from '@/modules/journeys/journeys.service';
+import { isOptionBacked, questionType } from '@/common/assessment-questions';
 
 import { AssessmentsRepository } from './assessments.repository';
 import type {
@@ -24,6 +27,8 @@ export class AssessmentsService {
     private readonly certificates: CertificatesService,
     private readonly journeys: JourneysService,
     private readonly gate: JourneyGateService,
+    /** Best-effort (§8.4) — `record` never throws. */
+    private readonly activity: ActivityService,
   ) {}
 
   /* ── Admin ── */
@@ -42,12 +47,19 @@ export class AssessmentsService {
     return { assessments: await this.repository.listByCourse(scope, courseId) };
   }
 
-  async create(scope: OrgScope, courseId: number, dto: AssessmentDto) {
+  async create(
+    scope: OrgScope,
+    courseId: number,
+    dto: AssessmentDto,
+    actor?: AuthenticatedUser,
+  ) {
     // A foreign course id must 404 rather than let an assessment be created
     // that claims this org while pointing at another org's course (§5.3).
     if (!(await this.repository.courseExists(scope, courseId))) {
       throw new NotFoundException('Course not found');
     }
+
+    const link = await this.resolveLink(scope, courseId, dto);
 
     const assessment = await this.repository.createAssessment({
       organizationId: scope.organizationId,
@@ -55,7 +67,19 @@ export class AssessmentsService {
       title: dto.title,
       description: dto.description ?? null,
       passingScore: dto.passing_score ?? 60,
+      linkType: link.linkType,
+      moduleId: link.moduleId,
+      lessonId: link.lessonId,
     });
+
+    await this.activity.record(scope, {
+      type: 'assessment_created',
+      detail: `Created "${dto.title}"`,
+      actor: actor ?? null,
+      subjectType: 'assessment',
+      subjectId: assessment.id,
+    });
+
     return { assessment };
   }
 
@@ -75,10 +99,24 @@ export class AssessmentsService {
     const current = await this.repository.findById(scope, assessmentId);
     if (!current) throw new NotFoundException('Assessment not found');
 
+    // Omitted `link_type` keeps the current placement; sent, it is re-resolved
+    // and re-validated against this course.
+    const link =
+      dto.link_type === undefined
+        ? {
+            linkType: current.linkType,
+            moduleId: current.moduleId,
+            lessonId: current.lessonId,
+          }
+        : await this.resolveLink(scope, current.courseId, dto);
+
     const assessment = await this.repository.updateAssessment(scope, assessmentId, {
       title: dto.title,
       description: dto.description ?? null,
       passingScore: dto.passing_score ?? 60,
+      linkType: link.linkType,
+      moduleId: link.moduleId,
+      lessonId: link.lessonId,
       // Omitted means "leave the attachment alone" — editing a title must not
       // detach a live assessment as a side effect.
       isActive:
@@ -106,7 +144,23 @@ export class AssessmentsService {
     ]);
 
     return {
-      assessment,
+      // Shaped, not the raw Drizzle row: `findById` is a `.select()`, so it
+      // hands back camelCase while every list of assessments is snake_case.
+      // The learner's read already shapes its own (§8.1, and §10.10 for the
+      // same defect on a course).
+      assessment: {
+        id: assessment.id,
+        organization_id: assessment.organizationId,
+        course_id: assessment.courseId,
+        title: assessment.title,
+        description: assessment.description,
+        passing_score: assessment.passingScore,
+        link_type: assessment.linkType,
+        module_id: assessment.moduleId,
+        lesson_id: assessment.lessonId,
+        is_active: assessment.isActive,
+        created_at: assessment.createdAt,
+      },
       questions: this.attachOptions(questions, options),
     };
   }
@@ -117,7 +171,7 @@ export class AssessmentsService {
     const assessment = await this.repository.findById(scope, assessmentId);
     if (!assessment) throw new NotFoundException('Assessment not found');
 
-    this.assertHasCorrectOption(dto);
+    const questionKind = this.assertQuestionShape(dto);
 
     const sortOrder = await this.repository.nextQuestionSortOrder(
       scope,
@@ -127,36 +181,55 @@ export class AssessmentsService {
       organizationId: scope.organizationId,
       assessmentId,
       questionText: dto.question_text,
+      questionType: questionKind,
+      correctAnswer: isOptionBacked(questionKind)
+        ? null
+        : (dto.correct_answer ?? null),
       marks: dto.marks || 1,
       sortOrder,
     });
 
-    await this.repository.replaceOptions(scope, question.id, dto.options);
+    // Only the options-backed types have options; writing an empty set for the
+    // others would leave rows nothing reads.
+    if (isOptionBacked(questionKind)) {
+      await this.repository.replaceOptions(scope, question.id, dto.options ?? []);
+    }
 
     return {
-      question: {
-        ...question,
-        options: await this.repository.listOptionsForQuestion(scope, question.id),
-      },
+      question: this.attachOptions(
+        [question],
+        await this.repository.listOptionsForQuestion(scope, question.id),
+      )[0],
     };
   }
 
   async updateQuestion(scope: OrgScope, questionId: number, dto: QuestionDto) {
-    this.assertHasCorrectOption(dto);
+    const questionKind = this.assertQuestionShape(dto);
 
     const question = await this.repository.updateQuestion(scope, questionId, {
       questionText: dto.question_text,
+      questionType: questionKind,
+      correctAnswer: isOptionBacked(questionKind)
+        ? null
+        : (dto.correct_answer ?? null),
       marks: dto.marks || 1,
     });
     if (!question) throw new NotFoundException('Question not found');
 
-    await this.repository.replaceOptions(scope, questionId, dto.options);
+    // Replaced unconditionally when options-backed, and CLEARED when not:
+    // changing a multiple choice into a fill-in-the-blank must not leave its
+    // old options behind for the learner's renderer to find.
+    await this.repository.replaceOptions(
+      scope,
+      questionId,
+      isOptionBacked(questionKind) ? (dto.options ?? []) : [],
+    );
 
     return {
-      question: {
-        ...question,
-        options: await this.repository.listOptionsForQuestion(scope, questionId),
-      },
+      question: this.attachOptions(
+        [question],
+        await this.repository.listOptionsForQuestion(scope, questionId),
+      )[0],
     };
   }
 
@@ -338,8 +411,28 @@ export class AssessmentsService {
 
   /* ── Helpers ── */
 
+  /**
+   * Group options under their question, and emit the question in the
+   * snake_case the API contract uses everywhere else (§8.1).
+   *
+   * The two halves arrive in different shapes and that is the trap: the
+   * questions come from a Drizzle `.select()`, so their keys are the
+   * TypeScript camelCase names, while the options come from raw SQL and are
+   * already snake_case. Handing both straight out meant the builder read
+   * `question.question_text` and got `undefined` — every question rendered
+   * with a blank title. Same defect as the raw course row in §10.10, which is
+   * why this maps rather than spreads.
+   */
   private attachOptions(
-    questions: { id: number }[],
+    questions: {
+      id: number;
+      assessmentId?: number;
+      questionText?: string;
+      questionType?: string;
+      correctAnswer?: string | null;
+      marks?: number;
+      sortOrder?: number;
+    }[],
     options: (Record<string, unknown> & { question_id: number })[],
   ) {
     const byQuestion = new Map<number, unknown[]>();
@@ -351,15 +444,122 @@ export class AssessmentsService {
     }
 
     return questions.map((question) => ({
-      ...question,
+      id: question.id,
+      assessment_id: question.assessmentId,
+      question_text: question.questionText,
+      question_type: question.questionType,
+      correct_answer: question.correctAnswer ?? null,
+      marks: question.marks,
+      sort_order: question.sortOrder,
       options: byQuestion.get(Number(question.id)) ?? [],
     }));
   }
 
-  private assertHasCorrectOption(dto: QuestionDto): void {
-    if (!dto.options.some((option) => option.is_correct)) {
+  /**
+   * Per-type question validation.
+   *
+   * The old rule — "at least one correct option" — was right for multiple
+   * choice and impossible for the two types that have no options at all, so
+   * it is now driven by the catalogue (`common/assessment-questions.ts`).
+   * Returns the normalised question type so the caller stores exactly what
+   * was validated.
+   */
+  /**
+   * Where an assessment is attached, validated against the course it is on.
+   *
+   * Three things are checked, and each is a way the link could otherwise be a
+   * lie: the target must exist, it must belong to THIS course (a module from
+   * another course would attach the assessment to content the learner never
+   * reaches on it), and it must be in this organization — `findModuleById`
+   * and `findLessonById` are scoped, so a foreign id 404s rather than
+   * silently linking across tenants.
+   *
+   * The ids are also CLEARED for the placements that do not use them, so a
+   * 'course' assessment cannot keep a stale module_id from a previous edit and
+   * show up under that module in the outline.
+   */
+  private async resolveLink(
+    scope: OrgScope,
+    courseId: number,
+    dto: AssessmentDto,
+  ): Promise<{
+    linkType: string;
+    moduleId: number | null;
+    lessonId: number | null;
+  }> {
+    const linkType = dto.link_type ?? 'course';
+
+    if (linkType === 'module') {
+      if (dto.module_id == null) {
+        throw new BadRequestException('Choose the module to attach this to.');
+      }
+      const module = await this.repository.findModuleInCourse(
+        scope,
+        courseId,
+        dto.module_id,
+      );
+      if (!module) throw new NotFoundException('Module not found on this course');
+      return { linkType, moduleId: module.id, lessonId: null };
+    }
+
+    if (linkType === 'lesson') {
+      if (dto.lesson_id == null) {
+        throw new BadRequestException('Choose the lesson to attach this to.');
+      }
+      const lesson = await this.repository.findLessonInCourse(
+        scope,
+        courseId,
+        dto.lesson_id,
+      );
+      if (!lesson) throw new NotFoundException('Lesson not found on this course');
+      return { linkType, moduleId: null, lessonId: lesson.id };
+    }
+
+    // 'course' (the final) and 'none' (not placed yet) both carry neither id.
+    return { linkType, moduleId: null, lessonId: null };
+  }
+
+  private assertQuestionShape(dto: QuestionDto): string {
+    const type = dto.question_type || 'mcq';
+
+    if (!isOptionBacked(type)) {
+      // fillblank / matching: the answer is the content, and a question with
+      // no answer cannot be graded — it would silently mark every learner
+      // wrong.
+      if (!dto.correct_answer || !dto.correct_answer.trim()) {
+        throw new BadRequestException(
+          type === 'matching'
+            ? 'Enter the matching pairs.'
+            : 'Enter the expected answer.',
+        );
+      }
+      return type;
+    }
+
+    const options = dto.options ?? [];
+    if (options.length < 2) {
+      throw new BadRequestException('At least 2 options required');
+    }
+
+    const meta = questionType(type);
+    if (meta?.fixedOptions && options.length !== meta.fixedOptions.length) {
+      throw new BadRequestException(
+        `${meta.label} has exactly ${meta.fixedOptions.length} options.`,
+      );
+    }
+
+    const correct = options.filter((option) => option.is_correct);
+    if (correct.length === 0) {
       throw new BadRequestException('At least one correct option required');
     }
+    // A single-answer question with two correct options is ungradeable: the
+    // learner picks one, and the grader has no basis to call it right or wrong.
+    if (!meta?.multipleCorrect && correct.length > 1) {
+      throw new BadRequestException(
+        'This question type allows only one correct option.',
+      );
+    }
+    return type;
   }
 
   private async assertAssigned(

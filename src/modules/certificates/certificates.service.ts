@@ -9,6 +9,8 @@ import {
 } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
+import { ActivityService } from '@/modules/activity/activity.service';
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import {
   CertificatesRepository,
@@ -30,7 +32,11 @@ export interface CompletionVerdict {
 export class CertificatesService {
   private readonly logger = new Logger(CertificatesService.name);
 
-  constructor(private readonly repository: CertificatesRepository) {}
+  constructor(
+    private readonly repository: CertificatesRepository,
+    /** Best-effort (§8.4) — `record` never throws. */
+    private readonly activity: ActivityService,
+  ) {}
 
   /**
    * Server-side only. A client-supplied code is never accepted anywhere —
@@ -231,6 +237,7 @@ export class CertificatesService {
     userId: number,
     courseId: number,
     adminId: number,
+    actor?: AuthenticatedUser,
   ) {
     const learner = await this.repository.findLearner(scope, userId);
     if (!learner) throw new NotFoundException('Learner not found');
@@ -272,6 +279,14 @@ export class CertificatesService {
       `Certificate ${id} issued manually by admin=${adminId} for user=${userId} ` +
         `course=${courseId} (completed=${verdict.complete})`,
     );
+
+    await this.activity.record(scope, {
+      type: 'certificate_issued',
+      detail: `Issued "${course.name}" to learner #${userId}`,
+      actor: actor ?? null,
+      subjectType: 'certificate',
+      subjectId: id,
+    });
 
     return {
       id,
@@ -333,10 +348,23 @@ export class CertificatesService {
     }));
   }
 
-  async revoke(scope: OrgScope, id: number, adminId: number): Promise<void> {
+  async revoke(
+    scope: OrgScope,
+    id: number,
+    adminId: number,
+    actor?: AuthenticatedUser,
+  ): Promise<void> {
     const cert = await this.repository.findStatusById(scope, id);
     if (!cert) throw new NotFoundException('Certificate not found');
     await this.repository.revoke(scope, id, adminId);
+
+    await this.activity.record(scope, {
+      type: 'certificate_revoked',
+      detail: `Revoked certificate #${id}`,
+      actor: actor ?? null,
+      subjectType: 'certificate',
+      subjectId: id,
+    });
   }
 
   /** Re-stamps a revoked certificate with a fresh code and issue date. */

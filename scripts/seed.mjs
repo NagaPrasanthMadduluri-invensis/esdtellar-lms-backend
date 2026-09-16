@@ -253,11 +253,11 @@ export async function seedIfEmpty(db, orgId) {
   const c1m1 = c1m1Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c1m1, "What is Project Management?", "An overview of project management and why it matters.", "video", "https://www.youtube.com/embed/GC7xs-tjNW4", 12, 1, contentOrgId],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c1m1, "Key PM Concepts & Terminology", "Essential terms every project manager must know.", "video", "https://www.youtube.com/embed/DdvSCPCGpoU", 15, 2, contentOrgId],
   });
 
@@ -268,11 +268,11 @@ export async function seedIfEmpty(db, orgId) {
   const c1m2 = c1m2Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c1m2, "Work Breakdown Structure (WBS)", "Breaking down project scope into manageable work packages.", "video", "https://www.youtube.com/embed/J8p7H7ipToE", 18, 1, contentOrgId],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c1m2, "Creating a Project Schedule", "Gantt charts, dependencies, and milestone planning.", "video", "https://www.youtube.com/embed/SCtThLSX28g", 20, 2, contentOrgId],
   });
 
@@ -283,11 +283,11 @@ export async function seedIfEmpty(db, orgId) {
   const c1m3 = c1m3Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c1m3, "Risk Identification & Assessment", "How to identify, analyze, and respond to project risks.", "video", "https://www.youtube.com/embed/OU2zexbOEVs", 16, 1, contentOrgId],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c1m3, "Quality Management Basics", "Quality planning, assurance, and control in projects.", "video", "https://www.youtube.com/embed/D_XiGF4uSNs", 14, 2, contentOrgId],
   });
 
@@ -366,11 +366,11 @@ export async function seedIfEmpty(db, orgId) {
   const c2m1 = c2m1Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c2m1, "Agile Manifesto & Principles", "Understanding the 4 values and 12 principles of the Agile Manifesto.", "video", "https://www.youtube.com/embed/Z9QbYZh1YXY", 10, 1, contentOrgId],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c2m1, "Agile vs Traditional Methods", "Comparing Agile and Waterfall approaches to project delivery.", "video", "https://www.youtube.com/embed/WjwEh15M5Rw", 12, 2, contentOrgId],
   });
 
@@ -381,11 +381,11 @@ export async function seedIfEmpty(db, orgId) {
   const c2m2 = c2m2Result.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c2m2, "Scrum Roles & Responsibilities", "Product Owner, Scrum Master, and Development Team explained.", "video", "https://www.youtube.com/embed/m5u0P1WPfvs", 14, 1, contentOrgId],
   });
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [c2m2, "Scrum Events & Ceremonies", "Sprint Planning, Daily Scrum, Sprint Review, and Retrospective.", "video", "https://www.youtube.com/embed/evOhJeOF9mk", 16, 2, contentOrgId],
   });
 
@@ -489,7 +489,7 @@ export async function seedBankingCourse(db, orgId) {
   const moduleId = moduleResult.rows[0].id;
 
   await db.execute({
-    sql: "INSERT INTO lessons (module_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    sql: "INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url, duration_minutes, sort_order, organization_id) SELECT $1, (SELECT course_id FROM course_modules WHERE id = $1), $2,$3,$4,$5,$6,$7,$8",
     args: [
       moduleId,
       "Introduction to AI in Banking",

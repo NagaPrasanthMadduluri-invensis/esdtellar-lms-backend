@@ -88,6 +88,14 @@ export const PERMISSIONS = {
   // withheld rather than absent.
   complete_session: 'Mark a session completed',
   manage_session_roster: 'Add or remove session participants',
+  // Edstellar Services. Guarded on both routes in
+  // `modules/services/services.controller.ts` — submitting a request and
+  // reading this org's past ones. Separate from every other permission
+  // because it is the one action that reaches OUTSIDE the tenant: it puts the
+  // organization's name, a contact and a budget range in front of Edstellar's
+  // sales team. An org may well want its content admins building courses
+  // without being able to open a commercial conversation on its behalf.
+  request_services: 'Request Edstellar services',
 } as const;
 
 /** Every valid permission id. */

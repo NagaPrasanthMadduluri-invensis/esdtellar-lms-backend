@@ -32,6 +32,18 @@ export const users = pgTable(
     location: text('location'),
     jobRole: text('job_role'),
     /**
+     * Seniority band — one of `JOB_LEVELS` in `common/workforce.ts`, or null
+     * for a user nobody has set it on yet. Added by
+     * `0018_workforce_and_activity_log.sql`.
+     *
+     * Free text in Postgres, closed by the DTO, for the same reason `role` is:
+     * the set of values is a product decision that must not need a migration
+     * to change. `job_role` beside it is genuinely free text and that is the
+     * difference — this one is a reporting dimension, so its values have to
+     * repeat across people.
+     */
+    jobLevel: text('job_level'),
+    /**
      * The org-scoped role that carries this user's permissions and row scope
      * (`specs/rbac.md` §3.4). Nullable here because
      * `0011_rbac_roles.sql` adds it nullable; `scripts/migrate-rbac.mjs`
@@ -69,6 +81,10 @@ export const users = pgTable(
       table.role,
       table.isActive,
     ),
+    // The two Reports dimensions that filter and group on their own column.
+    // `department` is already covered by idx_users_department above.
+    index('idx_users_org_job_level').on(table.organizationId, table.jobLevel),
+    index('idx_users_org_location').on(table.organizationId, table.location),
   ],
 );
 

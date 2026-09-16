@@ -3,6 +3,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -15,6 +16,10 @@ import {
   DESCRIPTION_MAX_LENGTH,
   DESCRIPTION_TOO_LONG,
 } from '@/common/content-limits';
+import {
+  ASSESSMENT_LINK_TYPES,
+  QUESTION_TYPE_KEYS,
+} from '@/common/assessment-questions';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -38,6 +43,25 @@ export class AssessmentDto {
   description?: string | null;
   @IsOptional() @IsInt() passing_score?: number;
   @IsOptional() @IsBoolean() is_active?: boolean;
+
+  /**
+   * Where the assessment sits: the course's final, a module, a lesson, or
+   * `none` while it is being written.
+   *
+   * Stored rather than derived: `course` and `none` both carry neither id and
+   * mean opposite things.
+   */
+  @IsOptional()
+  @IsIn(ASSESSMENT_LINK_TYPES, {
+    message: `link_type must be one of: ${ASSESSMENT_LINK_TYPES.join(', ')}`,
+  })
+  link_type?: string;
+
+  /** Required when link_type is 'module'; ignored otherwise. */
+  @IsOptional() @IsInt() module_id?: number | null;
+
+  /** Required when link_type is 'lesson'; ignored otherwise. */
+  @IsOptional() @IsInt() lesson_id?: number | null;
 }
 
 export class OptionDto {
@@ -56,11 +80,31 @@ export class QuestionDto {
 
   @IsOptional() @IsInt() marks?: number;
 
+  /** One of `QUESTION_TYPES` (`common/assessment-questions.ts`). */
+  @IsOptional()
+  @IsIn(QUESTION_TYPE_KEYS, {
+    message: `question_type must be one of: ${QUESTION_TYPE_KEYS.join(', ')}`,
+  })
+  question_type?: string;
+
+  /**
+   * The answer for the types that do not use options — the expected text for
+   * fill-in-the-blank, the JSON pairs for matching. The service decides which
+   * of this and `options` is required, because that depends on the type and a
+   * DTO cannot express "one or the other depending on a sibling field".
+   */
+  @IsOptional() @Transform(nullable) correct_answer?: string | null;
+
+  /**
+   * OPTIONAL at this layer, and required by the service for the
+   * options-backed types only. It used to be mandatory with a minimum of two,
+   * which is right for multiple choice and impossible for fill-in-the-blank.
+   */
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(2, { message: 'options must contain at least 2 options' })
   @ValidateNested({ each: true })
   @Type(() => OptionDto)
-  options!: OptionDto[];
+  options?: OptionDto[];
 }
 
 export class AnswerDto {

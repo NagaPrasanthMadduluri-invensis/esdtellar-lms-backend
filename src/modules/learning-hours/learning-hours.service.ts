@@ -7,6 +7,7 @@ import { lastMonth, thisMonth, weeks } from './periods';
 import {
   LearningHoursRepository,
   type MinutesRow,
+  type TruncUnit,
   type Week,
 } from './learning-hours.repository';
 
@@ -180,6 +181,42 @@ export class LearningHoursService {
     }
 
     return totals;
+  }
+
+  /**
+   * Minutes bucketed by calendar period, org-wide — for the admin Analytics
+   * trend charts.
+   *
+   * A pass-through to the repository on purpose: there is no business rule to
+   * apply here beyond the one already encoded in `lessonSource`, and putting
+   * the bucketing in a service would tempt the next caller to bucket it
+   * slightly differently. What this method DOES provide is the layer boundary
+   * — `ReportsModule` reaches hours through this service and never through the
+   * repository (§3.2), which is what keeps one definition of an hour.
+   */
+  async minutesByPeriod(scope: OrgScope, unit: TruncUnit) {
+    return this.repository.minutesByPeriod(scope, unit);
+  }
+
+  /** The same minutes, split by derived mode of learning. */
+  async minutesByPeriodAndMode(scope: OrgScope, unit: TruncUnit) {
+    return this.repository.minutesByPeriodAndMode(scope, unit);
+  }
+
+  /** Per-learner minutes inside an arbitrary window — the Reports builder. */
+  async minutesByUserInWindow(scope: OrgScope, from: string, to: string) {
+    const rows = await this.repository.minutesByUserInWindow(scope, from, to);
+    return new Map(
+      rows.map((r) => [
+        Number(r.user_id),
+        { minutes: Number(r.minutes), allTime: Number(r.all_time) },
+      ]),
+    );
+  }
+
+  /** The same minutes, per department. */
+  async minutesByDepartment(scope: OrgScope) {
+    return this.repository.minutesByDepartment(scope);
   }
 
   /** Zero-filled entry, so callers never branch on "this learner has none". */

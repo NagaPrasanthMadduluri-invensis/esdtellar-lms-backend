@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-import { CurrentScope, Permissions, Roles } from '@/common/decorators';
+import { CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
 import { SpreadsheetService } from '@/modules/reports/spreadsheet.service';
 
 import {
@@ -24,6 +24,7 @@ import {
   UpdateUserDto,
 } from './dto/user.dto';
 import type { OrgScope } from '@/database/org-scope';
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import { UsersService } from './users.service';
 
@@ -44,8 +45,12 @@ export class UsersController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_users')
-  async create(@CurrentScope() scope: OrgScope, @Body() dto: CreateUserDto) {
-    return this.users.create(scope, dto);
+  async create(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Body() dto: CreateUserDto,
+  ) {
+    return this.users.create(scope, dto, actor);
   }
 
   /**
@@ -58,6 +63,20 @@ export class UsersController {
   template(@Res() response: Response): void {
     const buffer = this.spreadsheets.buildLearnerUploadTemplate();
     this.spreadsheets.send(response, buffer, 'Learner_Upload_Template.xlsx');
+  }
+
+  /**
+   * The Manage Users table. Declared before `:userId` for the same reason
+   * `template` is — Nest matches in declaration order.
+   *
+   * Separate from `GET /admin/employees`, which is learners-only and feeds the
+   * assign-learning picker and the session roster. See
+   * `UsersRepository.listDirectory`.
+   */
+  @Get('directory')
+  @Permissions('view_employees')
+  async directory(@CurrentScope() scope: OrgScope) {
+    return this.users.directory(scope);
   }
 
   @Post('bulk')
@@ -98,10 +117,11 @@ export class UsersController {
   @Permissions('edit_employees')
   async toggle(
     @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: ToggleActiveDto,
   ) {
-    return this.users.setActive(scope, userId, dto.is_active);
+    return this.users.setActive(scope, userId, dto.is_active, actor);
   }
 
   @Delete(':userId')

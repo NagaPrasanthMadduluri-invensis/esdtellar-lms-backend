@@ -33,6 +33,34 @@ export interface CourseMinutesRow {
   minutes: number;
 }
 
+/** Minutes in one calendar bucket, org-wide. */
+export interface PeriodMinutesRow {
+  period: string;
+  minutes: number;
+  learners: number;
+}
+
+/** Minutes in one calendar bucket, for one mode of learning. */
+export interface PeriodModeMinutesRow {
+  period: string;
+  mode: string;
+  minutes: number;
+}
+
+/** Minutes for one learner inside a window, beside their all-time total. */
+export interface WindowMinutesRow {
+  user_id: number;
+  minutes: number;
+  all_time: number;
+}
+
+/** Minutes for one department, all time. */
+export interface DepartmentMinutesRow {
+  department: string;
+  minutes: number;
+  learners: number;
+}
+
 /** SCORM time for one learner on one course, still unparsed. */
 export interface CourseScormTimeRow {
   user_id: number;
@@ -84,11 +112,21 @@ export class LearningHoursRepository {
    * prevent. `vp` and `c` (lesson_video_progress / user_lesson_completions)
    * are activity tables, so this is a straight org match — no global-content
    * IN-list, unlike a courses catalogue read.
+   *
+   * `lesson_id` and `content_type` were ADDED to the fragment rather than
+   * queried separately by the analytics breakdowns that needed them. Those
+   * breakdowns split the same minutes by period and by mode of learning, and a
+   * second hand-written source would be free to disagree with this one about
+   * what an hour is — which is the entire failure §10.4 records. Existing
+   * consumers name their columns explicitly, so the extra two cost them
+   * nothing.
    */
   private lessonSource(scope: OrgScope) {
     return sql`
       SELECT c.user_id,
              cm.course_id,
+             l.id AS lesson_id,
+             l.content_type,
              COALESCE(l.duration_minutes, 0) AS minutes,
              c.completed_at AS at
       FROM user_lesson_completions c
@@ -100,6 +138,8 @@ export class LearningHoursRepository {
 
       SELECT vp.user_id,
              cm.course_id,
+             l.id AS lesson_id,
+             l.content_type,
              LEAST(
                vp.watched_seconds / 60.0,
                COALESCE(l.duration_minutes, vp.watched_seconds / 60.0)
@@ -245,4 +285,124 @@ export class LearningHoursRepository {
       GROUP BY st.user_id, st.package_id
     `);
   }
+
+  /**
+   * The SAME minutes, bucketed by calendar period — what the admin Analytics
+   * page draws its "Learning Hours per period" and "Engagement over time"
+   * charts from.
+   *
+   * Third consumer of `lessonSource`, for the reason the second one exists:
+   * writing a period-bucketed sum by hand would be a second definition of an
+   * hour of learning, and §10.4 records what happened last time there were
+   * two. The learner view, the admin analytics and this chart now all reduce
+   * to the same fragment, so they cannot disagree.
+   *
+   * `unit` is whitelisted rather than interpolated — it reaches `date_trunc`,
+   * and a caller-supplied string there is an injection point even though every
+   * call site today passes a literal.
+   */
+  async minutesByPeriod(
+    scope: OrgScope,
+    unit: TruncUnit,
+  ): Promise<PeriodMinutesRow[]> {
+    const trunc = assertTruncUnit(unit);
+    return this.db.all<PeriodMinutesRow>(sql`
+      WITH source AS (${this.lessonSource(scope)})
+      SELECT date_trunc(${trunc}, s.at)::date AS period,
+             COALESCE(SUM(s.minutes), 0) AS minutes,
+             COUNT(DISTINCT s.user_id) AS learners
+      FROM source s
+      GROUP BY 1
+      ORDER BY 1
+    `);
+  }
+
+  /**
+   * The same minutes again, split by MODE OF LEARNING.
+   *
+   * The mode is derived, not stored. A lesson's `content_type` says what it is
+   * — video, scorm, document, quiz — except for `session`, where the delivery
+   * mode belongs to the session itself (`sessions.session_type`, ILT or
+   * Virtual) and the lesson is only its companion (§10.7). So the CASE reaches
+   * through the training course to the session for exactly that one type and
+   * takes the lesson's own word for every other.
+   */
+  async minutesByPeriodAndMode(
+    scope: OrgScope,
+    unit: TruncUnit,
+  ): Promise<PeriodModeMinutesRow[]> {
+    const trunc = assertTruncUnit(unit);
+    return this.db.all<PeriodModeMinutesRow>(sql`
+      WITH source AS (${this.lessonSource(scope)})
+      SELECT date_trunc(${trunc}, s.at)::date AS period,
+             CASE
+               WHEN s.content_type = 'session' AND se.session_type = 'ILT' THEN 'ILT'
+               WHEN s.content_type = 'session' THEN 'VILT'
+               WHEN s.content_type = 'scorm'    THEN 'eLearning'
+               WHEN s.content_type = 'video'    THEN 'Video'
+               WHEN s.content_type = 'document' THEN 'Document'
+               ELSE 'Assessment'
+             END AS mode,
+             COALESCE(SUM(s.minutes), 0) AS minutes
+      FROM source s
+      LEFT JOIN courses co ON co.id = s.course_id
+      LEFT JOIN sessions se ON se.id = co.session_id
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+    `);
+  }
+
+  /**
+   * The same minutes again, per learner, inside an arbitrary date window.
+   *
+   * `minutesByUser` above answers "this month / last month / these four
+   * weeks", which is what the learner's own hours page asks. The Reports
+   * builder asks "this quarter", "this year", "all time" — arbitrary ends the
+   * fixed buckets cannot express. Same fragment, so the two never disagree
+   * about a learner whose window happens to be a calendar month.
+   */
+  async minutesByUserInWindow(
+    scope: OrgScope,
+    from: string,
+    to: string,
+  ): Promise<WindowMinutesRow[]> {
+    return this.db.all<WindowMinutesRow>(sql`
+      WITH source AS (${this.lessonSource(scope)})
+      SELECT u.id AS user_id,
+             COALESCE(SUM(CASE WHEN s.at::date BETWEEN ${from}::date AND ${to}::date
+                          THEN s.minutes ELSE 0 END), 0) AS minutes,
+             COALESCE(SUM(s.minutes), 0) AS all_time
+      FROM users u
+      LEFT JOIN source s ON s.user_id = u.id
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
+      GROUP BY u.id
+    `);
+  }
+
+  /** The same minutes, per department. Powers "Engagement by department". */
+  async minutesByDepartment(scope: OrgScope): Promise<DepartmentMinutesRow[]> {
+    return this.db.all<DepartmentMinutesRow>(sql`
+      WITH source AS (${this.lessonSource(scope)})
+      SELECT COALESCE(u.department, 'Unassigned') AS department,
+             COALESCE(SUM(s.minutes), 0) AS minutes,
+             COUNT(DISTINCT u.id) AS learners
+      FROM users u
+      LEFT JOIN source s ON s.user_id = u.id
+      WHERE u.role = 'learner' AND ${orgScope('u', scope)}
+      GROUP BY 1
+      ORDER BY 2 DESC
+    `);
+  }
+}
+
+/** Calendar buckets `date_trunc` accepts here. Nothing else is permitted. */
+export type TruncUnit = 'month' | 'quarter' | 'year';
+
+const TRUNC_UNITS: readonly TruncUnit[] = ['month', 'quarter', 'year'];
+
+function assertTruncUnit(unit: string): TruncUnit {
+  if (!(TRUNC_UNITS as readonly string[]).includes(unit)) {
+    throw new Error(`minutesByPeriod: "${unit}" is not an allowed date_trunc unit`);
+  }
+  return unit as TruncUnit;
 }

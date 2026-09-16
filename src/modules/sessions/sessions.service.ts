@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
+import { ActivityService } from '@/modules/activity/activity.service';
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { MediaService } from '@/modules/media/media.service';
 
 import type {
@@ -45,6 +47,8 @@ export class SessionsService {
   constructor(
     private readonly repository: SessionsRepository,
     private readonly media: MediaService,
+    /** Best-effort (§8.4) — `record` never throws. */
+    private readonly activity: ActivityService,
   ) {}
 
   /**
@@ -105,7 +109,7 @@ export class SessionsService {
     return { session: this.withDisplayStatus(session) };
   }
 
-  async create(scope: OrgScope, dto: SessionDto) {
+  async create(scope: OrgScope, dto: SessionDto, actor?: AuthenticatedUser) {
     await this.assertCourseInScope(scope, dto.course_id);
     const trainer = await this.resolveTrainer(scope, dto.trainer_user_id);
     // Derived, not trusted: when a trainer account is linked, the display name
@@ -117,6 +121,15 @@ export class SessionsService {
     // which is the behaviour this replaces.
     await this.repository.createTraining(scope, id, this.trainingValues(dto));
     await this.syncTrainingThumbnail(scope, id, dto.thumbnail_url);
+
+    await this.activity.record(scope, {
+      type: 'session_created',
+      detail: `Scheduled "${dto.title}"${dto.date ? ` for ${dto.date}` : ''}`,
+      actor: actor ?? null,
+      subjectType: 'session',
+      subjectId: id,
+    });
+
     return {
       session: this.withDisplayStatus(
         await this.repository.findWithCourse(scope, id),

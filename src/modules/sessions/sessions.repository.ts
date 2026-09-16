@@ -425,12 +425,16 @@ export class SessionsRepository {
       ), new_module AS (
         INSERT INTO course_modules (organization_id, course_id, title, sort_order, is_active)
         SELECT ${scope.organizationId}, id, 'Live session', 0, 1 FROM new_course
-        RETURNING id
+        -- course_id is carried out so the lesson below can set its own; a
+        -- lesson has belonged to a course directly since migration 0020, and
+        -- the column is NOT NULL.
+        RETURNING id, course_id
       )
-      INSERT INTO lessons (organization_id, module_id, title, description, content_type,
-                           content_url, duration_minutes, sort_order,
+      INSERT INTO lessons (organization_id, course_id, module_id, title, description,
+                           content_type, content_url, duration_minutes, sort_order,
                            is_preview, is_active)
-      SELECT ${scope.organizationId}, id, ${values.lessonTitle}, ${values.description}, 'session',
+      SELECT ${scope.organizationId}, course_id, id, ${values.lessonTitle},
+             ${values.description}, 'session',
              ${values.contentUrl}, ${values.durationMinutes}, 0, 0, 1
       FROM new_module
     `);

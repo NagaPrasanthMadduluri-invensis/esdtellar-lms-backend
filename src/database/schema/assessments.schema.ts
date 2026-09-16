@@ -15,6 +15,19 @@ export const assessments = pgTable(
     title: text('title').notNull(),
     description: text('description'),
     passingScore: integer('passing_score').notNull().default(60),
+    /**
+     * Where this assessment sits: `course` (the final), `module`, `lesson`, or
+     * `none` while it is being written.
+     *
+     * STORED, not derived from which id is set, because `course` and `none`
+     * both have neither a module nor a lesson and mean opposite things — the
+     * final exam, and something not yet placed.
+     */
+    linkType: text('link_type').notNull().default('course'),
+    /** Set only when linkType is 'module'. SET NULL if the module goes. */
+    moduleId: integer('module_id'),
+    /** Set only when linkType is 'lesson'. SET NULL if the lesson goes. */
+    lessonId: integer('lesson_id'),
     isActive: integer('is_active').notNull().default(1),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
@@ -22,6 +35,8 @@ export const assessments = pgTable(
   },
   (table) => [
     index('idx_assessments_course').on(table.courseId, table.isActive),
+    index('idx_assessments_module').on(table.moduleId),
+    index('idx_assessments_lesson').on(table.lessonId),
   ],
 );
 
@@ -35,6 +50,15 @@ export const assessmentQuestions = pgTable(
       .notNull()
       .references(() => assessments.id, { onDelete: 'cascade' }),
     questionText: text('question_text').notNull(),
+    /** One of `QUESTION_TYPES` in `common/assessment-questions.ts`. */
+    questionType: text('question_type').notNull().default('mcq'),
+    /**
+     * The answer for types that do not use `assessment_options`: the expected
+     * text for fill-in-the-blank, the JSON pairs for matching. Null for
+     * multiple choice and multi-select, which carry their answer on the
+     * options rows.
+     */
+    correctAnswer: text('correct_answer'),
     marks: integer('marks').notNull().default(1),
     sortOrder: integer('sort_order').notNull().default(0),
   },

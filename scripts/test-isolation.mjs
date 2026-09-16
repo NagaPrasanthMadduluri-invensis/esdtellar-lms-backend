@@ -259,9 +259,38 @@ async function main() {
     api(invAdmin, 'DELETE', `/admin/sessions/${invSessionId}`),
   );
 
+  // The two courses the certificate fixtures use are chosen at run time from
+  // the courses this learner does NOT already hold a certificate for.
+  //
+  // They used to be `edCourseRow` and `edCourse2Row` — the first two courses in
+  // the organization — which assumed the learner had no certificates at all.
+  // `db:seed-history` issues certificates against real completions, so that
+  // assumption broke the moment the demo organization had a history: issuing
+  // returned 409 (already holds one) and the whole suite died in setup, before
+  // a single isolation assertion ran. Picking a free pair keeps the suite
+  // independent of how much data happens to be in the database, which is what
+  // a fixture is supposed to be.
+  const freeCourses = await many(
+    `SELECT c.id FROM courses c
+      WHERE c.organization_id = $1
+        AND c.session_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM certificates ct
+           WHERE ct.course_id = c.id AND ct.user_id = $2
+        )
+      ORDER BY c.id`,
+    [edOrg.id, edLearnerRow.id],
+  );
+  if (freeCourses.length === 0) {
+    throw new Error(
+      'Fixture setup: this learner already holds a certificate for every ' +
+        'Edstellar course, so the suite cannot issue one. Pick another learner.',
+    );
+  }
+
   const edCert1Create = await api(edAdmin, 'POST', '/admin/certificates', {
     userId: edLearnerRow.id,
-    courseId: edCourseRow.id,
+    courseId: freeCourses[0].id,
   });
   if (edCert1Create.status !== 201) {
     throw new Error(`Fixture setup: issuing the first Edstellar certificate failed (${edCert1Create.status})`);
@@ -269,10 +298,10 @@ async function main() {
   const edCert1Id = edCert1Create.body.certificate.id;
 
   let edCert2Id = null;
-  if (edCourse2Row) {
+  if (freeCourses[1]) {
     const edCert2Create = await api(edAdmin, 'POST', '/admin/certificates', {
       userId: edLearnerRow.id,
-      courseId: edCourse2Row.id,
+      courseId: freeCourses[1].id,
     });
     if (edCert2Create.status !== 201) {
       throw new Error(`Fixture setup: issuing the second Edstellar certificate failed (${edCert2Create.status})`);

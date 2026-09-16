@@ -5,11 +5,14 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
+  IsIn,
   IsOptional,
   IsString,
   MinLength,
   ValidateNested,
 } from 'class-validator';
+
+import { JOB_LEVELS, LOCATIONS } from '@/common/workforce';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -47,13 +50,26 @@ export class CreateUserDto {
   @Transform(nullable)
   department?: string | null;
 
+  /**
+   * Closed list (`common/workforce.ts`). Free text here is what produced two
+   * spellings of one office and made the location filter in Reports unable to
+   * see three learners at all.
+   */
   @IsOptional()
   @Transform(nullable)
+  @IsIn(LOCATIONS, { message: `location must be one of: ${LOCATIONS.join(', ')}` })
   location?: string | null;
 
+  /** Deliberately free text — it is a job title, not a reporting dimension. */
   @IsOptional()
   @Transform(nullable)
   job_role?: string | null;
+
+  /** Closed list. This is the Reports "Job Level" filter and comparison axis. */
+  @IsOptional()
+  @Transform(nullable)
+  @IsIn(JOB_LEVELS, { message: `job_level must be one of: ${JOB_LEVELS.join(', ')}` })
+  job_level?: string | null;
 }
 
 export class UpdateUserDto {
@@ -71,13 +87,28 @@ export class UpdateUserDto {
   @Transform(lower)
   email!: string;
 
+  /**
+   * Present here as well as on create. It was missing, so an admin could set a
+   * department when adding somebody and never change it afterwards — and
+   * department is the dimension every report groups by first.
+   */
   @IsOptional()
   @Transform(nullable)
+  department?: string | null;
+
+  @IsOptional()
+  @Transform(nullable)
+  @IsIn(LOCATIONS, { message: `location must be one of: ${LOCATIONS.join(', ')}` })
   location?: string | null;
 
   @IsOptional()
   @Transform(nullable)
   job_role?: string | null;
+
+  @IsOptional()
+  @Transform(nullable)
+  @IsIn(JOB_LEVELS, { message: `job_level must be one of: ${JOB_LEVELS.join(', ')}` })
+  job_level?: string | null;
 }
 
 export class ToggleActiveDto {
@@ -93,6 +124,7 @@ export class BulkUserRowDto {
   @IsOptional() @Transform(nullable) department?: string | null;
   @IsOptional() @Transform(nullable) location?: string | null;
   @IsOptional() @Transform(nullable) job_role?: string | null;
+  @IsOptional() @Transform(nullable) job_level?: string | null;
   @IsOptional() @Transform(trim) password?: string;
 }
 

@@ -45,12 +45,55 @@ export class AssessmentsRepository {
       SELECT a.*,
         (SELECT COUNT(*) FROM assessment_questions
          WHERE assessment_id = a.id) AS questions_count,
-        (SELECT COUNT(*) FROM user_assessment_attempts
-         WHERE assessment_id = a.id) AS attempts_count
+        -- ORG-SCOPED. The assessment itself is content and may be
+        -- platform-owned (contentScope above), but an attempt is activity and
+        -- belongs to one tenant. Unscoped, an admin's attempt count on a
+        -- global assessment would include other tenants' sittings.
+        (SELECT COUNT(*) FROM user_assessment_attempts t
+         WHERE t.assessment_id = a.id AND ${orgScope('t', scope)}) AS attempts_count,
+        (SELECT COALESCE(SUM(q.marks), 0) FROM assessment_questions q
+         WHERE q.assessment_id = a.id) AS total_marks,
+        -- The names behind link_type, so the row can say "Module: Week 1"
+        -- without the caller fetching modules and lessons to look them up.
+        cm.title AS module_title,
+        l.title  AS lesson_title
       FROM assessments a
+      LEFT JOIN course_modules cm ON cm.id = a.module_id
+      LEFT JOIN lessons l ON l.id = a.lesson_id
       WHERE a.course_id = ${courseId} AND ${contentScope('a', scope)}
-      ORDER BY a.created_at
+      ORDER BY
+        -- Final last, unplaced first: the reading order of the page.
+        CASE a.link_type WHEN 'none' THEN 0 WHEN 'lesson' THEN 1
+                         WHEN 'module' THEN 2 ELSE 3 END,
+        a.created_at
     `);
+  }
+
+  /**
+   * A module on THIS course, in THIS organization — the guard behind attaching
+   * an assessment to one. Both halves matter: org scoping stops a cross-tenant
+   * link, and the course check stops an assessment being attached to a module
+   * the learner never reaches on the course it belongs to.
+   */
+  async findModuleInCourse(scope: OrgScope, courseId: number, moduleId: number) {
+    const rows = await this.db.all<{ id: number }>(sql`
+      SELECT cm.id FROM course_modules cm
+      WHERE cm.id = ${moduleId} AND cm.course_id = ${courseId}
+        AND ${contentScope('cm', scope)}
+      LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /** The same, for a lesson. Reads `lessons.course_id` directly (0020). */
+  async findLessonInCourse(scope: OrgScope, courseId: number, lessonId: number) {
+    const rows = await this.db.all<{ id: number }>(sql`
+      SELECT l.id FROM lessons l
+      WHERE l.id = ${lessonId} AND l.course_id = ${courseId}
+        AND ${contentScope('l', scope)}
+      LIMIT 1
+    `);
+    return rows[0] ?? null;
   }
 
   /** Existence + ownership check for a course id supplied by the caller. */
@@ -92,6 +135,9 @@ export class AssessmentsRepository {
     title: string;
     description: string | null;
     passingScore: number;
+    linkType: string;
+    moduleId: number | null;
+    lessonId: number | null;
   }) {
     const [created] = await this.db
       .insert(assessments)
@@ -101,9 +147,16 @@ export class AssessmentsRepository {
         title: input.title,
         description: input.description,
         passingScore: input.passingScore,
+        linkType: input.linkType,
+        moduleId: input.moduleId,
+        lessonId: input.lessonId,
         // Detached on creation. An assessment is authored under a course but is
         // not delivered to anyone until an admin attaches it on the course's
         // Assessments tab — so a half-built quiz cannot reach a learner.
+        //
+        // WHERE it will sit (link_type above) and WHETHER it is live
+        // (is_active) are separate on purpose: an admin places a quiz under a
+        // module while writing it, and turns it on when the questions are done.
         isActive: 0,
       })
       .returning();
@@ -118,6 +171,9 @@ export class AssessmentsRepository {
       description: string | null;
       passingScore: number;
       isActive: boolean;
+      linkType: string;
+      moduleId: number | null;
+      lessonId: number | null;
     },
   ) {
     const [updated] = await this.db
@@ -127,6 +183,9 @@ export class AssessmentsRepository {
         description: input.description,
         passingScore: input.passingScore,
         isActive: input.isActive ? 1 : 0,
+        linkType: input.linkType,
+        moduleId: input.moduleId,
+        lessonId: input.lessonId,
       })
       .where(
         and(eq(assessments.id, id), eq(assessments.organizationId, scope.organizationId)),
@@ -201,16 +260,19 @@ export class AssessmentsRepository {
     `);
   }
 
+  /**
+   * Raw SQL, not a Drizzle `.select()`, so the keys match
+   * `listOptionsForAssessment` above. A `.select()` here returned camelCase
+   * while its sibling returned snake_case, so the same option arrived under
+   * two different names depending on which read produced it.
+   */
   async listOptionsForQuestion(scope: OrgScope, questionId: number) {
-    return this.db
-      .select()
-      .from(assessmentOptions)
-      .where(
-        and(
-          eq(assessmentOptions.questionId, questionId),
-          eq(assessmentOptions.organizationId, scope.organizationId),
-        ),
-      );
+    return this.db.all<Record<string, unknown> & { question_id: number }>(sql`
+      SELECT ao.* FROM assessment_options ao
+      WHERE ao.question_id = ${questionId}
+        AND ${contentScope('ao', scope)}
+      ORDER BY ao.id
+    `);
   }
 
   async nextQuestionSortOrder(scope: OrgScope, assessmentId: number): Promise<number> {
@@ -227,6 +289,8 @@ export class AssessmentsRepository {
     organizationId: number;
     assessmentId: number;
     questionText: string;
+    questionType: string;
+    correctAnswer: string | null;
     marks: number;
     sortOrder: number;
   }) {
@@ -236,6 +300,8 @@ export class AssessmentsRepository {
         organizationId: input.organizationId,
         assessmentId: input.assessmentId,
         questionText: input.questionText,
+        questionType: input.questionType,
+        correctAnswer: input.correctAnswer,
         marks: input.marks,
         sortOrder: input.sortOrder,
       })
@@ -246,11 +312,21 @@ export class AssessmentsRepository {
   async updateQuestion(
     scope: OrgScope,
     id: number,
-    input: { questionText: string; marks: number },
+    input: {
+      questionText: string;
+      questionType: string;
+      correctAnswer: string | null;
+      marks: number;
+    },
   ) {
     const [updated] = await this.db
       .update(assessmentQuestions)
-      .set({ questionText: input.questionText, marks: input.marks })
+      .set({
+        questionText: input.questionText,
+        questionType: input.questionType,
+        correctAnswer: input.correctAnswer,
+        marks: input.marks,
+      })
       .where(
         and(
           eq(assessmentQuestions.id, id),

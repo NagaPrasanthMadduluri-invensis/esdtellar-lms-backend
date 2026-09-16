@@ -59,8 +59,9 @@ export class CourseAssessmentsController {
     @Param('courseId', ParseIntPipe) courseId: number,
     @Body() dto: AssessmentDto,
     @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
   ) {
-    return this.assessments.create(scope, courseId, dto);
+    return this.assessments.create(scope, courseId, dto, admin);
   }
 }
 

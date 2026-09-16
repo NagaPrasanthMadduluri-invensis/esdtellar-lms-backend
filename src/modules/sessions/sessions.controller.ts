@@ -53,8 +53,12 @@ export class AdminSessionsController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_sessions')
-  async create(@Body() dto: SessionDto, @CurrentScope() scope: OrgScope) {
-    return this.sessions.create(scope, dto);
+  async create(
+    @Body() dto: SessionDto,
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.sessions.create(scope, dto, admin);
   }
 
   @Get(':sessionId')

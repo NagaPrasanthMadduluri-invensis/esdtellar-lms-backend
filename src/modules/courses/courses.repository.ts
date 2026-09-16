@@ -50,7 +50,15 @@ export class CoursesRepository {
    * `c` is the query root — every subquery below is anchored on `c.id`, so it
    * inherits tenancy from the outer WHERE and needs no predicate of its own.
    */
-  async listWithStats(scope: OrgScope) {
+  /**
+   * The Course Library list.
+   *
+   * `archived` swaps between the active library and the archive — they are
+   * never mixed. An archived course showing up in the assign-learning picker
+   * is precisely what archiving exists to prevent, so the predicate is in the
+   * query rather than left to the caller to remember.
+   */
+  async listWithStats(scope: OrgScope, archived = false) {
     return this.db.all(sql`
       SELECT c.*,
         (SELECT COUNT(*) FROM course_modules
@@ -60,8 +68,14 @@ export class CoursesRepository {
          WHERE cm.course_id = c.id AND l.is_active = 1) AS lessons_count,
         (SELECT COUNT(*) FROM assessments
          WHERE course_id = c.id AND is_active = 1) AS assessments_count,
-        (SELECT COUNT(*) FROM user_course_assignments
-         WHERE course_id = c.id) AS enrollments_count,
+        -- ORG-SCOPED, unlike the content counts above it. A platform-owned
+        -- course is readable by every tenant (contentScope) but its
+        -- assignments are ACTIVITY and belong to one org each. Unscoped, this
+        -- org's admin saw 13 enrolments on a global course of which 2 were
+        -- another tenant's — a cross-tenant count, and a number that
+        -- disagreed with the roster popup, which was scoped correctly.
+        (SELECT COUNT(*) FROM user_course_assignments uca0
+         WHERE uca0.course_id = c.id AND ${orgScope('uca0', scope)}) AS enrollments_count,
         (SELECT COALESCE(SUM(l.duration_minutes), 0) FROM lessons l
          JOIN course_modules cm ON cm.id = l.module_id
          WHERE cm.course_id = c.id AND l.is_active = 1
@@ -71,12 +85,15 @@ export class CoursesRepository {
         (SELECT a.title FROM assessments a
          WHERE a.course_id = c.id AND a.is_active = 1
          ORDER BY a.created_at LIMIT 1) AS first_assessment_title,
+        -- Same rule: an attempt is activity, so another tenant's scores must
+        -- not move this org's average on a shared course.
         (SELECT COALESCE(ROUND(AVG(uaa.percentage)), 0)
          FROM user_assessment_attempts uaa
          JOIN assessments a ON a.id = uaa.assessment_id
-         WHERE a.course_id = c.id) AS avg_score,
+         WHERE a.course_id = c.id AND ${orgScope('uaa', scope)}) AS avg_score,
         (SELECT COUNT(*) FROM user_course_assignments uca
          WHERE uca.course_id = c.id
+           AND ${orgScope('uca', scope)}
            AND (SELECT COUNT(*) FROM lessons l2
                 JOIN course_modules cm2 ON cm2.id = l2.module_id
                 WHERE cm2.course_id = c.id AND l2.is_active = 1) > 0
@@ -88,11 +105,93 @@ export class CoursesRepository {
              >= (SELECT COUNT(*) FROM lessons l4
                  JOIN course_modules cm4 ON cm4.id = l4.module_id
                  WHERE cm4.course_id = c.id AND l4.is_active = 1)
-        ) AS completed_enrollments
+        ) AS completed_enrollments,
+        -- Started but not finished. Counted rather than estimated: the
+        -- reference mock derives "in progress" as 65% of the remainder, which
+        -- is a made-up number sitting next to two real ones on the same bar.
+        (SELECT COUNT(*) FROM user_course_assignments uca
+          WHERE uca.course_id = c.id
+            AND ${orgScope('uca', scope)}
+            AND (SELECT COUNT(*) FROM user_lesson_completions ulc
+                  JOIN lessons l5 ON l5.id = ulc.lesson_id
+                  JOIN course_modules cm5 ON cm5.id = l5.module_id
+                 WHERE cm5.course_id = c.id AND ulc.user_id = uca.user_id
+                   AND l5.is_active = 1 AND cm5.is_active = 1) > 0
+            AND (SELECT COUNT(*) FROM user_lesson_completions ulc
+                  JOIN lessons l6 ON l6.id = ulc.lesson_id
+                  JOIN course_modules cm6 ON cm6.id = l6.module_id
+                 WHERE cm6.course_id = c.id AND ulc.user_id = uca.user_id
+                   AND l6.is_active = 1 AND cm6.is_active = 1)
+              < (SELECT COUNT(*) FROM lessons l7
+                  JOIN course_modules cm7 ON cm7.id = l7.module_id
+                 WHERE cm7.course_id = c.id AND l7.is_active = 1 AND cm7.is_active = 1)
+        ) AS in_progress_enrollments
       FROM courses c
       WHERE ${contentScope('c', scope)}
+        AND c.archived_at IS ${archived ? sql`NOT NULL` : sql`NULL`}
       ORDER BY c.created_at DESC
     `);
+  }
+
+  /** How many of this org's courses are archived — for the toggle's badge. */
+  async archivedCount(scope: OrgScope): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM courses c
+      WHERE ${contentScope('c', scope)} AND c.archived_at IS NOT NULL
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Archive or restore, in one statement for any number of ids.
+   *
+   * `is_active` is untouched on purpose: archive is orthogonal to
+   * published/draft, so a course restored from the archive comes back exactly
+   * as published or draft as it went in, rather than to a default somebody
+   * chose for it.
+   */
+  async setArchived(
+    scope: OrgScope,
+    ids: number[],
+    archived: boolean,
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const rows = await this.db.all<{ id: number }>(sql`
+      UPDATE courses c
+         SET archived_at = ${archived ? sql`now()` : sql`NULL`},
+             updated_at = now()
+       WHERE c.id IN ${idList(ids)}
+         AND c.organization_id = ${scope.organizationId}
+         AND c.session_id IS NULL
+      RETURNING c.id
+    `);
+    return rows.length;
+  }
+
+  /**
+   * Bulk publish / unpublish.
+   *
+   * Scoped to `organization_id`, NOT `contentScope`: a platform-owned course
+   * is readable by every tenant and must not be publishable by any of them.
+   * `session_id IS NULL` keeps session trainings out, the same refusal
+   * `CoursesService.assertNotSessionTraining` makes one at a time (§10.7).
+   */
+  async setPublished(
+    scope: OrgScope,
+    ids: number[],
+    published: boolean,
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const rows = await this.db.all<{ id: number }>(sql`
+      UPDATE courses c
+         SET is_active = ${published ? 1 : 0}, updated_at = now()
+       WHERE c.id IN ${idList(ids)}
+         AND c.organization_id = ${scope.organizationId}
+         AND c.session_id IS NULL
+         AND c.archived_at IS NULL
+      RETURNING c.id
+    `);
+    return rows.length;
   }
 
   /* ── Lesson resources ───────────────────────────────────────────────────
@@ -278,6 +377,23 @@ export class CoursesRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * How many of THIS org's learners are on the course.
+   *
+   * Org-scoped, not content-scoped, for the reason spelled out beside
+   * `enrollments_count` in `listWithStats` above: the course may be
+   * platform-owned and shared, but an assignment is activity and belongs to
+   * exactly one tenant. Unscoped here, the detail page's header would report a
+   * different figure from the library card beside it.
+   */
+  async enrolledCount(scope: OrgScope, courseId: number): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*) AS n FROM user_course_assignments uca
+      WHERE uca.course_id = ${courseId} AND ${orgScope('uca', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
   /** Content: takes the OWNER's org — `scope.organizationId` for the admin creating it. */
   async createCourse(input: {
     organizationId: number;
@@ -285,6 +401,10 @@ export class CoursesRepository {
     description: string | null;
     thumbnailUrl: string | null;
     isActive: boolean;
+    category: string | null;
+    isMandatory: boolean;
+    expiryMonths: number | null;
+    tags: string | null;
   }) {
     const [created] = await this.db
       .insert(courses)
@@ -294,6 +414,10 @@ export class CoursesRepository {
         description: input.description,
         thumbnailUrl: input.thumbnailUrl,
         isActive: input.isActive ? 1 : 0,
+        category: input.category,
+        isMandatory: input.isMandatory ? 1 : 0,
+        expiryMonths: input.expiryMonths,
+        tags: input.tags,
       })
       .returning();
     return created;
@@ -307,6 +431,10 @@ export class CoursesRepository {
       description: string | null;
       thumbnailUrl: string | null;
       isActive: boolean;
+      category: string | null;
+      isMandatory: boolean;
+      expiryMonths: number | null;
+      tags: string | null;
     },
   ) {
     const [updated] = await this.db
@@ -316,6 +444,10 @@ export class CoursesRepository {
         description: input.description,
         thumbnailUrl: input.thumbnailUrl,
         isActive: input.isActive ? 1 : 0,
+        category: input.category,
+        isMandatory: input.isMandatory ? 1 : 0,
+        expiryMonths: input.expiryMonths,
+        tags: input.tags,
         updatedAt: sql`now()`,
       })
       .where(and(eq(courses.id, id), eq(courses.organizationId, scope.organizationId)))
@@ -413,7 +545,12 @@ export class CoursesRepository {
   async updateModule(
     scope: OrgScope,
     id: number,
-    input: { title: string; description: string | null; isActive: boolean },
+    input: {
+      title: string;
+      description: string | null;
+      isActive: boolean;
+      sortOrder: number;
+    },
   ) {
     const [updated] = await this.db
       .update(courseModules)
@@ -421,6 +558,11 @@ export class CoursesRepository {
         title: input.title,
         description: input.description,
         isActive: input.isActive ? 1 : 0,
+        // Modules carry a sort_order the Outline numbers them by, and
+        // nothing could change it until now — the column existed, the DTO did
+        // not. The service passes the current value when the caller omits it,
+        // so an ordinary title edit cannot shuffle the course.
+        sortOrder: input.sortOrder,
       })
       .where(
         and(
@@ -476,6 +618,72 @@ export class CoursesRepository {
   }
 
   /** Content: takes the OWNER's org — the caller supplies `organizationId`. */
+  /**
+   * Next sort order among a course's STAGED lessons (no module).
+   *
+   * Separate from `nextLessonSortOrder`, which orders within one module: a
+   * staged lesson is not in a module, so there is nothing there to order it
+   * against.
+   */
+  /**
+   * Every lesson in a course, module-linked and staged alike, with the module
+   * it sits in. One query — the authoring page shows both lists at once and
+   * two reads would let them disagree mid-render.
+   */
+  async listCourseLessons(scope: OrgScope, courseId: number) {
+    return this.db.all<Record<string, unknown> & { id: number }>(sql`
+      SELECT l.*, cm.title AS module_title, cm.sort_order AS module_sort_order,
+             (SELECT COUNT(*)::int FROM lesson_resources lr
+               WHERE lr.lesson_id = l.id) AS resource_count,
+             (SELECT COUNT(*)::int FROM assessments a
+               WHERE a.lesson_id = l.id AND a.is_active = 1) AS assessment_count
+      FROM lessons l
+      LEFT JOIN course_modules cm ON cm.id = l.module_id
+      WHERE l.course_id = ${courseId} AND ${orgScope('l', scope)}
+      ORDER BY cm.sort_order NULLS FIRST, l.sort_order, l.id
+    `);
+  }
+
+  /**
+   * Link a lesson to a module, or unlink it (null).
+   *
+   * Scoped on BOTH the lesson and — when linking — the target module, so a
+   * lesson cannot be moved into another tenant's module, and a module id from
+   * another course is refused by the service before it reaches here.
+   */
+  async setLessonModule(
+    scope: OrgScope,
+    lessonId: number,
+    moduleId: number | null,
+    sortOrder: number,
+  ) {
+    const [updated] = await this.db
+      .update(lessons)
+      .set({ moduleId, sortOrder })
+      .where(
+        and(
+          eq(lessons.id, lessonId),
+          eq(lessons.organizationId, scope.organizationId),
+        ),
+      )
+      .returning();
+    return updated ?? null;
+  }
+
+  async nextCourseLessonSortOrder(
+    scope: OrgScope,
+    courseId: number,
+  ): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COALESCE(MAX(l.sort_order), 0) + 1 AS n
+      FROM lessons l
+      WHERE l.course_id = ${courseId}
+        AND l.module_id IS NULL
+        AND ${orgScope('l', scope)}
+    `);
+    return Number(rows[0]?.n ?? 1);
+  }
+
   async createLesson(values: typeof lessons.$inferInsert) {
     const [created] = await this.db.insert(lessons).values(values).returning();
     return created;

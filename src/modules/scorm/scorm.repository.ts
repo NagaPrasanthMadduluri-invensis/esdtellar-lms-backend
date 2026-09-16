@@ -133,12 +133,16 @@ export class ScormRepository {
   async listPackages(scope: OrgScope) {
     return this.db.all(sql`
       SELECT sp.*,
-        (SELECT COUNT(*) FROM user_scorm_assignments
-         WHERE package_id = sp.id) AS assigned_count,
-        (SELECT COUNT(*) FROM scorm_tracking
-         WHERE package_id = sp.id
-           AND (lesson_status IN ('passed', 'completed')
-                OR completion_status = 'completed')) AS completed_count,
+        -- ORG-SCOPED, unlike the package row itself. A platform-owned
+        -- package is listed by every tenant (contentScope below) but an
+        -- assignment and a tracking row each belong to one — unscoped, these
+        -- counts would add up other tenants' learners.
+        (SELECT COUNT(*) FROM user_scorm_assignments usa
+         WHERE usa.package_id = sp.id AND ${orgScope('usa', scope)}) AS assigned_count,
+        (SELECT COUNT(*) FROM scorm_tracking st
+         WHERE st.package_id = sp.id AND ${orgScope('st', scope)}
+           AND (st.lesson_status IN ('passed', 'completed')
+                OR st.completion_status = 'completed')) AS completed_count,
         c.name AS course_name
       FROM scorm_packages sp
       LEFT JOIN courses c ON c.id = sp.course_id
@@ -206,7 +210,16 @@ export class ScormRepository {
       JOIN users u ON u.id = usa.user_id
       LEFT JOIN scorm_tracking st
         ON st.user_id = usa.user_id AND st.package_id = usa.package_id
-      WHERE usa.package_id = ${packageId} AND ${contentScope('sp', scope)}
+      -- BOTH predicates are required, and they say different things.
+      -- contentScope(sp) is "this admin may see this package" — it is
+      -- content, possibly platform-owned. orgScope(usa) is "these are MY
+      -- learners' assignments" — an assignment is activity. With only the
+      -- first, a platform package's roster listed every tenant's learners by
+      -- name, email and department, which is a PII leak and not merely a
+      -- miscounted total.
+      WHERE usa.package_id = ${packageId}
+        AND ${contentScope('sp', scope)}
+        AND ${orgScope('usa', scope)}
       ORDER BY usa.assigned_at DESC
     `);
   }

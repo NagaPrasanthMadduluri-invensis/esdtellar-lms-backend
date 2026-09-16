@@ -123,7 +123,33 @@ END $$;
 --    Content: carries its module's org.
 DO $$
 BEGIN
+  -- THREE branches, not two, because this file runs before the migrations
+  -- that add the columns it would like to set. On a fresh database it runs at
+  -- 0005 with neither organization_id (0007) nor course_id (0020); on an
+  -- existing one it re-runs every boot with both, and `lessons.course_id` is
+  -- NOT NULL — so omitting it there fails the whole boot, which is exactly
+  -- what happened the first time 0020 shipped.
   IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'lessons'
+      AND column_name = 'course_id'
+  ) THEN
+    EXECUTE $ins$
+      INSERT INTO lessons (module_id, course_id, title, description, content_type, content_url,
+                           duration_minutes, sort_order, is_preview, is_active, organization_id)
+      SELECT cm.id, cm.course_id, s.title, s.description, 'session', s.venue_url,
+             GREATEST(
+               0,
+               (EXTRACT(EPOCH FROM (s.end_time::time - s.start_time::time)) / 60)::int
+             ),
+             0, 0, 1, cm.organization_id
+      FROM course_modules cm
+      JOIN courses c ON c.id = cm.course_id
+      JOIN sessions s ON s.id = c.session_id
+      WHERE NOT EXISTS (SELECT 1 FROM lessons l WHERE l.module_id = cm.id);
+    $ins$;
+  ELSIF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = current_schema()
       AND table_name = 'lessons'

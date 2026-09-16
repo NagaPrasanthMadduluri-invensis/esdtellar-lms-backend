@@ -1,4 +1,4 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
@@ -16,6 +16,8 @@ import {
   DESCRIPTION_MAX_LENGTH,
   DESCRIPTION_TOO_LONG,
 } from '@/common/content-limits';
+import { COURSE_CATEGORIES, RENEWAL_MONTHS } from '@/common/course-taxonomy';
+import { LESSON_CONTENT_KEYS } from '@/common/lesson-content';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -63,6 +65,66 @@ export class CourseDto {
    */
   @IsOptional() @Transform(keepUndefined) thumbnail_url?: string | null;
   @IsOptional() @IsBoolean() is_active?: boolean;
+
+  /** Closed list — the library colours and filters by it (course-taxonomy.ts). */
+  @IsOptional()
+  @Transform(nullable)
+  @IsIn(COURSE_CATEGORIES, {
+    message: `category must be one of: ${COURSE_CATEGORIES.join(', ')}`,
+  })
+  category?: string | null;
+
+  /**
+   * Setting this on a Compliance course is redundant but harmless: the service
+   * does not read it for that category, because `isMandatory()` already
+   * returns true. Unsetting it there is likewise ignored, which is the point —
+   * a compliance course cannot be made optional by unticking a box.
+   */
+  @IsOptional() @IsBoolean() is_mandatory?: boolean;
+
+  /**
+   * Whole months, from a fixed set. A free integer invites 1 (not a training
+   * programme) and 999 (not a renewal). Null clears it.
+   */
+  @IsOptional()
+  @IsIn([...RENEWAL_MONTHS, null], {
+    message: `expiry_months must be one of: ${RENEWAL_MONTHS.join(', ')}`,
+  })
+  expiry_months?: number | null;
+
+  /**
+   * Free text, comma-separated. Deliberately NOT a closed list: nothing
+   * filters or branches on a tag, so a typo costs a missed search hit and
+   * nothing else — which is the test for when free text is safe.
+   */
+  @IsOptional() @MaxLength(300) @Transform(nullable) tags?: string | null;
+}
+
+/** Which courses the admin library is asking for. */
+export class CourseListQueryDto {
+  /**
+   * `true` swaps the list to the archive. Archived courses are excluded by
+   * default rather than mixed in and filtered client-side — an archived course
+   * appearing in the picker that assigns learning is the thing archiving is
+   * for.
+   */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  archived?: boolean;
+}
+
+/** Bulk publish / unpublish / archive / restore over selected courses. */
+export class BulkCourseActionDto {
+  @IsIn(['publish', 'unpublish', 'archive', 'restore'], {
+    message: 'action must be publish, unpublish, archive or restore',
+  })
+  action!: 'publish' | 'unpublish' | 'archive' | 'restore';
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Select at least one course' })
+  @IsInt({ each: true })
+  course_ids!: number[];
 }
 
 export class ModuleDto {
@@ -76,6 +138,9 @@ export class ModuleDto {
   @Transform(nullable)
   description?: string | null;
   @IsOptional() @IsBoolean() is_active?: boolean;
+
+  /** Position within the course. Omitted on edit means "leave where it is". */
+  @IsOptional() @IsInt() @Min(0) sort_order?: number;
 }
 
 export class CreateLessonDto {
@@ -88,7 +153,23 @@ export class CreateLessonDto {
   @MaxLength(DESCRIPTION_MAX_LENGTH, { message: DESCRIPTION_TOO_LONG })
   @Transform(nullable)
   description?: string | null;
-  @IsOptional() @IsString() content_type?: string;
+  /**
+   * Closed list (`common/lesson-content.ts`). Each type carries its own
+   * upload and duration rule, so a value outside the list has no rule and
+   * would skip validation entirely.
+   */
+  @IsOptional()
+  @IsIn(LESSON_CONTENT_KEYS, {
+    message: `content_type must be one of: ${LESSON_CONTENT_KEYS.join(', ')}`,
+  })
+  content_type?: string;
+
+  /**
+   * Optional on create. Omitted means STAGED — authored but not yet placed in
+   * a module, so invisible to learners and counting for nothing until linked.
+   */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) module_id?: number | null;
+
   @IsOptional() @Transform(nullable) content_url?: string | null;
   @IsOptional() @IsInt() scorm_package_id?: number | null;
   @IsOptional() @IsInt() duration_minutes?: number | null;
@@ -192,4 +273,17 @@ export class CreateResourceDto {
   resource_type?: string;
 
   @IsOptional() @IsInt() @Min(0) sort_order?: number;
+}
+
+/** Move a lesson into a module, or back to staged. */
+export class LinkLessonDto {
+  /**
+   * `null` unlinks — back to staged. Nullable rather than optional so
+   * "unlink" is an explicit instruction and not the absence of one.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'module_id must be an integer or null' })
+  @Min(1)
+  module_id!: number | null;
 }
