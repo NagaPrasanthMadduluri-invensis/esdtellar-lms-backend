@@ -32,6 +32,12 @@ export const users = pgTable(
     location: text('location'),
     jobRole: text('job_role'),
     /**
+     * Free text, and the person's own to edit (`0029`). No `manager_id`
+     * beside it on purpose — there is no reporting line in this product, so
+     * the column would render as "—" forever.
+     */
+    phone: text('phone'),
+    /**
      * Seniority band — one of `JOB_LEVELS` in `common/workforce.ts`, or null
      * for a user nobody has set it on yet. Added by
      * `0018_workforce_and_activity_log.sql`.

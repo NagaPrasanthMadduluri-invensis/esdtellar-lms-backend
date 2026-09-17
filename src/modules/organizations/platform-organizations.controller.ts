@@ -27,6 +27,27 @@ import { OrganizationsService } from './organizations.service';
 export class PlatformOrganizationsController {
   constructor(private readonly organizations: OrganizationsService) {}
 
+  /**
+   * The tenant directory: profile, contract and usage on one row, with the
+   * renewal state derived from the contract date.
+   *
+   * Declared BEFORE `@Get(':id')` — Nest matches in declaration order and
+   * `tenants` would otherwise arrive as an organization id.
+   */
+  @Get("tenants")
+  async tenants() {
+    return this.organizations.listTenants();
+  }
+
+  /**
+   * Every privileged account across every tenant. Declared before `:id` for
+   * the same route-ordering reason as `tenants` above.
+   */
+  @Get("access")
+  async access() {
+    return this.organizations.listPrivilegedAccounts();
+  }
+
   @Get()
   async list() {
     return this.organizations.listOrganizations();

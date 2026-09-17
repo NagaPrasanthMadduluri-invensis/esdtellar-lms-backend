@@ -130,7 +130,12 @@ export class JourneysRepository {
    */
   async listForAdmin(
     scope: OrgScope,
-    filters: { status?: 'active' | 'draft'; limit: number; offset: number },
+    filters: {
+      status?: 'active' | 'draft';
+      archived?: boolean;
+      limit: number;
+      offset: number;
+    },
   ) {
     const statusFilter =
       filters.status === 'active'
@@ -139,25 +144,73 @@ export class JourneysRepository {
           ? sql`AND j.is_active = 0`
           : sql``;
 
+    // Archived and live are never mixed — the toggle swaps between two sets.
+    // An archived path showing up in the builder's default view is the thing
+    // archiving exists to prevent (§10.15, and 0019 said the same for courses).
+    const archiveFilter = filters.archived
+      ? sql`AND j.archived_at IS NOT NULL`
+      : sql`AND j.archived_at IS NULL`;
+
     return this.db.all<
-      JourneySqlRow & { courses_count: number; learners_count: number }
+      JourneySqlRow & {
+        courses_count: number;
+        learners_count: number;
+        completed_count: number;
+        completion_pct: number;
+        avg_score: number | null;
+        archived_at: string | null;
+      }
     >(sql`
       SELECT j.id, j.organization_id, j.title, j.description, j.tag, j.skills,
              j.thumbnail_url, j.badge_label, j.badge_icon, j.points_bonus,
-             j.is_active, j.created_at, j.updated_at,
+             j.is_active, j.archived_at, j.created_at, j.updated_at,
              (SELECT COUNT(*) FROM journey_courses jc WHERE jc.journey_id = j.id) AS courses_count,
+             -- ORG-SCOPED, unlike courses_count above it. A path is CONTENT and
+             -- may be platform-owned (contentScope); an enrolment against it is
+             -- ACTIVITY and belongs to exactly one tenant. §10.12 records what
+             -- happens when a subquery forgets that.
              (SELECT COUNT(*) FROM journey_enrollments je
-               WHERE je.journey_id = j.id AND ${orgScope('je', scope)}) AS learners_count
+               WHERE je.journey_id = j.id AND ${orgScope('je', scope)}) AS learners_count,
+             (SELECT COUNT(*) FROM journey_enrollments je2
+               WHERE je2.journey_id = j.id AND je2.completed_at IS NOT NULL
+                 AND ${orgScope('je2', scope)}) AS completed_count,
+             -- Completion as a whole-number percentage, computed in SQL (§7.2)
+             -- so the card and any future report read the same figure.
+             COALESCE((
+               SELECT ROUND(
+                 COUNT(*) FILTER (WHERE je3.completed_at IS NOT NULL) * 100.0
+                 / NULLIF(COUNT(*), 0)
+               )::int
+               FROM journey_enrollments je3
+               WHERE je3.journey_id = j.id AND ${orgScope('je3', scope)}
+             ), 0) AS completion_pct,
+             -- Average best score across this org's learners on the path's
+             -- courses. NULL when nobody has been scored — which the card
+             -- renders as a dash rather than as 0%.
+             (SELECT ROUND(AVG(a.percentage))::int
+                FROM journey_courses jc2
+                JOIN user_assessment_attempts a ON a.assessment_id IN (
+                      SELECT ass.id FROM assessments ass WHERE ass.course_id = jc2.course_id)
+               WHERE jc2.journey_id = j.id AND ${orgScope('a', scope)}) AS avg_score
       FROM journeys j
-      WHERE ${contentScope('j', scope)} ${statusFilter}
+      WHERE ${contentScope('j', scope)} ${statusFilter} ${archiveFilter}
       ORDER BY j.created_at DESC
       LIMIT ${filters.limit} OFFSET ${filters.offset}
     `);
   }
 
+  /** How many archived paths this org has — the toggle's badge. */
+  async archivedCount(scope: OrgScope): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM journeys j
+      WHERE ${contentScope('j', scope)} AND j.archived_at IS NOT NULL
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
   async countForAdmin(
     scope: OrgScope,
-    filters: { status?: 'active' | 'draft' },
+    filters: { status?: 'active' | 'draft'; archived?: boolean },
   ): Promise<number> {
     const statusFilter =
       filters.status === 'active'
@@ -166,11 +219,81 @@ export class JourneysRepository {
           ? sql`AND j.is_active = 0`
           : sql``;
 
+    // Must mirror listForAdmin's filter exactly, or the pager counts a set the
+    // list is not showing.
+    const archiveFilter = filters.archived
+      ? sql`AND j.archived_at IS NOT NULL`
+      : sql`AND j.archived_at IS NULL`;
+
     const rows = await this.db.all<{ total: number }>(sql`
       SELECT COUNT(*)::int AS total FROM journeys j
-      WHERE ${contentScope('j', scope)} ${statusFilter}
+      WHERE ${contentScope('j', scope)} ${statusFilter} ${archiveFilter}
     `);
     return rows[0]?.total ?? 0;
+  }
+
+  /**
+   * Bulk archive / restore.
+   *
+   * Scoped to `organization_id`, NOT `contentScope`: a platform-owned path is
+   * readable by every tenant and must not be archivable by any of them. Same
+   * predicate rule the course bulk endpoint follows (§10.12) — a request
+   * naming ids that fail it simply affects fewer rows and reports the count,
+   * rather than erroring on the first one.
+   */
+  async setArchived(
+    scope: OrgScope,
+    ids: number[],
+    archived: boolean,
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const rows = await this.db.all<{ id: number }>(sql`
+      UPDATE journeys j
+         SET archived_at = ${archived ? sql`now()` : sql`NULL`},
+             updated_at = now()
+       WHERE j.id IN ${idList(ids)}
+         AND j.organization_id = ${scope.organizationId}
+      RETURNING j.id
+    `);
+    return rows.length;
+  }
+
+  /**
+   * Bulk activate / move to draft.
+   *
+   * Activating is refused for an archived path: publishing something that is
+   * meant to be out of circulation contradicts the archive, and the two
+   * controls would fight each other on the next render.
+   */
+  async setActive(
+    scope: OrgScope,
+    ids: number[],
+    active: boolean,
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const archivedGuard = active ? sql`AND j.archived_at IS NULL` : sql``;
+    const rows = await this.db.all<{ id: number }>(sql`
+      UPDATE journeys j
+         SET is_active = ${active ? 1 : 0},
+             updated_at = now()
+       WHERE j.id IN ${idList(ids)}
+         AND j.organization_id = ${scope.organizationId}
+         ${archivedGuard}
+      RETURNING j.id
+    `);
+    return rows.length;
+  }
+
+  /** Bulk delete. Org-owned only, for the reason `setArchived` gives. */
+  async deleteMany(scope: OrgScope, ids: number[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const rows = await this.db.all<{ id: number }>(sql`
+      DELETE FROM journeys j
+       WHERE j.id IN ${idList(ids)}
+         AND j.organization_id = ${scope.organizationId}
+      RETURNING j.id
+    `);
+    return rows.length;
   }
 
   /** Ordered member courses for the admin detail/edit view. */

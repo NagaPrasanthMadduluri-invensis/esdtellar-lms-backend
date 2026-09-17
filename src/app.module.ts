@@ -14,6 +14,8 @@ import { AssessmentsModule } from './modules/assessments/assessments.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ActivityModule } from './modules/activity/activity.module';
 import { ServicesModule } from './modules/services/services.module';
+import { BillingModule } from './modules/billing/billing.module';
+import { SeatsModule } from './modules/seats/seats.module';
 import { BadgesModule } from './modules/badges/badges.module';
 import { CertificatesModule } from './modules/certificates/certificates.module';
 import { CoursesModule } from './modules/courses/courses.module';
@@ -57,6 +59,8 @@ import { UsersModule } from './modules/users/users.module';
     BadgesModule,
     ActivityModule,
     ServicesModule,
+    BillingModule,
+    SeatsModule,
   ],
   providers: [
     // Order matters, and all four are global so a new controller is covered

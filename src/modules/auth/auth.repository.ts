@@ -188,4 +188,130 @@ export class AuthRepository {
 
     return rows[0] ?? null;
   }
+
+  /**
+   * Everything the "My profile" dialog shows about the CALLER.
+   *
+   * Its own read rather than a widening of `findActiveById`: that one feeds
+   * `/auth/me`, which the server-rendered shell calls on every navigation in
+   * every portal, and it has no business paying for a role join and two
+   * MAX() subqueries so that one dialog can show a "last active" date.
+   *
+   * `role_label` comes from the RBAC role, never `users.role` — the portal
+   * selector collapses a Manager into `learner`, so the raw column would tell
+   * a manager they are a learner (§10.12 records the same trap on the Manage
+   * Users table).
+   */
+  async findProfile(userId: number) {
+    const rows = await this.db.all<{
+      id: number;
+      first_name: string;
+      last_name: string;
+      email: string;
+      role: 'admin' | 'learner' | 'trainer';
+      role_label: string | null;
+      department: string | null;
+      employee_id: string | null;
+      job_role: string | null;
+      job_level: string | null;
+      location: string | null;
+      phone: string | null;
+      is_active: number;
+      organization_id: number;
+      organization_name: string;
+      created_at: string;
+      last_active: string | null;
+    }>(sql`
+      SELECT u.id, u.first_name, u.last_name, u.email, u.role,
+             r.label AS role_label,
+             u.department, u.employee_id, u.job_role, u.job_level,
+             u.location, u.phone, u.is_active,
+             u.organization_id, o.name AS organization_name,
+             u.created_at,
+             -- The same GREATEST(completion, attempt) the user directory
+             -- uses. NOT created_at: that column once printed the join date
+             -- under a "last activity" heading on every row, a date that was
+             -- always wrong and never looked it.
+             GREATEST(
+               (SELECT MAX(c.completed_at) FROM user_lesson_completions c
+                 WHERE c.user_id = u.id),
+               (SELECT MAX(a.submitted_at) FROM user_assessment_attempts a
+                 WHERE a.user_id = u.id)
+             ) AS last_active
+        FROM users u
+        JOIN organizations o ON o.id = u.organization_id
+        LEFT JOIN roles r    ON r.id = u.role_id
+       WHERE u.id = ${userId}
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Write the caller's own editable fields.
+   *
+   * Takes an already-filtered set of columns. It cannot write `email`,
+   * `department`, `role`, `role_id` or `is_active` because the DTO does not
+   * carry them and this signature does not name them — the narrowness is the
+   * safety, not a check somewhere upstream.
+   */
+  async updateProfile(
+    userId: number,
+    input: {
+      firstName?: string;
+      lastName?: string;
+      phone?: string | null;
+      jobRole?: string | null;
+      jobLevel?: string | null;
+      location?: string | null;
+    },
+  ) {
+    const values: Record<string, unknown> = {};
+    if (input.firstName !== undefined) values.firstName = input.firstName;
+    if (input.lastName !== undefined) values.lastName = input.lastName;
+    if (input.phone !== undefined) values.phone = input.phone;
+    if (input.jobRole !== undefined) values.jobRole = input.jobRole;
+    if (input.jobLevel !== undefined) values.jobLevel = input.jobLevel;
+    if (input.location !== undefined) values.location = input.location;
+    if (Object.keys(values).length === 0) return;
+
+    await this.db.update(users).set(values).where(eq(users.id, userId));
+  }
+
+  /**
+   * The account a support session assumes when a platform admin opens a
+   * tenant — the tenant's OWNER admin.
+   *
+   * Same derivation the tenant directory uses to name an account holder
+   * (`platform-analytics.repository.ts` -> owner_admin): admin-PORTAL roles
+   * only, the seeded is_system 'admin' role first, then oldest. One
+   * definition, so the person you are told you will become is the person the
+   * directory named on the card you clicked.
+   *
+   * Deliberately NOT org-scoped — this file never is (it resolves identity,
+   * which precedes a scope), and the caller is behind @PlatformAdmin().
+   */
+  async findOwnerAdminForOrganization(organizationId: number) {
+    const rows = await this.db.all<{
+      id: number;
+      first_name: string;
+      last_name: string;
+      email: string;
+      role: 'admin' | 'learner' | 'trainer';
+      department: string | null;
+      is_active: number;
+      organization_id: number;
+    }>(sql`
+      SELECT u.id, u.first_name, u.last_name, u.email, u.role,
+             u.department, u.is_active, u.organization_id
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+       WHERE u.organization_id = ${organizationId}
+         AND u.is_active = 1
+         AND r.portal = 'admin'
+       ORDER BY (r.is_system AND r.key = 'admin') DESC, u.created_at, u.id
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
 }

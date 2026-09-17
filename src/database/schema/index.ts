@@ -24,3 +24,7 @@ export * from './certificates.schema';
 export * from './activity.schema';
 // Depends on organizations + users. Nothing depends on it.
 export * from './services.schema';
+// Depends on organizations + users. Nothing depends on it.
+export * from './billing.schema';
+// Depends on organizations + users. Nothing depends on it.
+export * from './seats.schema';

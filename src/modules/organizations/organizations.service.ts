@@ -8,8 +8,12 @@ import {
 
 import { hashPassword } from '@/common/crypto/password.util';
 import { SYSTEM_ROLES, type RolePortal } from '@/common/permissions';
+import { contractState } from '@/common/tenant-account';
+import { BillingService } from '@/modules/billing/billing.service';
+import { SeatsService } from '@/modules/seats/seats.service';
 import { createOrgScope, type OrgScope } from '@/database/org-scope';
 
+import type { UpdateOrgSettingsDto } from './dto/org-settings.dto';
 import type {
   CreateOrganizationDto,
   UpdateOrganizationDto,
@@ -81,6 +85,10 @@ export class OrganizationsService implements OnModuleInit {
   constructor(
     private readonly repository: OrganizationsRepository,
     private readonly analytics: PlatformAnalyticsRepository,
+    private readonly billing: BillingService,
+    // `seat_limit` lives on `organizations`, but SeatsService is its one
+    // writer — see `createOrganization`.
+    private readonly seats: SeatsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -146,6 +154,87 @@ export class OrganizationsService implements OnModuleInit {
     return createOrgScope(organization.id, this.getPlatformOrganizationId());
   }
 
+  /**
+   * Name and status for one organization, with no stats behind it.
+   *
+   * `getOrganization` answers the same question but runs the full cross-org
+   * analytics query to do it, which is the wrong price for a caller that only
+   * needs a name — the support-session sign-in, for one.
+   */
+  async findOrganizationSummary(id: number): Promise<OrganizationDto | null> {
+    const row = await this.repository.findById(id);
+    return row ? this.toOrganization(row) : null;
+  }
+
+  /* ── The tenant's own view of itself ──────────────────────────────────── */
+
+  /**
+   * `GET /api/admin/organization` — what a tenant admin sees about their own
+   * account.
+   *
+   * The organization comes from the caller's `OrgScope`, never a path
+   * parameter, so there is nothing here to point at somebody else's tenant.
+   *
+   * The response deliberately mixes two kinds of field and the shape says
+   * which is which: `editable` is what `manage_organization` may write, and
+   * `commercial` is what only Edstellar may write but the customer is
+   * entitled to READ — they signed the contract, they should be able to see
+   * its dates without asking. Splitting them in the payload is what lets the
+   * dialog render the second group as facts rather than as inputs that fail.
+   */
+  async getOwnOrganization(scope: OrgScope) {
+    const row = await this.analytics.getOrganizationStatsById(
+      scope.organizationId,
+    );
+    if (!row) throw new NotFoundException('Organization not found');
+
+    const contract = contractState(row.contract_end);
+    const seats = await this.seats.usage(scope);
+
+    return {
+      organization: {
+        id: row.organization_id,
+        name: row.name,
+        slug: row.slug,
+        industry: row.industry,
+        region: row.region,
+        created_at: row.created_at,
+
+        /** Read-only here. Written only by `@PlatformAdmin()` routes. */
+        plan: row.plan,
+        billing_cycle: row.billing_cycle,
+        contract_start: row.contract_start,
+        contract_end: row.contract_end,
+        contract_value:
+          row.contract_value === null ? null : Number(row.contract_value),
+        contract_state: contract.state,
+        contract_days_left: contract.daysLeft,
+
+        seat_limit: seats.limit,
+        seats_used: seats.used,
+        seats_remaining: seats.remaining,
+
+        learners: Number(row.learners),
+        admins: Number(row.admins),
+        courses: Number(row.courses),
+        sessions: Number(row.sessions),
+        completions: Number(row.completions),
+      },
+    };
+  }
+
+  /** `PATCH /api/admin/organization` — name, industry, region. Nothing else. */
+  async updateOwnOrganization(scope: OrgScope, dto: UpdateOrgSettingsDto) {
+    // Passed field by field rather than spread, so widening the DTO can never
+    // silently widen what a tenant may write to its own row.
+    await this.repository.update(scope.organizationId, {
+      name: dto.name,
+      industry: dto.industry,
+      region: dto.region,
+    });
+    return this.getOwnOrganization(scope);
+  }
+
   /** `GET /api/platform/organizations` — every org with its own counts. */
   async listOrganizations(): Promise<{
     organizations: (OrganizationDto & OrganizationStatsDto)[];
@@ -180,23 +269,83 @@ export class OrganizationsService implements OnModuleInit {
   ): Promise<{ organization: OrganizationDto }> {
     const slug = dto.slug ?? this.deriveSlug(dto.name);
 
+    /*
+     * Both conflicts are checked BEFORE anything is written.
+     *
+     * The transaction below would roll the organization back on a duplicate
+     * email anyway, but the caller would get a Postgres constraint error
+     * instead of a sentence naming which field is the problem — and a form
+     * that says "duplicate key value violates unique constraint" has told the
+     * admin nothing they can act on.
+     */
     if (await this.repository.slugExists(slug)) {
       throw new ConflictException(
         `Organization slug "${slug}" is already in use`,
       );
     }
+    if (await this.repository.emailExists(dto.admin.email)) {
+      throw new ConflictException(
+        `${dto.admin.email} already has an account. Every login is unique across ` +
+          'the whole platform, not just within one tenant.',
+      );
+    }
 
-    const created = await this.repository.createWithSystemRoles(
-      { name: dto.name, slug },
-      SYSTEM_ROLES,
-    );
+    const { organization: created, owner } =
+      await this.repository.createWithSystemRoles(
+        { name: dto.name, slug },
+        SYSTEM_ROLES,
+        {
+          firstName: dto.admin.firstName,
+          lastName: dto.admin.lastName,
+          email: dto.admin.email,
+          passwordHash: hashPassword(dto.admin.password),
+        },
+      );
+
+    /*
+     * The profile, the contract and the seat limit are a second write, and
+     * deliberately not part of the transaction: they are all optional, and a
+     * mistyped contract date must not cost the tenant its admin account. If
+     * this fails the tenant still exists and works; the terms are editable
+     * from the directory.
+     */
+    const hasProfile =
+      dto.industry !== undefined || dto.region !== undefined ||
+      dto.plan !== undefined || dto.billingCycle !== undefined ||
+      dto.contractStart !== undefined || dto.contractEnd !== undefined ||
+      dto.contractValue !== undefined;
+
+    if (hasProfile) {
+      await this.repository.update(created.id, {
+        industry: dto.industry,
+        region: dto.region,
+        plan: dto.plan,
+        billingCycle: dto.billingCycle,
+        contractStart: dto.contractStart,
+        contractEnd: dto.contractEnd,
+        // `numeric` takes a string, the same conversion `updateOrganization`
+        // makes — never a float handed straight to the driver.
+        contractValue:
+          dto.contractValue === undefined || dto.contractValue === null
+            ? dto.contractValue
+            : String(dto.contractValue),
+      });
+    }
+
+    // Through SeatsService, never a second UPDATE written here — one writer
+    // for `seat_limit`, so the directory and the seat queue cannot disagree
+    // about what a tenant is entitled to.
+    if (dto.seatLimit !== undefined) {
+      await this.seats.setLimit(created.id, { seat_limit: dto.seatLimit });
+    }
 
     this.logger.log(
       `Organization created: id=${created.id} slug=${slug} ` +
-        `with ${SYSTEM_ROLES.length} system roles`,
+        `with ${SYSTEM_ROLES.length} system roles and admin user=${owner?.id}`,
     );
 
-    return { organization: this.toOrganization(created) };
+    const fresh = (await this.repository.findById(created.id)) ?? created;
+    return { organization: this.toOrganization(fresh) };
   }
 
   /**
@@ -231,9 +380,29 @@ export class OrganizationsService implements OnModuleInit {
     // Deactivating (is_active = 0) never deletes anything — every downstream
     // table still carries the org's data, just no longer reachable through a
     // login for that org's users, exactly like `UsersRepository.setActive`.
+    // Every field passed through as-is: `undefined` means the caller did not
+    // send it and the repository leaves it alone, `null` means clear it. The
+    // difference is load-bearing here — an edit form that posts its whole
+    // object must not blank a contract value nobody touched.
     const updated = await this.repository.update(id, {
       name: dto.name,
       isActive: dto.isActive === undefined ? undefined : dto.isActive ? 1 : 0,
+      industry: dto.industry,
+      region: dto.region,
+      contactName: dto.contactName,
+      contactEmail: dto.contactEmail,
+      contactPhone: dto.contactPhone,
+      contractStart: dto.contractStart,
+      contractEnd: dto.contractEnd,
+      contractValue:
+        dto.contractValue === undefined
+          ? undefined
+          : dto.contractValue === null
+            ? null
+            : String(dto.contractValue),
+      plan: dto.plan,
+      billingCycle: dto.billingCycle,
+      notes: dto.notes,
     });
     if (!updated) throw new NotFoundException('Organization not found');
 
@@ -296,6 +465,158 @@ export class OrganizationsService implements OnModuleInit {
     );
 
     return { user };
+  }
+
+  /**
+   * `GET /api/platform/tenants` — the tenant directory.
+   *
+   * Everything a super admin needs about an account on one row: the profile,
+   * the contract, and the usage counts the analytics query already computes.
+   * A separate method from `getAnalytics()` rather than a widening of it,
+   * because that one is a numeric rollup with a typed shape two other callers
+   * depend on.
+   *
+   * The PLATFORM organization is excluded. It is not a customer — it holds
+   * global content and Edstellar's own staff — and listing it beside real
+   * tenants would put a row in the directory that has no contract, can never
+   * have one, and would drag every average down.
+   */
+  async listTenants() {
+    // Money comes from BillingService, not a second query written here — one
+    // definition of what "collected" and "outstanding" mean, shared with the
+    // invoices page (§3.2: the module, never its repository).
+    const [rows, money] = await Promise.all([
+      this.analytics.listOrganizationStats(),
+      this.billing.totalsByOrganization(),
+    ]);
+
+    const tenants = rows
+      .filter((row) => !row.is_platform)
+      .map((row) => {
+        const contract = contractState(row.contract_end);
+        const billing = money.get(row.organization_id) ?? {
+          invoiced: 0,
+          collected: 0,
+          outstanding: 0,
+          overdue_count: 0,
+        };
+        return {
+          id: row.organization_id,
+          name: row.name,
+          slug: row.slug,
+          logo_url: row.logo_url,
+          is_active: Number(row.is_active) === 1,
+          created_at: row.created_at,
+
+          industry: row.industry,
+          region: row.region,
+          /* The COMMERCIAL contact: typed in, optional, and about billing.
+             Deliberately kept apart from `admin_*` below, which is the real
+             account — the card used to show only this one and so named a
+             person nothing in the system could verify. */
+          contact_name: row.contact_name,
+          contact_email: row.contact_email,
+          contact_phone: row.contact_phone,
+
+          /* The tenant's real admin account, from `users`. */
+          admin_name: row.admin_name,
+          admin_email: row.admin_email,
+          admin_is_owner: row.admin_is_owner === true,
+          admin_portal_count: Number(row.admin_portal_count ?? 0),
+
+          contract_start: row.contract_start,
+          contract_end: row.contract_end,
+          // `numeric` arrives as a string from pg. Converted once, here, so no
+          // caller has to remember — and null stays null rather than becoming 0,
+          // because "no contract recorded" and "a contract worth nothing" are
+          // different facts.
+          contract_value:
+            row.contract_value === null ? null : Number(row.contract_value),
+          plan: row.plan,
+          billing_cycle: row.billing_cycle,
+          notes: row.notes,
+
+          /** Derived from the date every time — never a stored status. */
+          contract_state: contract.state,
+          contract_days_left: contract.daysLeft,
+
+          invoiced: billing.invoiced,
+          collected: billing.collected,
+          outstanding: billing.outstanding,
+          overdue_count: billing.overdue_count,
+
+          learners: Number(row.learners),
+          admins: Number(row.admins),
+          courses: Number(row.courses),
+          sessions: Number(row.sessions),
+          completions: Number(row.completions),
+          tracked_minutes: Number(row.minutes),
+        };
+      });
+
+    return {
+      tenants,
+      counts: {
+        total: tenants.length,
+        active: tenants.filter((t) => t.is_active).length,
+        suspended: tenants.filter((t) => !t.is_active).length,
+        expiring: tenants.filter((t) => t.contract_state === 'expiring').length,
+        expired: tenants.filter((t) => t.contract_state === 'expired').length,
+        learners: tenants.reduce((a, t) => a + t.learners, 0),
+        // Rounded to paise once, at the end — summing floats that were each
+        // already rounded is how a total drifts from its own rows.
+        invoiced: round2(tenants.reduce((a, t) => a + t.invoiced, 0)),
+        collected: round2(tenants.reduce((a, t) => a + t.collected, 0)),
+        outstanding: round2(tenants.reduce((a, t) => a + t.outstanding, 0)),
+        overdue: tenants.reduce((a, t) => a + t.overdue_count, 0),
+        contract_value: round2(
+          tenants.reduce((a, t) => a + (t.contract_value ?? 0), 0),
+        ),
+      },
+    };
+  }
+
+  /**
+   * `GET /api/platform/access` — every privileged account, across tenants.
+   *
+   * TWO levels only, Owner and Admin, both derived from the role the user
+   * actually holds. The reference offers four; the other two (Billing,
+   * Auditor) gate nothing in this system, and shipping a level that enforces
+   * nothing is exactly the defect §5.2.1 exists to prevent. They go in when
+   * something checks them.
+   *
+   * Edstellar's own staff are included and flagged `is_platform_org`, because
+   * "who can act on any tenant" is precisely the question this page answers —
+   * omitting the most privileged accounts of all would make it a liability.
+   */
+  async listPrivilegedAccounts() {
+    const rows = await this.analytics.listPrivilegedAccounts();
+
+    const accounts = rows.map((row) => ({
+      id: row.id,
+      name: `${row.first_name} ${row.last_name}`.trim(),
+      email: row.email,
+      organization_id: row.organization_id,
+      organization_name: row.organization_name,
+      is_platform_org: row.is_platform_org,
+      level: row.level,
+      role_name: row.role_name,
+      /** A suspended ACCOUNT, not a suspended tenant — the two differ. */
+      status: Number(row.is_active) === 1 ? 'active' : 'suspended',
+      granted_at: row.granted_at,
+      last_active: row.last_active,
+    }));
+
+    return {
+      accounts,
+      counts: {
+        total: accounts.length,
+        active: accounts.filter((a) => a.status === 'active').length,
+        suspended: accounts.filter((a) => a.status === 'suspended').length,
+        owners: accounts.filter((a) => a.level === 'owner').length,
+        platform: accounts.filter((a) => a.is_platform_org).length,
+      },
+    };
   }
 
   /** `GET /api/platform/analytics` — per-org rollup plus the platform total. */
@@ -391,4 +712,9 @@ export class OrganizationsService implements OnModuleInit {
       trackedMinutes: Math.round(Number(row.minutes) * 10) / 10,
     };
   }
+}
+
+/** Money to paise. Applied ONCE to a total, never to each addend. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }

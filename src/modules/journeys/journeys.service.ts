@@ -16,6 +16,7 @@ import type { AssignJourneyDto } from './dto/assign-journey.dto';
 import type {
   JourneyDto,
   ListJourneyLearnersQueryDto,
+  BulkJourneysDto,
   ListJourneysQueryDto,
   SetJourneyCoursesDto,
 } from './dto/journey.dto';
@@ -102,10 +103,19 @@ export class JourneysService {
   /* ── Admin: CRUD ── */
 
   async listForAdmin(scope: OrgScope, query: ListJourneysQueryDto) {
-    const filters = { status: query.status, limit: query.limit, offset: query.offset };
-    const [rows, total] = await Promise.all([
+    const filters = {
+      status: query.status,
+      archived: query.archived ?? false,
+      limit: query.limit,
+      offset: query.offset,
+    };
+    const [rows, total, archivedCount] = await Promise.all([
       this.repository.listForAdmin(scope, filters),
-      this.repository.countForAdmin(scope, { status: query.status }),
+      this.repository.countForAdmin(scope, {
+        status: query.status,
+        archived: filters.archived,
+      }),
+      this.repository.archivedCount(scope),
     ]);
 
     return {
@@ -123,11 +133,41 @@ export class JourneysService {
         is_active: Number(row.is_active) === 1,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        archived_at: row.archived_at,
         courses_count: Number(row.courses_count),
         learners_count: Number(row.learners_count),
+        completed_count: Number(row.completed_count),
+        completion_pct: Number(row.completion_pct),
+        // NULL when nobody has been scored. Kept null rather than coerced to
+        // 0 — "no score yet" and "averaged zero" are different facts and the
+        // card renders them differently.
+        avg_score: row.avg_score === null ? null : Number(row.avg_score),
       })),
       total,
+      archived_count: archivedCount,
     };
+  }
+
+  /**
+   * Bulk action from the builder's selection bar.
+   *
+   * One statement per action (§7.1), and the repository's predicates are the
+   * guards: org-owned only, and activate skips anything archived. Ids that
+   * fail them are simply not affected, and the count says how many were — a
+   * selection spanning a platform-owned path reports 3 of 4 rather than
+   * erroring on the one it could not touch.
+   */
+  async bulk(scope: OrgScope, dto: BulkJourneysDto) {
+    const { ids, action } = dto;
+    let affected = 0;
+
+    if (action === 'archive') affected = await this.repository.setArchived(scope, ids, true);
+    else if (action === 'restore') affected = await this.repository.setArchived(scope, ids, false);
+    else if (action === 'activate') affected = await this.repository.setActive(scope, ids, true);
+    else if (action === 'draft') affected = await this.repository.setActive(scope, ids, false);
+    else affected = await this.repository.deleteMany(scope, ids);
+
+    return { affected, requested: ids.length, action };
   }
 
   async create(scope: OrgScope, dto: JourneyDto) {

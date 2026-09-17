@@ -117,6 +117,97 @@ export class ServicesRepository {
     return `${prefix}${String(next).padStart(4, '0')}`;
   }
 
+  /* ── Platform (super-admin) ────────────────────────────────────────────
+     CROSS-TENANT ON PURPOSE, and the only methods here that are. Every other
+     read in this repository is `orgScope`d because a request belongs to one
+     tenant; these exist because Edstellar's own staff are the people who
+     ACTION them, and they sit behind `@PlatformAdmin()` — §10.14 said this
+     view must be its own guarded route and never a widening of the org one.
+     That is what these are. */
+
+  /** Every tenant's requests, newest first, with the organization named. */
+  async listAllForPlatform(filters: {
+    status?: string;
+    organizationId?: number;
+    limit: number;
+    offset: number;
+  }) {
+    const statusFilter = filters.status
+      ? sql`AND sr.status = ${filters.status}`
+      : sql``;
+    const orgFilter = filters.organizationId
+      ? sql`AND sr.organization_id = ${filters.organizationId}`
+      : sql``;
+
+    return this.db.all<{
+      id: number;
+      organization_id: number;
+      organization_name: string;
+      ref_no: string;
+      service: string;
+      timeline: string | null;
+      budget: string | null;
+      status: string;
+      response_note: string | null;
+      contact_name: string;
+      contact_email: string;
+      created_at: string;
+      updated_at: string;
+    }>(sql`
+      SELECT sr.id, sr.organization_id, o.name AS organization_name,
+             sr.ref_no, sr.service, sr.timeline, sr.budget, sr.status,
+             sr.response_note, sr.contact_name, sr.contact_email,
+             sr.created_at, sr.updated_at
+        FROM service_requests sr
+        JOIN organizations o ON o.id = sr.organization_id
+       WHERE TRUE ${statusFilter} ${orgFilter}
+       ORDER BY sr.created_at DESC
+       LIMIT ${filters.limit} OFFSET ${filters.offset}
+    `);
+  }
+
+  /** Counts per status across every tenant, for the queue's KPI strip. */
+  async platformCounts() {
+    return this.db.all<{ status: string; n: number }>(sql`
+      SELECT status, COUNT(*)::int AS n FROM service_requests GROUP BY status
+    `);
+  }
+
+  /** One request with its full questionnaire, from any tenant. */
+  async findByIdForPlatform(id: number) {
+    const rows = await this.db.all<Record<string, unknown>>(sql`
+      SELECT sr.*, o.name AS organization_name
+        FROM service_requests sr
+        JOIN organizations o ON o.id = sr.organization_id
+       WHERE sr.id = ${id}
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Move a request along and write Edstellar's reply.
+   *
+   * The ONLY writer of `status` and `response_note`. A tenant cannot reach
+   * this — marking your own request "Proposal sent" would make the status
+   * meaningless.
+   */
+  async respond(
+    id: number,
+    input: { status: string; responseNote: string | null },
+  ) {
+    const [updated] = await this.db
+      .update(serviceRequests)
+      .set({
+        status: input.status,
+        responseNote: input.responseNote,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(serviceRequests.id, id))
+      .returning();
+    return updated ?? null;
+  }
+
   /** Activity: takes the CALLER's org, always. */
   async create(scope: OrgScope, input: NewServiceRequest) {
     const [created] = await this.db

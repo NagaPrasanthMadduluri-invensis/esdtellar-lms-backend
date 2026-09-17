@@ -31,11 +31,20 @@ export class TokenService {
     return this.tokenDays * 86_400;
   }
 
-  sign(user: AuthenticatedUser): string {
+  /**
+   * `ttlSeconds` overrides the configured lifetime for this one token.
+   *
+   * It exists for support sessions (`impersonatorId`), which must expire in
+   * minutes rather than days: a platform admin who opens a tenant and closes
+   * the tab should not leave a token that can act inside somebody else's
+   * account for a week. Everything else omits it and gets `AUTH_TOKEN_DAYS`.
+   */
+  sign(user: AuthenticatedUser, ttlSeconds?: number): string {
     const header = this.encode({ alg: 'HS256', typ: 'JWT' });
+    const lifetime = ttlSeconds ?? this.maxAgeSeconds;
     const claims = this.encode({
       ...user,
-      exp: Math.floor(Date.now() / 1000) + this.maxAgeSeconds,
+      exp: Math.floor(Date.now() / 1000) + lifetime,
     });
     return `${header}.${claims}.${this.signature(`${header}.${claims}`)}`;
   }

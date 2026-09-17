@@ -11,10 +11,13 @@ import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { MediaService } from '@/modules/media/media.service';
 
 import type {
+  MoveToBatchDto,
   RosterAddDto,
   SaveAttendanceDto,
+  SessionBatchDto,
   SessionDto,
 } from './dto/session.dto';
+import { batchDisplayStatus } from '@/common/session-enrolment';
 import { displayStatus } from './session-status.util';
 import { SessionsRepository, type AttendanceRow } from './sessions.repository';
 
@@ -81,12 +84,30 @@ export class SessionsService {
     await this.media.discardCourseThumbnail(previous);
   }
 
-  async list(scope: OrgScope) {
-    const rows = (await this.repository.list(scope)) as Record<
-      string,
-      unknown
-    >[];
+  async list(scope: OrgScope, archived = false) {
+    const [rows, archivedCount] = (await Promise.all([
+      this.repository.list(scope, archived),
+      this.repository.archivedCount(scope),
+    ])) as [Record<string, unknown>[], number];
+
+    // Two more queries for the whole page, not two per card (§7.1). A list of
+    // 40 sessions costs 4 round trips, not 81.
+    const ids = rows.map((r) => Number(r.id));
+    const [batches, waiting] = await Promise.all([
+      this.repository.listBatchesForSessions(scope, ids),
+      this.repository.waitlistCounts(scope, ids),
+    ]);
+
+    const batchesBySession = new Map<number, typeof batches>();
+    for (const b of batches) {
+      const list = batchesBySession.get(b.session_id);
+      if (list) list.push(b);
+      else batchesBySession.set(b.session_id, [b]);
+    }
+    const waitingBySession = new Map(waiting.map((w) => [w.session_id, Number(w.n)]));
+
     return {
+      archived_count: archivedCount,
       sessions: rows.map((row) => ({
         ...row,
         course_id: row.course_id ? Number(row.course_id) : null,
@@ -99,8 +120,162 @@ export class SessionsService {
         attendance_marked_count: Number(row.marked_count ?? 0),
         credited_count: Number(row.credited_count ?? 0),
         display_status: displayStatus(row as Parameters<typeof displayStatus>[0]),
+        enroll_mode: String(row.enroll_mode ?? 'assigned'),
+        waitlist_count: waitingBySession.get(Number(row.id)) ?? 0,
+        // Empty for a single-sitting session, which is the default and every
+        // session that predates batches. The card reads the length to decide
+        // whether to draw a segmented meter or a plain one.
+        batches: (batchesBySession.get(Number(row.id)) ?? []).map((b) => ({
+          ...b,
+          capacity: b.capacity ?? Number(row.capacity ?? 0),
+          roster_count: Number(b.roster_count),
+          // Derived, never stored — a batch with no date yet is pending.
+          display_status: batchDisplayStatus(b),
+        })),
       })),
     };
+  }
+
+  /* ── Batches ─────────────────────────────────────────────────────────── */
+
+  async createBatch(scope: OrgScope, sessionId: number, dto: SessionBatchDto) {
+    const session = await this.repository.findWithCourse(scope, sessionId);
+    if (!session) throw new NotFoundException('Session not found');
+
+    const batchNo = await this.repository.nextBatchNo(scope, sessionId);
+    const batch = await this.repository.createBatch({
+      organizationId: scope.organizationId,
+      sessionId,
+      batchNo,
+      label: dto.label ?? null,
+      date: dto.date ?? null,
+      startTime: dto.start_time ?? null,
+      endTime: dto.end_time ?? null,
+      capacity: dto.capacity ?? null,
+      trainerUserId: dto.trainer_user_id ?? null,
+    });
+    return { batch };
+  }
+
+  async updateBatch(scope: OrgScope, batchId: number, dto: SessionBatchDto) {
+    const existing = await this.repository.findBatch(scope, batchId);
+    if (!existing) throw new NotFoundException('Batch not found');
+
+    const batch = await this.repository.updateBatch(scope, batchId, {
+      label: dto.label ?? null,
+      date: dto.date ?? null,
+      startTime: dto.start_time ?? null,
+      endTime: dto.end_time ?? null,
+      capacity: dto.capacity ?? null,
+      trainerUserId: dto.trainer_user_id ?? null,
+      status: dto.status ?? 'scheduled',
+    });
+    if (!batch) throw new NotFoundException('Batch not found');
+    return { batch };
+  }
+
+  async removeBatch(scope: OrgScope, batchId: number) {
+    const existing = await this.repository.findBatch(scope, batchId);
+    if (!existing) throw new NotFoundException('Batch not found');
+    await this.repository.deleteBatch(scope, batchId);
+    // Said back to the caller because it is the non-obvious half: the people
+    // in that batch are still on the session, just unassigned to a sitting.
+    return { message: 'Batch deleted. Its learners stay on the session, unassigned to a sitting.' };
+  }
+
+  /** Move a rostered learner between sittings. `batch_id: null` unassigns. */
+  async setRosterBatch(
+    scope: OrgScope,
+    sessionId: number,
+    dto: MoveToBatchDto,
+  ) {
+    if (dto.batch_id !== null && dto.batch_id !== undefined) {
+      const batch = await this.repository.findBatch(scope, dto.batch_id);
+      if (!batch || batch.session_id !== sessionId) {
+        throw new NotFoundException('Batch not found on this session');
+      }
+    }
+    const moved = await this.repository.setRosterBatch(
+      scope,
+      sessionId,
+      dto.user_id,
+      dto.batch_id ?? null,
+    );
+    if (moved === 0) throw new NotFoundException('That learner is not on this session');
+    return { ok: true };
+  }
+
+  /* ── Waitlist ────────────────────────────────────────────────────────── */
+
+  async waitlist(scope: OrgScope, sessionId: number) {
+    const session = await this.repository.findWithCourse(scope, sessionId);
+    if (!session) throw new NotFoundException('Session not found');
+    return { waitlist: await this.repository.listWaitlist(scope, sessionId) };
+  }
+
+  /**
+   * Promote somebody off the waitlist onto the roster.
+   *
+   * Goes through `addToRoster`, NOT a direct insert: adding someone to a
+   * session's roster is what creates their `user_course_assignments` row and
+   * so puts the training in their My Courses (§10.7). Writing the roster row
+   * here by hand would enrol them in name only.
+   *
+   * The waitlist row is removed only AFTER the roster write succeeds — losing
+   * their place in the queue to a failed enrolment is the worse outcome.
+   */
+  async promoteFromWaitlist(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+    adminUserId: number,
+  ) {
+    const session = await this.repository.findWithCourse(scope, sessionId);
+    if (!session) throw new NotFoundException('Session not found');
+
+    await this.addToRoster(scope, sessionId, adminUserId, { user_id: userId });
+    await this.repository.removeFromWaitlist(scope, sessionId, userId);
+    return { ok: true };
+  }
+
+  async removeFromWaitlist(scope: OrgScope, sessionId: number, userId: number) {
+    const removed = await this.repository.removeFromWaitlist(scope, sessionId, userId);
+    if (removed === 0) throw new NotFoundException('That learner is not on this waitlist');
+    return { ok: true };
+  }
+
+  /**
+   * Bulk cancel / archive / restore / delete from the list's selection bar.
+   *
+   * Delete goes through `remove()` per id rather than one statement, because
+   * deleting a session is not a row delete: it cascades into the companion
+   * training course, the roster and everybody's completion (§10.7), and
+   * `remove()` is the one place that sequence is correct. Cancel and archive
+   * are set-based (§7.1) because they touch only `sessions`.
+   */
+  async bulk(
+    scope: OrgScope,
+    ids: number[],
+    action: 'cancel' | 'archive' | 'restore' | 'delete',
+  ) {
+    let affected = 0;
+
+    if (action === 'archive') affected = await this.repository.setArchived(scope, ids, true);
+    else if (action === 'restore') affected = await this.repository.setArchived(scope, ids, false);
+    else if (action === 'cancel') affected = await this.repository.setCancelled(scope, ids);
+    else {
+      for (const id of ids) {
+        try {
+          await this.remove(scope, id);
+          affected += 1;
+        } catch {
+          // A session that is not this org's, or already gone. Counted as not
+          // affected rather than failing the whole selection.
+        }
+      }
+    }
+
+    return { affected, requested: ids.length, action };
   }
 
   async get(scope: OrgScope, sessionId: number) {
@@ -694,6 +869,7 @@ export class SessionsService {
       endTime: dto.end_time,
       description: dto.description ?? null,
       status: dto.status ?? 'upcoming',
+      enrollMode: dto.enroll_mode ?? 'assigned',
     };
   }
 }

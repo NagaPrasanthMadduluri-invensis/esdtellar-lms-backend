@@ -1,9 +1,22 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
 import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
-import { sessionRoster, sessions } from '@/database/schema';
+import { sessionBatches, sessionRoster, sessions } from '@/database/schema';
+
+/**
+ * `id IN (...)` as a real list.
+ *
+ * Drizzle expands a JS array into a ROW constructor, which Postgres reads as
+ * `IN ((1,2,3))` and rejects with "cannot cast type record to integer". Same
+ * idiom as `CoursesRepository.idList` and `JourneysRepository.idList` — the
+ * third copy, and the point at which it is worth remembering that all three
+ * exist for one Drizzle quirk.
+ */
+function idList(ids: number[]): SQL {
+  return sql`(${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`;
+}
 
 export interface AttendanceRow {
   id: number;
@@ -28,7 +41,12 @@ export class SessionsRepository {
     return this.database.db;
   }
 
-  async list(scope: OrgScope) {
+  async list(scope: OrgScope, archived = false) {
+    // Archived and live are never mixed — the toggle swaps between two sets,
+    // the same rule Course Library (§10.12) and Learning Paths follow.
+    const archiveFilter = archived
+      ? sql`AND s.archived_at IS NOT NULL`
+      : sql`AND s.archived_at IS NULL`;
     return this.db.all(sql`
       SELECT s.*, c.name AS course_name,
         tc.id AS training_course_id,
@@ -45,9 +63,256 @@ export class SessionsRepository {
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
       LEFT JOIN courses tc ON tc.session_id = s.id
-      WHERE ${orgScope('s', scope)}
+      WHERE ${orgScope('s', scope)} ${archiveFilter}
       ORDER BY s.date DESC, s.start_time DESC
     `);
+  }
+
+  /** How many archived sessions this org has — the toggle's badge. */
+  async archivedCount(scope: OrgScope): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM sessions s
+      WHERE ${orgScope('s', scope)} AND s.archived_at IS NOT NULL
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Bulk archive / restore. Sessions are org-OWNED, never shared, so
+   * `orgScope` is both the tenancy guard and the whole predicate — unlike
+   * courses and paths, there is no platform-owned session to exclude.
+   */
+  async setArchived(
+    scope: OrgScope,
+    ids: number[],
+    archived: boolean,
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const rows = await this.db.all<{ id: number }>(sql`
+      UPDATE sessions s
+         SET archived_at = ${archived ? sql`now()` : sql`NULL`}
+       WHERE s.id IN ${idList(ids)} AND ${orgScope('s', scope)}
+      RETURNING s.id
+    `);
+    return rows.length;
+  }
+
+  /**
+   * Bulk cancel.
+   *
+   * Refused for a session already marked `completed`: cancelling one would
+   * contradict the attendance already credited against it, and those
+   * completions are real learning history (§10.7). The count reports how many
+   * were actually cancelled rather than erroring on the first that was not.
+   */
+  async setCancelled(scope: OrgScope, ids: number[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const rows = await this.db.all<{ id: number }>(sql`
+      UPDATE sessions s
+         SET status = 'cancelled'
+       WHERE s.id IN ${idList(ids)} AND ${orgScope('s', scope)}
+         AND s.status <> 'completed'
+      RETURNING s.id
+    `);
+    return rows.length;
+  }
+
+  /* ── Batches ───────────────────────────────────────────────────────────
+     A batch is a scheduling subdivision of ONE session's roster, never a
+     separate course — read `0025_session_batches.sql` before changing any of
+     this. Batches are optional: a session with none is a single sitting using
+     its own date, time and capacity. */
+
+  /** Every batch of every session in one query — the list needs them per card. */
+  async listBatchesForSessions(scope: OrgScope, sessionIds: number[]) {
+    if (sessionIds.length === 0) return [];
+    return this.db.all<{
+      id: number;
+      session_id: number;
+      batch_no: number;
+      label: string | null;
+      date: string | null;
+      start_time: string | null;
+      end_time: string | null;
+      capacity: number | null;
+      trainer_user_id: number | null;
+      trainer_name: string | null;
+      status: string;
+      roster_count: number;
+    }>(sql`
+      SELECT b.id, b.session_id, b.batch_no, b.label, b.date, b.start_time,
+             b.end_time, b.capacity, b.trainer_user_id, b.status,
+             CASE WHEN u.id IS NULL THEN NULL
+                  ELSE u.first_name || ' ' || u.last_name END AS trainer_name,
+             (SELECT COUNT(*) FROM session_roster sr
+               WHERE sr.batch_id = b.id) AS roster_count
+        FROM session_batches b
+        LEFT JOIN users u ON u.id = b.trainer_user_id
+       WHERE b.session_id IN ${idList(sessionIds)} AND ${orgScope('b', scope)}
+       ORDER BY b.session_id, b.batch_no
+    `);
+  }
+
+  async findBatch(scope: OrgScope, batchId: number) {
+    const rows = await this.db.all<{ id: number; session_id: number; batch_no: number }>(sql`
+      SELECT b.id, b.session_id, b.batch_no FROM session_batches b
+       WHERE b.id = ${batchId} AND ${orgScope('b', scope)}
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /** The next batch number for a session. Stored, never derived from a count. */
+  async nextBatchNo(scope: OrgScope, sessionId: number): Promise<number> {
+    const rows = await this.db.all<{ n: number | null }>(sql`
+      SELECT MAX(b.batch_no) AS n FROM session_batches b
+       WHERE b.session_id = ${sessionId} AND ${orgScope('b', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0) + 1;
+  }
+
+  async createBatch(input: {
+    organizationId: number;
+    sessionId: number;
+    batchNo: number;
+    label: string | null;
+    date: string | null;
+    startTime: string | null;
+    endTime: string | null;
+    capacity: number | null;
+    trainerUserId: number | null;
+  }) {
+    const [created] = await this.db
+      .insert(sessionBatches)
+      .values({
+        organizationId: input.organizationId,
+        sessionId: input.sessionId,
+        batchNo: input.batchNo,
+        label: input.label,
+        date: input.date,
+        startTime: input.startTime,
+        endTime: input.endTime,
+        capacity: input.capacity,
+        trainerUserId: input.trainerUserId,
+      })
+      .returning();
+    return created;
+  }
+
+  async updateBatch(
+    scope: OrgScope,
+    batchId: number,
+    input: {
+      label: string | null;
+      date: string | null;
+      startTime: string | null;
+      endTime: string | null;
+      capacity: number | null;
+      trainerUserId: number | null;
+      status: string;
+    },
+  ) {
+    const [updated] = await this.db
+      .update(sessionBatches)
+      .set({
+        label: input.label,
+        date: input.date,
+        startTime: input.startTime,
+        endTime: input.endTime,
+        capacity: input.capacity,
+        trainerUserId: input.trainerUserId,
+        status: input.status,
+      })
+      .where(
+        and(
+          eq(sessionBatches.id, batchId),
+          eq(sessionBatches.organizationId, scope.organizationId),
+        ),
+      )
+      .returning();
+    return updated ?? null;
+  }
+
+  /**
+   * Delete a batch. The roster rows pointing at it fall back to NULL by the
+   * FK's ON DELETE SET NULL — those people stay enrolled on the session and
+   * the admin re-assigns them to another sitting.
+   */
+  async deleteBatch(scope: OrgScope, batchId: number): Promise<void> {
+    await this.db
+      .delete(sessionBatches)
+      .where(
+        and(
+          eq(sessionBatches.id, batchId),
+          eq(sessionBatches.organizationId, scope.organizationId),
+        ),
+      );
+  }
+
+  /** Move one rostered learner into a batch (or out of one, with null). */
+  async setRosterBatch(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+    batchId: number | null,
+  ): Promise<number> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      UPDATE session_roster sr
+         SET batch_id = ${batchId}
+       WHERE sr.session_id = ${sessionId} AND sr.user_id = ${userId}
+         AND ${orgScope('sr', scope)}
+      RETURNING sr.id
+    `);
+    return rows.length;
+  }
+
+  /* ── Waitlist ──────────────────────────────────────────────────────────
+     Only self-enrol sessions produce one. A waitlisted person is NOT
+     enrolled — no course assignment, not in the roster count, not creditable
+     by attendance. See the migration for why this is its own table. */
+
+  async waitlistCounts(scope: OrgScope, sessionIds: number[]) {
+    if (sessionIds.length === 0) return [];
+    return this.db.all<{ session_id: number; n: number }>(sql`
+      SELECT w.session_id, COUNT(*)::int AS n
+        FROM session_waitlist w
+       WHERE w.session_id IN ${idList(sessionIds)} AND ${orgScope('w', scope)}
+       GROUP BY w.session_id
+    `);
+  }
+
+  /** The queue for one session, oldest first — position is arrival order. */
+  async listWaitlist(scope: OrgScope, sessionId: number) {
+    return this.db.all<{
+      id: number;
+      user_id: number;
+      first_name: string;
+      last_name: string;
+      email: string;
+      department: string | null;
+      created_at: string;
+    }>(sql`
+      SELECT w.id, w.user_id, u.first_name, u.last_name, u.email,
+             u.department, w.created_at
+        FROM session_waitlist w
+        JOIN users u ON u.id = w.user_id
+       WHERE w.session_id = ${sessionId} AND ${orgScope('w', scope)}
+       ORDER BY w.created_at
+    `);
+  }
+
+  async removeFromWaitlist(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+  ): Promise<number> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      DELETE FROM session_waitlist w
+       WHERE w.session_id = ${sessionId} AND w.user_id = ${userId}
+         AND ${orgScope('w', scope)}
+      RETURNING w.id
+    `);
+    return rows.length;
   }
 
   /* ── Trainer portal (specs/rbac.md §3.6.1) ─────────────────────────────

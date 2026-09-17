@@ -5,19 +5,22 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 
-import { CurrentUser, Public } from '@/common/decorators';
+import { CurrentUser, PlatformAdmin, Public } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import { AuthService, type PublicUser } from './auth.service';
 import { authCookieOptions, clearCookieOptions } from './cookie.util';
 import { ChangePasswordDto } from '@/modules/learner/dto/change-password.dto';
+import { ImpersonateDto } from './dto/impersonate.dto';
 import { LoginDto } from './dto/login.dto';
+import { UpdateProfileDto } from './dto/profile.dto';
 import { RegisterDto } from './dto/register.dto';
 import { TokenService } from './token.service';
 
@@ -75,7 +78,87 @@ export class AuthController {
   async me(
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<{ user: PublicUser }> {
-    return { user: await this.authService.me(user.userId) };
+    return { user: await this.authService.me(user.userId, user) };
+  }
+
+  /**
+   * The caller's own profile. Authenticated, ANY role — no `@Roles()`.
+   *
+   * Every portal's top-bar avatar opens this, so gating it to one audience
+   * would give three of the four a dialog that 403s.
+   */
+  @Get('profile')
+  async profile(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.profile(user.userId);
+  }
+
+  /**
+   * Edit your own profile.
+   *
+   * Identity comes from the token, so there is nothing here that lets one
+   * person edit another — the same property `change-password` relies on.
+   * `UpdateProfileDto` is deliberately narrow; read its docblock before adding
+   * a field, particularly for `email` and `department`.
+   *
+   * One known and accepted cost: `firstName`/`lastName` are also JWT claims,
+   * carried so the server-rendered shell can show a name without a round
+   * trip. Renaming yourself therefore leaves the top bar showing the old name
+   * until the next sign-in. Re-minting the token here would fix the label and
+   * cost a silent session swap on a cosmetic edit, which is the worse trade.
+   */
+  @Patch('profile')
+  @HttpCode(HttpStatus.OK)
+  async updateProfile(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.authService.updateProfile(user.userId, dto);
+  }
+
+  /**
+   * Open a support session inside a tenant. PLATFORM ADMIN ONLY.
+   *
+   * Lives on the auth controller rather than beside the tenant directory
+   * because what it does is mint a token and set a cookie — that is this
+   * file's job, and putting it under `/platform/organizations` would also
+   * have meant `OrganizationsModule` importing `AuthModule`, which is a cycle
+   * (`AuthService` already depends on `OrganizationsService`).
+   *
+   * The response carries the tenant's name so the caller can say where it is
+   * about to land, rather than navigating and letting the banner explain.
+   */
+  @PlatformAdmin()
+  @Post('impersonate')
+  @HttpCode(HttpStatus.OK)
+  async impersonate(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Body() dto: ImpersonateDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const { user, token, maxAgeSeconds, organization } =
+      await this.authService.impersonate(actor, dto.organization_id);
+    this.setAuthCookie(response, token, maxAgeSeconds);
+    return { user, organization };
+  }
+
+  /**
+   * End a support session.
+   *
+   * Deliberately NOT `@PlatformAdmin()`: the caller's token says they are a
+   * tenant admin right now, so that guard would refuse the one request whose
+   * whole purpose is getting back. Authorisation is `impersonatorId` on the
+   * verified token, re-checked against the database in the service — the
+   * claim says who to return to, the row says whether they may.
+   */
+  @Post('exit-impersonation')
+  @HttpCode(HttpStatus.OK)
+  async exitImpersonation(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ user: PublicUser }> {
+    const { user, token } = await this.authService.exitImpersonation(actor);
+    this.setAuthCookie(response, token);
+    return { user };
   }
 
   /**
@@ -117,12 +200,22 @@ export class AuthController {
     );
   }
 
-  private setAuthCookie(response: Response, token: string): void {
+  /**
+   * `maxAgeSeconds` follows the TOKEN, not the configured default. A support
+   * session's token dies in an hour; a week-long cookie around it would keep
+   * the browser sending a credential the server has stopped accepting, which
+   * the user experiences as being logged out at random.
+   */
+  private setAuthCookie(
+    response: Response,
+    token: string,
+    maxAgeSeconds?: number,
+  ): void {
     response.cookie(
       this.cookieName,
       token,
       authCookieOptions({
-        maxAgeSeconds: this.tokenService.maxAgeSeconds,
+        maxAgeSeconds: maxAgeSeconds ?? this.tokenService.maxAgeSeconds,
         domain: this.cookieDomain,
         isProduction: this.isProduction,
       }),

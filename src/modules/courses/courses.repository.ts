@@ -827,18 +827,30 @@ export class CoursesRepository {
         })),
       )
       /**
-       * A direct assignment CLEARS `source_journey_id`.
+       * A direct assignment CLEARS `source_journey_id`, and APPLIES a supplied
+       * due date.
        *
-       * The row may already exist because a journey put it there, in which
-       * case it is gated by that journey's sequence. An admin assigning the
-       * course by hand is deliberately opening it — that is the rule: a course
-       * is never locked globally, only its position inside a journey is
-       * (BACKEND_STRUCTURE.md §10.11). `DO NOTHING` left the journey's lock in
-       * place and the admin's action silently did nothing.
+       * `source_journey_id`: the row may already exist because a journey put
+       * it there, in which case it is gated by that journey's sequence. An
+       * admin assigning by hand is deliberately opening it — a course is never
+       * locked globally, only its position inside a journey is (§10.11).
+       * `DO NOTHING` left the lock in place and the admin's action silently
+       * did nothing.
+       *
+       * `due_date`: COALESCE, so a SUPPLIED date overwrites the existing one
+       * and an OMITTED one leaves it alone. This previously set only
+       * `source_journey_id`, which meant re-assigning a course to somebody who
+       * already had it ignored the deadline entirely — the common case when an
+       * admin re-runs an assignment precisely to move the date. Blanking the
+       * field must not wipe a date that is already there, which is the same
+       * omitted-vs-explicit rule §10.10 applies to thumbnails.
        */
       .onConflictDoUpdate({
         target: [userCourseAssignments.userId, userCourseAssignments.courseId],
-        set: { sourceJourneyId: null },
+        set: {
+          sourceJourneyId: null,
+          dueDate: sql`COALESCE(EXCLUDED.due_date, ${userCourseAssignments.dueDate})`,
+        },
       })
       .returning({ id: userCourseAssignments.id });
 
@@ -852,7 +864,9 @@ export class CoursesRepository {
     assignedBy: number;
     dueDate: string | null;
   }): Promise<void> {
-    // Same rule as createAssignments above: assigning by hand opens the course.
+    // Same rules as createAssignments above: assigning by hand opens the
+    // course, and a supplied due date is applied while an omitted one leaves
+    // any existing date alone.
     await this.db
       .insert(userCourseAssignments)
       .values({
@@ -864,7 +878,10 @@ export class CoursesRepository {
       })
       .onConflictDoUpdate({
         target: [userCourseAssignments.userId, userCourseAssignments.courseId],
-        set: { sourceJourneyId: null },
+        set: {
+          sourceJourneyId: null,
+          dueDate: sql`COALESCE(EXCLUDED.due_date, ${userCourseAssignments.dueDate})`,
+        },
       });
   }
 

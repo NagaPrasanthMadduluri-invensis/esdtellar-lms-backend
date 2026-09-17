@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 
 import {
@@ -21,7 +22,10 @@ import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
 import {
+  BulkSessionsDto,
+  MoveToBatchDto,
   RosterAddDto,
+  SessionBatchDto,
   RosterRemoveDto,
   SaveAttendanceDto,
   SessionDto,
@@ -34,8 +38,29 @@ export class AdminSessionsController {
   constructor(private readonly sessions: SessionsService) {}
 
   @Get()
-  async list(@CurrentScope() scope: OrgScope) {
-    return this.sessions.list(scope);
+  async list(
+    @CurrentScope() scope: OrgScope,
+    @Query('archived') archived?: string,
+  ) {
+    // A SWAP, not an extra filter — archived and live are never listed
+    // together, so the flag chooses which set rather than widening one.
+    return this.sessions.list(scope, archived === 'true' || archived === '1');
+  }
+
+  /**
+   * Bulk cancel / archive / restore / delete over a selection.
+   *
+   * Declared BEFORE `@Get(':sessionId')` and the other param routes, for the
+   * reason the `trainers` route below already documents: Nest matches in
+   * declaration order and `bulk` would otherwise arrive as a session id.
+   *
+   * 200, not 201 — nothing was created.
+   */
+  @Post('bulk')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('manage_sessions')
+  async bulk(@Body() dto: BulkSessionsDto, @CurrentScope() scope: OrgScope) {
+    return this.sessions.bulk(scope, dto.ids, dto.action);
   }
 
   /**
@@ -122,6 +147,84 @@ export class AdminSessionsController {
     @CurrentScope() scope: OrgScope,
   ) {
     return this.sessions.addToRoster(scope, sessionId, admin.userId, dto);
+  }
+
+  /* ── Batches ───────────────────────────────────────────────────────── */
+
+  @Post(':sessionId/batches')
+  @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_sessions')
+  async createBatch(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Body() dto: SessionBatchDto,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.createBatch(scope, sessionId, dto);
+  }
+
+  @Put('batches/:batchId')
+  @Permissions('manage_sessions')
+  async updateBatch(
+    @Param('batchId', ParseIntPipe) batchId: number,
+    @Body() dto: SessionBatchDto,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.updateBatch(scope, batchId, dto);
+  }
+
+  @Delete('batches/:batchId')
+  @Permissions('manage_sessions')
+  async removeBatch(
+    @Param('batchId', ParseIntPipe) batchId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.removeBatch(scope, batchId);
+  }
+
+  /** Move a rostered learner between sittings. Roster change, so it needs
+   *  `manage_session_roster` rather than `manage_sessions` (rbac.md §3.6.1). */
+  @Put(':sessionId/roster/batch')
+  @Permissions('manage_session_roster')
+  async moveToBatch(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Body() dto: MoveToBatchDto,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.setRosterBatch(scope, sessionId, dto);
+  }
+
+  /* ── Waitlist ──────────────────────────────────────────────────────── */
+
+  @Get(':sessionId/waitlist')
+  async waitlist(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.waitlist(scope, sessionId);
+  }
+
+  /** Promote off the queue onto the roster — which is what creates their
+   *  course assignment, so it is a roster write. */
+  @Post(':sessionId/waitlist/:userId/promote')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('manage_session_roster')
+  async promote(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Param('userId', ParseIntPipe) userId: number,
+    @CurrentUser() admin: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.promoteFromWaitlist(scope, sessionId, userId, admin.userId);
+  }
+
+  @Delete(':sessionId/waitlist/:userId')
+  @Permissions('manage_session_roster')
+  async dropFromWaitlist(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Param('userId', ParseIntPipe) userId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.removeFromWaitlist(scope, sessionId, userId);
   }
 
   @Delete(':sessionId/roster')

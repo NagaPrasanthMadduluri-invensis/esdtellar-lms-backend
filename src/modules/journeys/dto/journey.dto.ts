@@ -126,6 +126,15 @@ export class ListJourneysQueryDto {
   @IsIn(['active', 'draft'], { message: 'status must be active or draft' })
   status?: 'active' | 'draft';
 
+  /**
+   * Archived paths instead of live ones. A SWAP, not an extra filter — the two
+   * sets are never shown together (see `listForAdmin`).
+   */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  archived?: boolean;
+
   @IsOptional()
   @Type(() => Number)
   @IsInt({ message: 'limit must be an integer' })
@@ -160,4 +169,18 @@ export class ListJourneyLearnersQueryDto {
 export class ListLearnerJourneysQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
+}
+
+/** Bulk action over a selection of paths, from the builder's action bar. */
+export class BulkJourneysDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Select at least one learning path' })
+  @Type(() => Number)
+  @IsInt({ each: true, message: 'ids must be integers' })
+  ids!: number[];
+
+  @IsIn(['activate', 'draft', 'archive', 'restore', 'delete'], {
+    message: 'action must be one of: activate, draft, archive, restore, delete',
+  })
+  action!: 'activate' | 'draft' | 'archive' | 'restore' | 'delete';
 }

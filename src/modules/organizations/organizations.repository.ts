@@ -111,12 +111,34 @@ export class OrganizationsRepository {
       scope: string;
       permissions: readonly string[];
     }[],
-  ): Promise<OrganizationRow> {
+    /**
+     * The tenant's FIRST ADMIN, created in the same transaction.
+     *
+     * Optional only so the original caller shape still compiles; the platform
+     * console always passes one. An organization with no admin account is one
+     * nobody can log into — it renders as a warning in the directory and is
+     * not a state worth being able to reach by a half-finished form. Doing it
+     * inside the transaction is what makes that guarantee real: there is no
+     * window where the org exists and the account does not, and no
+     * compensating delete to get wrong.
+     */
+    owner?: {
+      firstName: string;
+      lastName: string;
+      email: string;
+      passwordHash: string;
+    },
+  ): Promise<{ organization: OrganizationRow; owner: { id: number } | null }> {
     return this.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(organizations)
         .values({ name: input.name, slug: input.slug })
         .returning(ORGANIZATION_COLUMNS);
+
+      // The id of the role the owner will be given. Captured from the loop
+      // rather than re-queried: the loop is the only thing that knows which
+      // row each seed produced.
+      let adminRoleId: number | null = null;
 
       for (const role of systemRoles) {
         const [row] = await tx
@@ -131,6 +153,10 @@ export class OrganizationsRepository {
           })
           .returning({ id: roles.id });
 
+        if (role.key === 'admin' && role.portal === 'admin') {
+          adminRoleId = row.id;
+        }
+
         if (role.permissions.length === 0) continue;
         // One multi-row INSERT per role, not one statement per permission
         // (`BACKEND_STRUCTURE.md` §7.1).
@@ -142,17 +168,86 @@ export class OrganizationsRepository {
         );
       }
 
-      return created;
+      if (!owner) return { organization: created, owner: null };
+
+      if (adminRoleId === null) {
+        // Cannot happen with the shipped catalogue, and if the catalogue ever
+        // changes shape this must abort rather than create a user with a null
+        // role_id — `users.role_id` is NOT NULL and the insert would fail
+        // anyway, but with a constraint error nobody can act on.
+        throw new Error(
+          'SYSTEM_ROLES contains no admin-portal "admin" role; cannot create the first admin',
+        );
+      }
+
+      const [ownerRow] = await tx
+        .insert(users)
+        .values({
+          organizationId: created.id,
+          firstName: owner.firstName,
+          lastName: owner.lastName,
+          email: owner.email,
+          password: owner.passwordHash,
+          role: 'admin',
+          roleId: adminRoleId,
+        })
+        .returning({ id: users.id });
+
+      return { organization: created, owner: ownerRow };
     });
   }
 
+  /**
+   * Patch an organization.
+   *
+   * Only keys the caller actually SENT are written. `undefined` means "leave
+   * it alone" and `null` means "clear it" — the distinction matters because
+   * an edit form posting its whole object would otherwise wipe commercial
+   * terms it never showed (§10.10 records the same trap on thumbnails).
+   */
   async update(
     id: number,
-    input: { name?: string; isActive?: number },
+    input: {
+      name?: string;
+      isActive?: number;
+      industry?: string | null;
+      region?: string | null;
+      contactName?: string | null;
+      contactEmail?: string | null;
+      contactPhone?: string | null;
+      contractStart?: string | null;
+      contractEnd?: string | null;
+      contractValue?: string | null;
+      plan?: string | null;
+      billingCycle?: string | null;
+      notes?: string | null;
+    },
   ): Promise<OrganizationRow | null> {
-    const values: Partial<{ name: string; isActive: number }> = {};
+    const values: Record<string, unknown> = {};
     if (input.name !== undefined) values.name = input.name;
     if (input.isActive !== undefined) values.isActive = input.isActive;
+    for (const key of [
+      'industry', 'region', 'contactName', 'contactEmail', 'contactPhone',
+      'contractStart', 'contractEnd', 'contractValue', 'plan', 'billingCycle',
+      'notes',
+    ] as const) {
+      if (input[key] !== undefined) values[key] = input[key];
+    }
+
+    /*
+     * A patch that names nothing is a READ, not an error.
+     *
+     * Drizzle throws "No values to set" on an empty `.set()`, and the
+     * exception filter correctly turns that into a bare 500 (§8.3) — so a
+     * body whose every key the global `whitelist` pipe had stripped came back
+     * as "Internal server error". That is reachable from a form that submits
+     * with nothing changed, and it was how a tenant PATCH carrying only
+     * platform-only fields answered: the fields were correctly ignored and
+     * the response said the server had fallen over.
+     */
+    if (Object.keys(values).length === 0) {
+      return this.findById(id);
+    }
 
     const [updated] = await this.db
       .update(organizations)

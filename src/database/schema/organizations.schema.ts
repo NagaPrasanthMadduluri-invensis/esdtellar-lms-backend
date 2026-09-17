@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, integer, pgTable, serial, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { boolean, date, integer, numeric, pgTable, serial, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
  * A tenant. Every other table's `organization_id` points here, plus one
@@ -31,6 +31,37 @@ export const organizations = pgTable(
      * capability is granted.
      */
     permVersion: integer('perm_version').notNull().default(1),
+    /* ── Tenant profile & contract, added by 0026_tenant_profile.sql.
+           All nullable: an organization created before the console existed,
+           or one provisioned in a hurry, is still a valid tenant. ── */
+    industry: text('industry'),
+    region: text('region'),
+    /** Denormalised on purpose — the commercial contact is often not a user. */
+    contactName: text('contact_name'),
+    contactEmail: text('contact_email'),
+    contactPhone: text('contact_phone'),
+    contractStart: date('contract_start'),
+    /** What the renewal warning derives from. Never a stored status. */
+    contractEnd: date('contract_end'),
+    /** numeric, not float — this is money. */
+    contractValue: numeric('contract_value', { precision: 14, scale: 2 }),
+    /** One of `PLANS` in `common/tenant-account.ts`. */
+    plan: text('plan'),
+    /** One of `BILLING_CYCLES`. */
+    billingCycle: text('billing_cycle'),
+    /** Account-manager notes. Never shown to the tenant. */
+    notes: text('notes'),
+    /**
+     * Seats, added by `0028_seat_limits.sql`. NULL = unlimited, which is every
+     * tenant that predates it.
+     *
+     * A seat is an ACTIVE LEARNER — not every user row. Deactivated learners
+     * do not count (so freeing a seat by deactivating works, which is what an
+     * admin at the cap will try), and admins, managers and trainers are not
+     * seats at all. Enforced on learner create and reactivate; a limit that is
+     * only displayed is worse than none.
+     */
+    seatLimit: integer('seat_limit'),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -20,6 +20,7 @@ import { AssignJourneyDto } from './dto/assign-journey.dto';
 import {
   JourneyDto,
   ListJourneyLearnersQueryDto,
+  BulkJourneysDto,
   ListJourneysQueryDto,
   SetJourneyCoursesDto,
 } from './dto/journey.dto';
@@ -47,6 +48,22 @@ export class AdminJourneysController {
   @Permissions('manage_journeys')
   async create(@Body() dto: JourneyDto, @CurrentScope() scope: OrgScope) {
     return this.journeys.create(scope, dto);
+  }
+
+  /**
+   * Bulk activate / draft / archive / restore / delete.
+   *
+   * Declared BEFORE `@Get(':id')` and `@Put(':id')` below — Nest matches
+   * routes in declaration order, and `bulk` would otherwise be swallowed by
+   * the `:id` param route and arrive as a journey id of "bulk".
+   *
+   * 200, not 201: nothing was created.
+   */
+  @Post('bulk')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('manage_journeys')
+  async bulk(@Body() dto: BulkJourneysDto, @CurrentScope() scope: OrgScope) {
+    return this.journeys.bulk(scope, dto);
   }
 
   @Get(':id')

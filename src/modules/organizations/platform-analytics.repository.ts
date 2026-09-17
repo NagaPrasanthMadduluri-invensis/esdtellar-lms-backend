@@ -82,6 +82,53 @@ export class PlatformAnalyticsRepository {
         WHERE role = 'admin' AND is_active = 1
         GROUP BY organization_id
       ),
+      /*
+       * The tenant's OWNER -- a real account, read from the users table.
+       *
+       * NOTE: no backticks anywhere in this literal. It sits inside a tagged
+       * template, so one would open a JS substitution and the query would
+       * stop compiling -- which is exactly how this comment was first
+       * written, and 21 type errors is how it announced itself.
+       *
+       * The directory card used to print organizations.contact_name/email,
+       * free-text columns somebody types in. That is a fine place to record a
+       * procurement contact, and a terrible thing to label as who runs the
+       * account: nothing checks it, so it goes stale the day the person
+       * leaves and reads as fact forever. Who can actually administer this
+       * tenant is something the database already knows.
+       *
+       * r.portal = 'admin' is the right filter, and is NOT the same as
+       * users.role = 'admin' -- a trainer's role sits on the trainer portal,
+       * so trainers drop out here without being named.
+       *
+       * DISTINCT ON picks one per org: the seeded is_system admin role is the
+       * Owner -- the same derivation listPrivilegedAccounts uses for its
+       * level column, so there is one definition and not two -- then oldest
+       * account first, so the answer is stable between reads.
+       */
+      owner_admin AS (
+        SELECT DISTINCT ON (u.organization_id)
+               u.organization_id,
+               TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, ''))
+                                          AS admin_name,
+               u.email                    AS admin_email,
+               (r.is_system AND r.key = 'admin')
+                                          AS admin_is_owner,
+               -- How many admin-portal accounts this tenant has, counted over
+               -- the SAME filter that chose the name above. admin_counts uses
+               -- users.role instead; the two agree today and are kept in step
+               -- by the seed, but the card prints "+N more" right beside this
+               -- name and those two figures must not be able to disagree.
+               COUNT(*) OVER (PARTITION BY u.organization_id)::int
+                                          AS admin_portal_count
+          FROM users u
+          JOIN roles r ON r.id = u.role_id
+         WHERE r.portal = 'admin' AND u.is_active = 1
+         ORDER BY u.organization_id,
+                  (r.is_system AND r.key = 'admin') DESC,
+                  u.created_at,
+                  u.id
+      ),
       course_counts AS (
         SELECT organization_id, COUNT(*) AS courses
         FROM courses
@@ -129,6 +176,15 @@ export class PlatformAnalyticsRepository {
         o.is_platform AS is_platform,
         o.is_active  AS is_active,
         o.created_at AS created_at,
+        -- Tenant profile & contract (0026). Selected here rather than in a
+        -- second query because every platform screen that shows a count also
+        -- shows the account beside it.
+        o.industry, o.region,
+        o.contact_name, o.contact_email, o.contact_phone,
+        -- Who actually administers the tenant, from the users table.
+        oa.admin_name, oa.admin_email, oa.admin_is_owner, oa.admin_portal_count,
+        o.contract_start, o.contract_end,
+        o.contract_value, o.plan, o.billing_cycle, o.notes,
         COALESCE(lc.learners, 0)      AS learners,
         COALESCE(ac.admins, 0)        AS admins,
         COALESCE(cc.courses, 0)       AS courses,
@@ -138,6 +194,7 @@ export class PlatformAnalyticsRepository {
       FROM organizations o
       LEFT JOIN learner_counts    lc   ON lc.organization_id = o.id
       LEFT JOIN admin_counts      ac   ON ac.organization_id = o.id
+      LEFT JOIN owner_admin       oa   ON oa.organization_id = o.id
       LEFT JOIN course_counts     cc   ON cc.organization_id = o.id
       LEFT JOIN session_counts    sc   ON sc.organization_id = o.id
       LEFT JOIN completion_counts comp ON comp.organization_id = o.id
@@ -145,6 +202,53 @@ export class PlatformAnalyticsRepository {
       ${filter}
       ORDER BY o.id
     `;
+  }
+
+  /**
+   * Every privileged account across every tenant.
+   *
+   * CROSS-TENANT on purpose, behind `@PlatformAdmin()`. "Privileged" means an
+   * ADMIN-PORTAL role — the people who can change a tenant's content, users or
+   * settings. Learners, managers and trainers are deliberately out: this page
+   * answers "who can act on this account", not "who uses it", and a list of
+   * 20,000 learners would bury the four people it is about.
+   *
+   * `level` is DERIVED from the role, not stored. An organization's seeded
+   * `is_system` admin role is its Owner; any other admin-portal role is an
+   * Admin. Only those two, because only those two are enforced by anything —
+   * the reference's Billing and Auditor levels gate nothing here, and a level
+   * that gates nothing is the screen-that-lies failure §5.2.1 exists to
+   * prevent.
+   *
+   * `last_active` is the same GREATEST(completion, attempt) the org user
+   * directory uses (§10.12) — one definition of "active", not two.
+   */
+  async listPrivilegedAccounts(): Promise<PrivilegedAccountRow[]> {
+    return this.db.all<PrivilegedAccountRow>(sql`
+      SELECT u.id,
+             u.first_name, u.last_name, u.email,
+             u.is_active,
+             u.created_at                       AS granted_at,
+             o.id                               AS organization_id,
+             o.name                             AS organization_name,
+             o.is_platform                      AS is_platform_org,
+             r.key                              AS role_key,
+             r.label                            AS role_name,
+             r.is_system                        AS role_is_system,
+             CASE WHEN r.is_system AND r.key = 'admin' THEN 'owner'
+                  ELSE 'admin' END              AS level,
+             GREATEST(
+               (SELECT MAX(c.completed_at) FROM user_lesson_completions c
+                 WHERE c.user_id = u.id),
+               (SELECT MAX(a.submitted_at) FROM user_assessment_attempts a
+                 WHERE a.user_id = u.id)
+             )                                  AS last_active
+        FROM users u
+        JOIN organizations o ON o.id = u.organization_id
+        JOIN roles r         ON r.id = u.role_id
+       WHERE r.portal = 'admin'
+       ORDER BY o.name, level, u.first_name
+    `);
   }
 }
 
@@ -156,10 +260,49 @@ export interface OrganizationStatsRow {
   is_platform: boolean;
   is_active: number;
   created_at: string;
+  /* ── Tenant profile & contract (0026). Nullable throughout — an org
+        provisioned before the console existed is still a valid tenant. ── */
+  industry: string | null;
+  region: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  /* The tenant's real admin account, derived from `users` — never typed in.
+     Null only when an organization has no active admin-portal account at all,
+     which is itself worth showing rather than papering over. */
+  admin_name: string | null;
+  admin_email: string | null;
+  admin_is_owner: boolean | null;
+  admin_portal_count: number | null;
+  contract_start: string | null;
+  contract_end: string | null;
+  /** `numeric` comes back as a STRING from pg — never do maths on it raw. */
+  contract_value: string | null;
+  plan: string | null;
+  billing_cycle: string | null;
+  notes: string | null;
   learners: number;
   admins: number;
   courses: number;
   sessions: number;
   completions: number;
   minutes: number;
+}
+
+export interface PrivilegedAccountRow {
+  id: number;
+  first_name: string;
+  last_name: string;
+  email: string;
+  is_active: number;
+  granted_at: string;
+  organization_id: number;
+  organization_name: string;
+  is_platform_org: boolean;
+  role_key: string;
+  role_name: string;
+  role_is_system: boolean;
+  /** 'owner' | 'admin' — derived from the role, never stored. */
+  level: string;
+  last_active: string | null;
 }

@@ -13,6 +13,7 @@ import {
 } from '@/common/workforce';
 import { RolesService } from '@/modules/roles/roles.service';
 import { ActivityService } from '@/modules/activity/activity.service';
+import { SeatsService } from '@/modules/seats/seats.service';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import type {
@@ -44,6 +45,12 @@ export class UsersService {
      * throws), so no write here is wrapped in a try/catch of its own.
      */
     private readonly activity: ActivityService,
+    /**
+     * The seat limit. Injected so `create` and `setActive` can refuse before
+     * writing — the check that makes a limit real rather than a number on a
+     * screen. The SERVICE, never the repository (§3.2).
+     */
+    private readonly seats: SeatsService,
   ) {}
 
   async listLearners(scope: OrgScope) {
@@ -183,6 +190,11 @@ export class UsersService {
       throw new ConflictException('Email already in use');
     }
 
+    // The seat limit is checked HERE, before anything is written. A limit
+    // that is only displayed is decoration — worse than none, because it
+    // tells an admin they are capped while letting them past it.
+    await this.seats.assertSeatAvailable(scope);
+
     const learnerRole = await this.roles.roleByKey(scope, 'learner');
 
     const user = await this.repository.createLearner(scope, {
@@ -241,6 +253,11 @@ export class UsersService {
     actor?: AuthenticatedUser,
   ) {
     await this.assertMutableLearner(scope, userId);
+
+    // Reactivating consumes a seat, so it is checked too — otherwise an admin
+    // at the cap could deactivate one learner and reactivate two.
+    // Deactivating never is: freeing a seat must always be possible.
+    if (isActive) await this.seats.assertSeatAvailable(scope);
     const updated = await this.repository.setActive(scope, userId, isActive);
 
     await this.activity.record(scope, {

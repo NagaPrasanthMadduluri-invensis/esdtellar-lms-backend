@@ -38,6 +38,25 @@ export class PlatformAdminGuard implements CanActivate {
       .switchToHttp()
       .getRequest<AuthenticatedRequest>();
 
+    /*
+     * A SUPPORT SESSION is refused here explicitly, ahead of the ordinary
+     * check.
+     *
+     * It would fail that check anyway — the token's `organizationId` is the
+     * tenant's while impersonating — but the message matters. Landing on a
+     * bare "Forbidden" after clicking Billing, while a banner overhead says
+     * you are a platform admin, reads as a bug rather than as the boundary
+     * doing its job. It is also the one place to state the rule: inside a
+     * tenant you ARE that tenant, and nothing cross-tenant is reachable until
+     * you exit.
+     */
+    if (user?.impersonatorId) {
+      throw new ForbiddenException(
+        'You are signed in to a tenant. Exit the support session to return ' +
+          'to the platform console.',
+      );
+    }
+
     const isPlatformAdmin =
       !!user &&
       user.role === 'admin' &&

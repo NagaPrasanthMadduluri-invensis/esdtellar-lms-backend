@@ -10,7 +10,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-import { SERVICE_NAMES } from '@/common/edstellar-services';
+import { REQUEST_STATUSES, SERVICE_NAMES } from '@/common/edstellar-services';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -53,6 +53,37 @@ export class CreateServiceRequestDto {
 
 export class ListServiceRequestsDto {
   /** Paginated (§7.6). Requests accumulate for as long as the org exists. */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
+}
+
+/**
+ * Edstellar's reply. PLATFORM ONLY — there is deliberately no tenant-facing
+ * route that writes `status`, or a tenant could mark its own request
+ * "Proposal sent" and the field would mean nothing.
+ */
+export class RespondToRequestDto {
+  @IsIn(REQUEST_STATUSES, {
+    message: `status must be one of: ${REQUEST_STATUSES.join(', ')}`,
+  })
+  status!: string;
+
+  /** What the tenant's admin reads back on their own request. */
+  @IsOptional()
+  @MaxLength(1000, { message: 'response_note must be 1000 characters or fewer' })
+  @Transform(nullable)
+  response_note?: string | null;
+}
+
+/** Filters for the platform queue. */
+export class ListPlatformRequestsDto {
+  @IsOptional()
+  @IsIn(REQUEST_STATUSES, {
+    message: `status must be one of: ${REQUEST_STATUSES.join(', ')}`,
+  })
+  status?: string;
+
+  @IsOptional() @Type(() => Number) @IsInt() organization_id?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
 }

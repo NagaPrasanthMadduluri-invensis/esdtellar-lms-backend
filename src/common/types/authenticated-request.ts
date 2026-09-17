@@ -50,6 +50,31 @@ export interface JwtPayload {
    * the organization's and signs out everyone.
    */
   userPermVersion: number;
+  /**
+   * Set ONLY on a support-session token, minted by
+   * `POST /api/auth/impersonate` so a platform admin can work inside a
+   * tenant's account.
+   *
+   * The token carries the TENANT USER's identity — their `userId`,
+   * `organizationId`, role and permissions — so every query behaves exactly
+   * as if that person had logged in, and nothing downstream has to learn
+   * about impersonation. These two claims are what say the session is not
+   * really theirs:
+   *
+   *   * `PlatformAdminGuard` refuses every platform route while they are set,
+   *     so a support session cannot reach billing or another tenant;
+   *   * the admin shell renders a permanent banner off them, because the one
+   *     genuinely dangerous outcome is a super admin forgetting whose account
+   *     they are in;
+   *   * `POST /api/auth/exit-impersonation` reads `impersonatorId` to get
+   *     back — and re-checks that the person is still a platform admin rather
+   *     than trusting the claim.
+   *
+   * A support token is deliberately short-lived (`IMPERSONATION_TTL_SECONDS`)
+   * rather than carrying the normal multi-day lifetime.
+   */
+  impersonatorId?: number;
+  impersonatorName?: string;
   /** Expiry, seconds since epoch. */
   exp: number;
 }

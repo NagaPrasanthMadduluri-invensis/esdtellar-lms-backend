@@ -18,6 +18,19 @@ export const ACTIVITY_TYPES = {
   user_updated: { label: 'User updated', group: 'users' },
   user_deactivated: { label: 'User deactivated', group: 'users' },
   user_reactivated: { label: 'User reactivated', group: 'users' },
+  /*
+   * A platform admin opened a support session inside this tenant.
+   *
+   * Written into the TENANT's feed, not ours. Edstellar entering a customer's
+   * account is the customer's business, and a support tool that leaves no
+   * trace on the side being supported is the kind nobody should have to take
+   * on trust. Its own type rather than a reused one, so the label is accurate
+   * and the row can be found later.
+   */
+  support_session_started: {
+    label: 'Edstellar support signed in',
+    group: 'users',
+  },
 
   course_created: { label: 'Course created', group: 'content' },
   course_updated: { label: 'Course updated', group: 'content' },

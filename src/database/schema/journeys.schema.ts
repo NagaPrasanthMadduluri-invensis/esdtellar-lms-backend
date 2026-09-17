@@ -32,6 +32,14 @@ export const journeys = pgTable(
      * path are not worth the same. */
     pointsBonus: integer('points_bonus').notNull().default(200),
     isActive: integer('is_active').notNull().default(1),
+    /**
+     * Archive — a THIRD state, orthogonal to active/draft, added by
+     * `0023_journey_archive.sql`. NULL means live. An archived path keeps its
+     * `isActive` so restoring returns it to what it was, and keeps every
+     * enrolment: archiving hides it from the builder and the assign picker, it
+     * does not withdraw anybody mid-path.
+     */
+    archivedAt: timestamp('archived_at', { mode: 'string', withTimezone: true }),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -41,6 +49,11 @@ export const journeys = pgTable(
   },
   (table) => [
     index('idx_journeys_org_active').on(table.organizationId, table.isActive),
+    index('idx_journeys_org_archived').on(
+      table.organizationId,
+      table.archivedAt,
+      table.createdAt.desc(),
+    ),
   ],
 );
 

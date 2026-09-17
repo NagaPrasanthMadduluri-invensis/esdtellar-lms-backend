@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { SeatsModule } from '@/modules/seats/seats.module';
+
 import { ActivityModule } from '@/modules/activity/activity.module';
 import { ReportsModule } from '@/modules/reports/reports.module';
 import { RolesModule } from '@/modules/roles/roles.module';
@@ -15,7 +17,7 @@ import { UsersService } from './users.service';
  * this one.
  */
 @Module({
-  imports: [ActivityModule, ReportsModule, RolesModule],
+  imports: [ActivityModule, ReportsModule, RolesModule, SeatsModule],
   controllers: [UsersController, EmployeesController],
   providers: [UsersService, UsersRepository],
   exports: [UsersService],

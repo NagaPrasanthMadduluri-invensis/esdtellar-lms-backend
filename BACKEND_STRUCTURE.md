@@ -585,6 +585,414 @@ Update this table with every module you move.
 | admin analytics page + reports builder (group / individual / comparison) | 6 | `server/src/modules/reports` |
 | course authoring (course-level lessons, staged/link, assessment placement) | 3 | `server/src/modules/courses` |
 | edstellar services (catalogue requests, org-scoped) | 3 | `server/src/modules/services` |
+| platform service queue (cross-tenant, respond) | 3 | `server/src/modules/services` |
+| tenant directory + access control (platform) | 3 | `server/src/modules/organizations` |
+| billing — invoices and payments (platform) | 7 | `server/src/modules/billing` |
+| seats — limit, usage, requests (tenant + platform) | 6 | `server/src/modules/seats` |
+
+### 10.17 The super-admin portal: tenants, money, seats
+
+Five capabilities behind `@PlatformAdmin()`, plus one tenant-facing controller.
+Migrations `0026_tenant_profile.sql`, `0027_billing.sql`, `0028_seat_limits.sql`
+— read each file's header first; the reasoning is there and is not repeated
+here.
+
+```
+GET   /platform/service-requests            every tenant's requests, pending first
+GET   /platform/service-requests/:id
+PATCH /platform/service-requests/:id        move it along + the note the tenant reads
+
+GET   /platform/organizations/tenants       directory: profile, contract, usage, money
+PATCH /platform/organizations/:id           patch a tenant (omitted = leave alone)
+GET   /platform/organizations/access        every privileged account, every tenant
+
+GET/POST/PATCH/DELETE /platform/billing/invoices[/:id]
+POST   /platform/billing/invoices/:id/payments
+DELETE /platform/billing/invoices/:id/payments/:paymentId
+
+GET   /platform/seats/requests               the queue
+PATCH /platform/seats/requests/:id           approve/decline — approving WRITES the limit
+PUT   /platform/seats/organizations/:id      set a limit directly
+
+GET   /admin/seats            the tenant's own usage       (view_employees)
+GET   /admin/seats/requests   usage + its own history      (view_employees)
+POST  /admin/seats/requests   ask for more                 (manage_users)
+```
+
+**The platform service queue was built by ADDING a controller, never by
+widening the tenant's.** §10.14 says a status write on
+`/admin/services/requests` would let a tenant mark its own request "Proposal
+sent"; that still holds. `PlatformServicesController` is a second controller
+over the same service, and the repository grew `listAllForPlatform` /
+`findByIdForPlatform` / `respond` beside — never instead of — the org-scoped
+reads. Verified: the tenant reads the platform's note back, and a tenant admin
+gets 403 on the platform route.
+
+**Contract state is derived, invoice state is derived, seat pressure is
+derived.** `common/tenant-account.ts` turns `contract_end` into
+`none | active | expiring | expired` with `RENEWAL_WARNING_DAYS = 60`;
+`common/billing.ts` turns an invoice's dates and payments into
+`draft | issued | part_paid | paid | overdue | void`. Neither is stored, for the
+reason §10.7 gives for a session's `display_status`: storing them needs
+something to run at midnight, and if it ever failed the stored value would
+contradict the dates printed beside it. The browser never recomputes either —
+it renders what the API sends, so there is one definition of "expiring".
+
+**Money is `numeric`, and pg hands it back as a STRING.** Every read converts
+once at the service boundary (`BillingService.shape`, `listTenants`), never
+with arithmetic on the raw value, and per-tenant totals are rounded to paise
+once at the end — summing already-rounded floats is how a total drifts from
+its own rows. `contract_value` stays null when there is no contract rather than
+becoming 0: "no contract recorded" and "a contract worth nothing" are different
+facts.
+
+**`organizations.listTenants()` gets its money from `BillingService`, not a
+second query.** §3.2 — the module, never its repository — so the directory and
+the invoices page cannot disagree about what "collected" means.
+
+**A seat is an ACTIVE LEARNER, and the limit is ENFORCED.** `UsersService`
+calls `assertSeatAvailable()` in `create()` and in `setActive()` *only when
+activating*, and it throws 409 with a message naming the number and the way
+out. A limit that is displayed but not enforced is decoration and worse than
+none — it tells an admin they are capped while letting them past it. Verified:
+creating a learner at the cap is refused, deactivating frees a seat,
+reactivating is gated again.
+
+**Approving a seat request WRITES `organizations.seat_limit`.** An approval
+that only moved a status would leave the tenant still capped while being told
+they were not. `approved_seats` may differ from `requested_seats` — the
+platform can grant 40 against a request for 50 and the tenant sees both — and
+granting fewer than the tenant had in use when they asked is refused with a
+422. Verified end to end through the real UI: approve-30-of-40 moved the
+tenant's limit from 20 to 30 on the next read.
+
+Four refusals on the billing side, each because the alternative corrupts a
+ledger rather than merely annoying somebody:
+
+| Refused | Why |
+|---|---|
+| a payment over the outstanding amount | almost always a typo or a payment booked against the wrong invoice |
+| lowering an invoice below what is already paid | `outstanding` goes negative and the state reads "paid" for an amount nobody agreed |
+| deleting an invoice with payments | the cascade takes the payment rows, erasing the record that somebody paid. Void it instead |
+| a due date before the issue date | on create and on update, against the MERGED state |
+
+#### My profile, and a tenant's own organization settings
+
+Two pairs of routes behind the top-bar avatar, added by
+`0029_profile_and_org_settings.sql`.
+
+```
+GET   /api/auth/profile          the caller's own record      (any role)
+PATCH /api/auth/profile          edit it                      (any role)
+GET   /api/admin/organization    the caller's OWN org         (admin)
+PATCH /api/admin/organization    name / industry / region     (manage_organization)
+```
+
+**`UpdateProfileDto` is narrow, and the omissions are the design.** Read its
+docblock before adding a field:
+
+- **`email`** is the login identity. Changing it needs a uniqueness check and,
+  more to the point, verification by somebody other than the person making it.
+- **`department`** is an AUTHORISATION boundary, not a label. A Manager's row
+  scope IS their department (`specs/rbac.md` decision 3), so a learner who
+  could set their own would choose which manager sees them, and could move out
+  of view entirely. This is the one that would have been easy to wave through.
+- **`role`, `role_id`, `is_active`** are not in the DTO and not in the
+  repository's signature. The narrowness is the safety, not a check upstream.
+
+`job_level` and `location` ARE self-editable and are validated against
+`common/workforce.ts` with the same `@IsIn` the admin's user form uses — one
+rule whichever screen sent it.
+
+**`AdminOrganizationController` takes no id.** Its org comes from
+`@CurrentScope()`, minted from the verified JWT, so unlike the
+`@PlatformAdmin()` controller beside it there is no path parameter for an org
+admin to point somewhere else. The READ is open to the admin audience; the
+WRITE carries `manage_organization`, so an org can define a restricted admin
+role that manages users without being able to rename the company.
+
+The GET returns the contract, plan, billing cycle and seat limit READ-ONLY.
+The customer signed the contract and is entitled to see its terms without
+asking; they are not entitled to rewrite them, and a tenant raising its own
+seat cap would make the enforcement decorative. `UpdateOrgSettingsDto` carries
+three fields and `updateOwnOrganization` passes them one by one rather than
+spreading, so widening the DTO can never silently widen what a tenant may
+write to its own row. Verified: a tenant PATCH naming `plan`, `slug`,
+`contractEnd`, `seatLimit` and `isActive` changed none of them.
+
+**`manage_organization` is the third catalogue addition to ship with its own
+grant migration** (after 0016 and 0022) — read 0022's header for why the
+backfill is safe. It bumps `perm_version`, so deploying it signs every
+organization out once, deliberately.
+
+**`phone` was added; `manager` was not.** A phone number is a fact nothing has
+to interpret. A manager is not: there is no reporting line in this product — a
+Manager's scope is a department, not a set of direct reports — so a
+`manager_id` would render as "—" forever, the empty-column failure §10.12
+records for the three report types left out of the builder.
+
+**A patch that names nothing is now a READ, not a 500.** Drizzle throws "No
+values to set" on an empty `.set()`, which the filter correctly masks as
+"Internal server error" (§8.3). That was reachable two ways: a form submitted
+with nothing changed, and a tenant PATCH whose every key the global
+`whitelist` pipe had stripped — so the fields were correctly ignored and the
+response said the server had fallen over.
+`OrganizationsRepository.update` returns the current row instead.
+
+#### Provisioning a tenant, and support sessions
+
+**`POST /platform/organizations` creates the organization, its three system
+roles AND its first admin — in one transaction.** The admin is required, not a
+second step. `users.role_id` is NOT NULL and must name a role in the same org,
+so an org with no roles could never be populated (the bug §3.7 already
+records); an org WITH roles but no admin is the next version of the same
+problem — a tenant nobody can sign into, which the directory now renders as a
+warning and the support-session button refuses. Doing it in the transaction is
+what makes that a guarantee rather than an intention: there is no window where
+the org exists and the account does not, and no compensating delete to get
+wrong. Slug and email conflicts are checked BEFORE the write, so the caller
+gets a sentence rather than a constraint violation.
+
+`@IsDefined()` on the nested `admin` block is load-bearing:
+`@ValidateNested()` alone skips an undefined value, so a body with no `admin`
+key passed validation and the service then dereferenced `dto.admin.email` —
+a TypeError, correctly masked as a bare 500 (§8.3). A missing required field
+must never reach the service.
+
+Profile, contract and seat limit are accepted at creation but written
+AFTER the transaction, deliberately: they are optional, and a mistyped date
+must not cost the tenant its admin account. The seat limit goes through
+`SeatsService.setLimit`, never a second UPDATE here — one writer for that
+column.
+
+**There is no delete-tenant route, and `users.organization_id` has no
+cascade.** Removing an organization means removing its people first. That is
+the right default for a table holding somebody's learning history; if a delete
+is ever needed it should be a reviewed script, not a button.
+
+**`POST /api/auth/impersonate` opens a SUPPORT SESSION inside a tenant.**
+
+It lives on the auth controller because what it does is mint a token and set a
+cookie, and because `OrganizationsModule` importing `AuthModule` would be a
+cycle (`AuthService` already depends on `OrganizationsService`).
+
+The token carries the TENANT'S OWNER ADMIN identity — their `userId`,
+`organizationId`, role and permissions — so every screen and query behaves
+exactly as if that person had signed in. Nothing downstream learns about
+impersonation, which is what keeps the feature at one method instead of a
+predicate threaded through the codebase. The alternative (keeping the platform
+admin's own `userId` with the tenant's org) was considered and rejected: a
+great many queries assume the acting user belongs to the org being acted on,
+and the payoff would have been a more truthful `actor_user_id` on a table
+§10.12 already states is not an audit trail.
+
+Five things make it accountable rather than a back door, and none is optional:
+
+| | |
+|---|---|
+| Only `@PlatformAdmin()` reaches it | a tenant admin gets 403; verified |
+| `impersonatorId` / `impersonatorName` ride on the token | the shell's banner, the platform refusal and the way back all read from them |
+| It expires in **one hour** (`IMPERSONATION_TTL_SECONDS`) | and the cookie's Max-Age follows the token, or the browser keeps sending a credential the server has stopped accepting |
+| `PlatformAdminGuard` refuses **every** platform route while it is set | inside a tenant you ARE that tenant. Explicit, ahead of the org check, because a bare "Forbidden" under a banner saying you are a platform admin reads as a bug |
+| The TENANT is told | a `support_session_started` entry in THEIR activity feed. Support entering a customer's account is the customer's business |
+
+The activity write is best-effort (§8.4) and therefore cannot be the record —
+which is exactly why `AuthService` also logs both start and end at `warn`
+unconditionally.
+
+`POST /api/auth/exit-impersonation` is deliberately NOT `@PlatformAdmin()`:
+that guard would refuse the one request whose purpose is getting back. The
+claim says who to return to; the **row** says whether they may — the account is
+re-read and re-checked to still be an active platform admin, so a support token
+cannot outlive the permission that created it.
+
+Refused, all verified: a second hop without exiting first, the platform
+organization itself, an organization with no active admin account, a tenant
+admin calling it at all, and exiting when not in a session.
+
+**The tenant card names a REAL admin, read from `users` — never a typed-in
+contact.** The first version printed `organizations.contact_name` /
+`contact_email`, free-text columns somebody fills in, and the demo rows had
+been populated from the reference mock — so the directory confidently named
+two people who do not have accounts. Nothing checked them, so nothing could
+have caught it.
+
+`listOrganizationStats` now carries an `owner_admin` CTE: `DISTINCT ON
+(organization_id)` over admin-portal accounts, Owner first, then oldest, so
+every tenant resolves to one real account. Three things it gets right that a
+hand-rolled version would not:
+
+- **`r.portal = 'admin'`, not `users.role = 'admin'`.** A trainer's role sits
+  on the `trainer` portal, so trainers drop out without being named. The two
+  columns agree in the seed today, which is exactly why the difference is worth
+  writing down rather than relying on.
+- **Owner is the SAME derivation `listPrivilegedAccounts` uses** for its
+  `level` column (`r.is_system AND r.key = 'admin'`). One definition, so
+  Access Control and the directory cannot name different owners.
+- **`admin_portal_count` is a window count over that same filter**, because the
+  card prints "+N more admin" immediately beside the name. `admin_counts`
+  counts `users.role` instead and feeds the platform totals; leaving the card
+  to mix the two would let one number contradict the other standing next to it.
+
+`contact_*` survives as what it always should have been — an OPTIONAL billing
+or procurement contact, rendered separately and labelled, shown only when
+somebody has actually recorded one. The mock values were cleared from the
+database in the same change.
+
+A tenant with no active admin-portal account renders a warning rather than an
+empty row: an organization nobody can administer is a fact the super admin
+needs, not a cosmetic gap.
+
+**Access Control has exactly two levels, and they are DERIVED from the RBAC
+role** — `CASE WHEN r.is_system AND r.key = 'admin' THEN 'owner' ELSE 'admin'`.
+No new column, no third vocabulary beside `users.role` and the RBAC role. The
+owner agreed to Owner/Admin only, and a level with nothing enforcing it would
+be §5.2.1's screen that lies.
+
+#### A sixth and seventh shape bug, same family
+
+`ServicesRepository.getForPlatform` passed a raw-SQL row through `shape()`,
+which expects Drizzle camelCase — the dialog rendered
+`RAISED BY undefined · undefined`. It now returns the row directly, with a
+comment saying raw SQL needs no shaping.
+
+`SeatsRepository.create` and `.respond` were Drizzle `.returning()` calls
+(camelCase) in a repository whose every read is raw SQL (snake_case), so the
+row a tenant got back from `POST /admin/seats/requests` named every field
+differently from the rows it got from `GET`. Both are raw SQL now, and the fix
+was verified by diffing the key sets of the two responses. That is the §10.10
+defect for the seventh time; the rule stands and is worth restating:
+
+> When a repository mixes Drizzle `.select()` / `.returning()` with raw SQL,
+> assume the two casings disagree until you have checked.
+
+Two smaller ones fixed alongside: `roles` has no `name` column (it is `label`),
+and `listPrivilegedAccounts` was written outside the class body (TS1434).
+
+### 10.15 Archive, everywhere it belongs
+
+`0023_journey_archive.sql` and `0024_session_archive.sql` give Learning Paths
+and Live Sessions the `archived_at` column Course Library got in 0019. All
+three follow one rule, stated once here rather than three times:
+
+> Archive is a THIRD state, orthogonal to the row's own status. It is
+> `archived_at`, never an extra value of `is_active` / `status`, because an
+> archived row has to remember what it was so restoring returns it there
+> rather than to a guess. The list never mixes the two sets — the flag SWAPS
+> them — because an archived item appearing in a picker is the thing archiving
+> exists to prevent.
+
+Each gained a `POST .../bulk` route taking `{ ids, action }` and reporting
+`{ affected, requested, action }`. Ids that fail the predicates are simply not
+affected and the count says so, rather than the request erroring on the first
+one — the shape `POST /admin/courses/bulk` already used.
+
+The predicates differ, and each difference is a rule:
+
+| Module | Action | Guard |
+|---|---|---|
+| Learning Paths | activate | `archived_at IS NULL` — publishing something meant to be out of circulation contradicts the archive |
+| Learning Paths | all | `organization_id` (not `contentScope`) — a platform-owned path is not a tenant's to change |
+| Live Sessions | cancel | `status <> 'completed'` — cancelling one would contradict attendance already credited against it |
+| Live Sessions | delete | routed through `remove()` per id, NOT a set-based DELETE |
+
+That last one matters. A session IS a course assignment (§10.7), so deleting
+one cascades into its companion training course, its roster, its attendance and
+every completion it credited — real learning history. `remove()` is the one
+place that sequence is correct, so the bulk path calls it per id and counts
+what succeeded. The UI's confirm dialog spells the cascade out and points at
+archive as the reversible alternative.
+
+**Sessions are org-OWNED, so `orgScope` is the whole predicate** — unlike
+courses and paths there is no platform-owned session to exclude. Paths are
+CONTENT (`contentScope` to read) whose enrolments are ACTIVITY (`orgScope` to
+count), and `listForAdmin`'s new completion and score subqueries each carry
+their own `orgScope` for the reason §10.12 records at length.
+
+`idList()` now exists in three repositories — courses, journeys, sessions — all
+for one Drizzle quirk: an array expands to a ROW constructor, so `id IN (...)`
+becomes `IN ((1,2,3))` and Postgres rejects it. Worth lifting into
+`database/` the next time a fourth is needed.
+
+#### The Learning Paths builder was a mock
+
+Worth recording, because it is the sharpest example of the failure §5.2.1
+describes. `admin-journeys-content.jsx` was built entirely on a hardcoded
+`SEED_JOURNEYS` array: **zero API calls**, while eleven working endpoints sat
+behind it and `journeys` held zero rows in every environment. An admin could
+fill in the form, watch a card appear, and lose it on the next refresh.
+
+The page is now wired to those endpoints, so the primary fix was connecting it,
+not restyling it. The route stays `/admin/journeys` while the label becomes
+"Learning paths" — renaming the URL would break bookmarks and would disagree
+with the API's own resource name.
+
+### 10.16 Session batches, self-enrolment and the waitlist
+
+`0025_session_batches.sql` completes Live Sessions against the reference. Read
+the migration header before changing any of it — the whole design rests on one
+decision.
+
+**A BATCH IS NOT A COURSE.** §10.7 gives every session exactly one companion
+training course, and that is what lets My Courses, hours, completion, the
+leaderboard and certificates pick a session up through definitions that already
+work. Modelling multi-batch as one course per batch would have meant
+"completed" no longer meaning 100% of one course, two learners on the same
+session holding different certificates, and moving somebody between batches
+silently withdrawing one training and granting another.
+
+So a batch is a **scheduling subdivision of one session's roster**. The session
+still owns one training course. `session_roster.batch_id` says which sitting a
+learner is in; `session_attendance` keeps its `(session, user)` shape, because a
+learner attends exactly one batch and the pair is still unique — which is why
+`syncCompletions` and every completion rule in §10.7 are untouched here.
+
+**Batches are OPTIONAL, and that is what made it safe.** A session with no
+batch rows is a single sitting using its own date, time and capacity — which is
+every session that predates the table. The staged-lesson pattern from 0020
+applied again: the new column is NULL everywhere, no backfill, and none of the
+eleven session handlers needed rewriting.
+
+`pending` is **derived, never stored**: a batch with no date yet is pending.
+Storing it too would let the two disagree, the same reason `display_status` is
+derived on the session itself.
+
+**The waitlist is its own table, not a status on the roster.** A waitlisted
+person is not enrolled: no `user_course_assignments` row, not in My Courses, not
+in the roster count, not creditable by attendance. A flag on `session_roster`
+would mean every one of those queries needing a new predicate, and the first to
+forget would enrol somebody still queuing.
+
+`promoteFromWaitlist` goes through `addToRoster`, never a direct insert —
+adding someone to a roster is what creates their course assignment (§10.7), so
+a hand-written roster row would enrol them in name only. The waitlist row is
+deleted only AFTER the roster write succeeds: losing a place in the queue to a
+failed enrolment is the worse outcome. Verified — promoting a learner moved the
+waitlist 1→0, the roster 8→9, and created the training-course assignment.
+
+Routes added:
+
+```
+POST   /api/admin/sessions/:id/batches           create a sitting
+PUT    /api/admin/sessions/batches/:batchId      edit one
+DELETE /api/admin/sessions/batches/:batchId      delete (roster falls back to no sitting)
+PUT    /api/admin/sessions/:id/roster/batch      move a learner between sittings
+GET    /api/admin/sessions/:id/waitlist          the queue, arrival order
+POST   /api/admin/sessions/:id/waitlist/:userId/promote
+DELETE /api/admin/sessions/:id/waitlist/:userId
+```
+
+The two roster-affecting ones carry `manage_session_roster`, not
+`manage_sessions` — moving people and promoting them are roster writes, which
+rbac.md §3.6.1 deliberately keeps separate from editing the session.
+
+Deleting a batch is `ON DELETE SET NULL` on `session_roster.batch_id`: the
+people in it stay on the session, unassigned to a sitting, and the admin
+re-assigns them. Same choice 0020 made for lessons losing their module, and the
+API says so in its response rather than leaving the admin to discover it.
+
+`listBatchesForSessions` and `waitlistCounts` are **two queries for the whole
+page**, not two per card (§7.1) — a list of 40 sessions costs 4 round trips.
 
 ### 10.14 Edstellar Services
 

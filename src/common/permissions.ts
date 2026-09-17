@@ -96,6 +96,17 @@ export const PERMISSIONS = {
   // sales team. An org may well want its content admins building courses
   // without being able to open a commercial conversation on its behalf.
   request_services: 'Request Edstellar services',
+
+  // Renaming the organization, and its industry/region. Separate from
+  // `manage_users` because adding a person and renaming the company are
+  // different jobs at different levels, and a restricted admin role should be
+  // able to hold the first without the second.
+  //
+  // It deliberately does NOT cover the contract, the plan, the billing cycle
+  // or the seat limit. Those are `@PlatformAdmin()` only — a tenant editing
+  // its own commercial terms, or raising its own seat cap, would make both
+  // meaningless.
+  manage_organization: 'Edit organization settings',
 } as const;
 
 /** Every valid permission id. */

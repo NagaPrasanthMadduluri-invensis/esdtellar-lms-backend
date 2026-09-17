@@ -1,5 +1,7 @@
 import { Transform, Type } from 'class-transformer';
+import { BATCH_STATUSES, ENROLL_MODES } from '@/common/session-enrolment';
 import {
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsIn,
@@ -7,6 +9,7 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
@@ -40,6 +43,17 @@ export class SessionDto {
   @MinLength(1, { message: 'title is required' })
   @Transform(trim)
   title!: string;
+
+  /**
+   * `assigned` (an admin adds people) or `self` (learners enrol themselves,
+   * and queue on the waitlist once it is full). Omitted keeps whatever the
+   * session already had; a new session defaults to `assigned`.
+   */
+  @IsOptional()
+  @IsIn(ENROLL_MODES, {
+    message: `enroll_mode must be one of: ${ENROLL_MODES.join(', ')}`,
+  })
+  enroll_mode?: string;
 
   @IsOptional() @IsIn(['ILT', 'Virtual']) session_type?: 'ILT' | 'Virtual';
 
@@ -135,4 +149,50 @@ export class SaveAttendanceDto {
 
   /** `true` finalises the record — the UI refuses further edits afterwards. */
   @IsOptional() @IsBoolean() lock?: boolean;
+}
+
+/** Bulk action over a selection of sessions, from the list's action bar. */
+export class BulkSessionsDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'ids: select at least one session' })
+  @Type(() => Number)
+  @IsInt({ each: true, message: 'ids must be integers' })
+  ids!: number[];
+
+  @IsIn(['cancel', 'archive', 'restore', 'delete'], {
+    message: 'action must be one of: cancel, archive, restore, delete',
+  })
+  action!: 'cancel' | 'archive' | 'restore' | 'delete';
+}
+
+/**
+ * A batch — one sitting of a session.
+ *
+ * `date` may be null: a batch can be created before its date is fixed, which
+ * is the derived `pending` state. `status` never carries `pending` for that
+ * reason (`common/session-enrolment.ts`).
+ */
+export class SessionBatchDto {
+  @IsOptional() @MaxLength(80) @Transform(nullable) label?: string | null;
+  @IsOptional() @Transform(nullable) date?: string | null;
+  @IsOptional() @Transform(nullable) start_time?: string | null;
+  @IsOptional() @Transform(nullable) end_time?: string | null;
+
+  /** Null falls back to the session's own capacity. */
+  @IsOptional() @IsInt() @Min(1) capacity?: number | null;
+  @IsOptional() @IsInt() trainer_user_id?: number | null;
+
+  @IsOptional()
+  @IsIn(BATCH_STATUSES, {
+    message: `status must be one of: ${BATCH_STATUSES.join(', ')}`,
+  })
+  status?: string;
+}
+
+/** Move one rostered learner between sittings. `batch_id: null` unassigns. */
+export class MoveToBatchDto {
+  @IsInt({ message: 'user_id must be an integer' })
+  user_id!: number;
+
+  @IsOptional() @IsInt() batch_id?: number | null;
 }
