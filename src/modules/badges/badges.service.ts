@@ -10,6 +10,7 @@ import {
 } from '@/common/badges';
 import type { OrgScope } from '@/database/org-scope';
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
+import { FeedbackService } from '@/modules/feedback/feedback.service';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 
 import { badgeHint } from './badge-hint.util';
@@ -42,6 +43,8 @@ export class BadgesService {
     private readonly leaderboard: LeaderboardService,
     /** Best-effort (§8.4) — `notify` cannot throw. */
     private readonly notifications: NotificationsService,
+    /** Counts this learner's session feedback for `feedback_hero` (0032). */
+    private readonly feedback: FeedbackService,
   ) {}
 
   /**
@@ -72,18 +75,20 @@ export class BadgesService {
     userId: number,
     knownPoints?: number,
   ): Promise<BadgeStatsValues> {
-    const [row, points] = await Promise.all([
+    const [row, points, feedbackCount] = await Promise.all([
       this.repository.getStats(scope, userId),
       knownPoints !== undefined ? Promise.resolve(knownPoints) : this.pointsFor(scope, userId),
+      this.feedback.countByUser(userId),
     ]);
 
     return {
       completedCourses: Number(row.completed_courses),
       completedBeforeDue: Number(row.completed_before_due),
       maxAssessmentScore: Number(row.max_assessment_score),
-      // No feedback table exists yet — carried over unchanged from the
-      // derive-on-read code, which also always read 0 here.
-      feedbackCount: 0,
+      // Real since 0032. This was hardcoded to 0 from the derive-on-read
+      // code onwards, which made `feedback_hero` unearnable by anybody —
+      // a badge in the catalogue that no amount of work could unlock.
+      feedbackCount,
       points,
       journeysCompleted: Number(row.journeys_completed),
     };

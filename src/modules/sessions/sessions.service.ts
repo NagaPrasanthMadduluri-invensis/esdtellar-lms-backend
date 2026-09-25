@@ -290,6 +290,28 @@ export class SessionsService {
 
   async create(scope: OrgScope, dto: SessionDto, actor?: AuthenticatedUser) {
     await this.assertCourseInScope(scope, dto.course_id);
+
+    /*
+     * A NEW session must name a real trainer account.
+     *
+     * Enforced here rather than on the DTO because `SessionDto` is shared
+     * with `update()`, and sessions created before trainer accounts existed
+     * carry a typed name with no link. Requiring it on edit would make fixing
+     * a venue typo on one of those impossible without also reassigning its
+     * trainer — a rule that punishes the wrong person for old data.
+     *
+     * The message names the way out, because the fix is on a different screen
+     * and an admin staring at a refused form should not have to guess it.
+     */
+    if (!dto.trainer_user_id) {
+      throw new UnprocessableEntityException(
+        'A session needs a trainer account. Pick one from the Trainer list — ' +
+          'if it is empty, add a trainer from Manage Users first. Linking the ' +
+          'account is what puts the session in their portal, where attendance ' +
+          'is marked.',
+      );
+    }
+
     const trainer = await this.resolveTrainer(scope, dto.trainer_user_id);
     // Derived, not trusted: when a trainer account is linked, the display name
     // is that account's name, so the column and the link cannot drift apart.

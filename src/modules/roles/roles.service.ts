@@ -14,6 +14,8 @@ import {
 import type { OrgScope } from '@/database/org-scope';
 
 import type { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
+import { SeatsService } from '@/modules/seats/seats.service';
+
 import { RolesRepository } from './roles.repository';
 
 /**
@@ -37,7 +39,33 @@ import { RolesRepository } from './roles.repository';
  */
 @Injectable()
 export class RolesService {
-  constructor(private readonly repository: RolesRepository) {}
+  constructor(
+    private readonly repository: RolesRepository,
+    /**
+     * A role change can CREATE a seat holder. Moving somebody onto a
+     * learner-portal role is the same commercial event as creating a learner,
+     * and until this dependency existed it was the one way past the cap.
+     */
+    private readonly seats: SeatsService,
+  ) {}
+
+  /**
+   * Resolve a role the caller named by id, for putting somebody on it.
+   *
+   * 404 rather than 422 when it belongs to another organization, the same
+   * choice `assign` makes: a role id from another tenant must not be
+   * distinguishable from one that does not exist.
+   */
+  async roleForAssignment(scope: OrgScope, roleId: number) {
+    const role = await this.repository.findById(scope, roleId);
+    if (!role) throw new NotFoundException('Role not found');
+    return {
+      id: Number(role.id),
+      key: role.key,
+      label: role.label,
+      portal: role.portal,
+    };
+  }
 
   /** The catalogue this build enforces. Code, not data — see §3.2. */
   catalogue() {
@@ -240,6 +268,55 @@ export class RolesService {
     // 404 rather than 422: a role id from another organization must not be
     // distinguishable from one that does not exist.
     if (!role) throw new NotFoundException('Role not found');
+
+    const current = await this.repository.findUserRole(scope, userId);
+    if (!current) throw new NotFoundException('User not found');
+
+    // Nothing to do, and saying so beats a pointless perm_version bump that
+    // would sign the person out for no change (§3.6).
+    if (Number(current.role_id) === Number(role.id)) {
+      return {
+        ok: true,
+        unchanged: true,
+        role: { id: Number(role.id), key: role.key, portal: role.portal },
+      };
+    }
+
+    /*
+     * MOVING ONTO A LEARNER ROLE COSTS A SEAT, and this used to be the hole
+     * in the cap. A seat is an active learner (`0028`), so an organization at
+     * its limit could convert a trainer or an admin into a learner and go
+     * past a number `UsersService.create` refuses to let them past. A limit
+     * enforced on one path and not the other is worse than none: it tells an
+     * admin they are capped while leaving a door open beside the sign.
+     *
+     * Only when they are ACTIVE and not already a learner — deactivated
+     * people hold no seat, and a learner staying a learner frees and takes
+     * the same one.
+     */
+    const becomesLearner =
+      role.portal === 'learner' && current.role !== 'learner';
+    if (becomesLearner && current.is_active === 1) {
+      await this.seats.assertSeatAvailable(scope);
+    }
+
+    /*
+     * AN ORGANIZATION MUST KEEP AN ADMIN. Moving the last active admin-portal
+     * account onto another portal leaves a tenant nobody can administer —
+     * the state the tenant directory renders as a warning and the support
+     * session refuses to enter. Provisioning guarantees an org is CREATED
+     * with an admin (§10.17); this is what stops one being edited away.
+     */
+    if (current.role === 'admin' && role.portal !== 'admin') {
+      const remaining = await this.repository.countActiveAdmins(scope, userId);
+      if (remaining === 0) {
+        throw new ConflictException(
+          'This is the only active admin in the organization. Give somebody ' +
+            'else an admin role first — an organization with no admin cannot ' +
+            'be signed into or managed.',
+        );
+      }
+    }
 
     await this.repository.assignRole(scope, userId, roleId, role.portal);
 

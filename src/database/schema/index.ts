@@ -31,3 +31,6 @@ export * from './seats.schema';
 
 /** Per-recipient notifications with read state (0030). */
 export * from './notifications.schema';
+
+/** Session feedback, written by learners and read anonymised by trainers (0032). */
+export * from './feedback.schema';

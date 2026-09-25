@@ -29,6 +29,10 @@ export interface DirectoryRow extends EmployeeAggregateRow {
   role: string;
   /** The RBAC role's label — Admin, Manager, Learner, Trainer. */
   role_label: string | null;
+  role_id: number | null;
+  manager_id: number | null;
+  manager_name: string | null;
+  reports_count: number;
   /** The role key, so the UI can style without matching on a display string. */
   role_key: string | null;
   /** Most recent lesson completion or assessment attempt. Null if neither. */
@@ -130,6 +134,22 @@ export class UsersRepository {
              u.role,
              r.label AS role_label,
              r.key AS role_key,
+             -- The role's ID, so the Change role dialog can preselect what
+             -- they already hold. Without it the select opens blank and the
+             -- admin cannot tell a no-op from a change.
+             u.role_id AS role_id,
+             u.manager_id AS manager_id,
+             -- Denormalised for display, and LEFT so a person whose manager
+             -- has been deleted still renders (ON DELETE SET NULL means the
+             -- column is already null in that case, but the join must not
+             -- drop the row either way).
+             CASE WHEN m.id IS NULL THEN NULL
+                  ELSE m.first_name || ' ' || m.last_name END AS manager_name,
+             -- How many people report to THEM. Drives the "manages N but has
+             -- no Manager role" flag: data recorded that nobody can see is
+             -- the silent half of the screen-that-lies failure.
+             (SELECT COUNT(*) FROM users d
+               WHERE d.manager_id = u.id AND d.is_active = 1) AS reports_count,
              (SELECT COUNT(DISTINCT uca.course_id) FROM user_course_assignments uca
               WHERE uca.user_id = u.id) AS assigned_courses,
              (SELECT COUNT(*)
@@ -165,6 +185,7 @@ export class UsersRepository {
       FROM users u
       LEFT JOIN roles r
         ON r.id = u.role_id AND r.organization_id = u.organization_id
+      LEFT JOIN users m ON m.id = u.manager_id
       WHERE ${orgScope('u', scope)}
       ORDER BY u.first_name, u.last_name
     `);
@@ -228,6 +249,37 @@ export class UsersRepository {
   }
 
   /**
+   * A candidate manager: active, in the caller's organization, with their own
+   * manager so the cycle walk can start one step up.
+   *
+   * Org-scoped in SQL rather than checked afterwards, so a manager id from
+   * another tenant returns nothing and the service 404s it.
+   */
+  async findManagerCandidate(scope: OrgScope, userId: number) {
+    const rows = await this.db.all<{
+      id: number;
+      first_name: string;
+      last_name: string;
+      manager_id: number | null;
+    }>(sql`
+      SELECT u.id, u.first_name, u.last_name, u.manager_id
+        FROM users u
+       WHERE u.id = ${userId} AND ${orgScope('u', scope)} AND u.is_active = 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /** One step up the reporting chain. Null ends the walk. */
+  async managerOf(scope: OrgScope, userId: number) {
+    const rows = await this.db.all<{ manager_id: number | null }>(sql`
+      SELECT u.manager_id FROM users u
+       WHERE u.id = ${userId} AND ${orgScope('u', scope)}
+    `);
+    const next = rows[0]?.manager_id;
+    return next === null || next === undefined ? null : Number(next);
+  }
+
+  /**
    * `roleId` is REQUIRED and is the organization's `learner` role, resolved by
    * the service before this is called.
    *
@@ -250,6 +302,7 @@ export class UsersRepository {
       location: string | null;
       jobRole: string | null;
       jobLevel: string | null;
+      managerId?: number | null;
       roleId: number;
       role: RolePortal;
     },
@@ -272,6 +325,7 @@ export class UsersRepository {
         location: input.location,
         jobRole: input.jobRole,
         jobLevel: input.jobLevel,
+        managerId: input.managerId ?? null,
       })
       .returning({
         id: users.id,
@@ -295,6 +349,7 @@ export class UsersRepository {
       location: string | null;
       jobRole: string | null;
       jobLevel: string | null;
+      managerId: number | null;
     },
   ) {
     const [updated] = await this.db
@@ -307,6 +362,7 @@ export class UsersRepository {
         location: input.location,
         jobRole: input.jobRole,
         jobLevel: input.jobLevel,
+        managerId: input.managerId,
       })
       .where(
         and(eq(users.id, id), eq(users.organizationId, scope.organizationId)),
@@ -320,6 +376,7 @@ export class UsersRepository {
         location: users.location,
         job_role: users.jobRole,
         job_level: users.jobLevel,
+        manager_id: users.managerId,
         is_active: users.isActive,
       });
     return updated;

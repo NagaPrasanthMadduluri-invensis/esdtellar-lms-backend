@@ -22,6 +22,21 @@ import { LearningHoursService } from '@/modules/learning-hours/learning-hours.se
 // the course card as it does in the calendar, so both read the one function.
 import { displayStatus } from '@/modules/sessions/session-status.util';
 import { JourneysService } from '@/modules/journeys/journeys.service';
+import { actorLabel } from '@/common/notifications';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { SpreadsheetService } from '@/modules/reports/spreadsheet.service';
+
+/**
+ * The monthly learning-hours goal a manager's team is measured against.
+ *
+ * A CONSTANT, not a per-tenant column, and that is a deliberate first cut: it
+ * appears in exactly one place (Team Learning) and nothing else in the product
+ * has an opinion about how many hours a month is enough. Promoting it to an
+ * organization setting means a migration, a form and a decision about what
+ * happens to the months already measured against 10 — worth doing when
+ * somebody asks for a different number, not before.
+ */
+const MONTHLY_HOURS_GOAL = 10;
 
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import {
@@ -90,6 +105,10 @@ export class LearnerService {
     private readonly leaderboard_: LeaderboardService,
     private readonly badges: BadgesService,
     private readonly journeys: JourneysService,
+    /** Best-effort (§8.4) — a nudge that fails must not 500 the button. */
+    private readonly notifications: NotificationsService,
+    /** Rebuilds the team report as .xlsx — see `teamWorkbook`. */
+    private readonly spreadsheets: SpreadsheetService,
   ) {}
 
   /* ─────────────────────────────────────────────
@@ -1261,73 +1280,256 @@ export class LearnerService {
    */
 
   /**
-   * `GET /api/learner/team` — the manager's extra module (decision 2).
+   * `GET /api/learner/team` — the manager's Team Learning module.
    *
-   * Scope comes from the caller's own row, not the request: a manager sees
-   * their own department and nothing else. A manager with no department set
-   * sees an EMPTY team rather than the whole organization — a visible bug
-   * report beats a silent leak (§3.5).
+   * **The team is DIRECT REPORTS** (`users.manager_id`), not the caller's
+   * department. `0033` records why the definition moved: a department is a
+   * reporting dimension, not a team, so two managers in one department each
+   * saw the other's people and neither could have a report outside it.
+   *
+   * Scope still comes from the caller's own row, never the request. A manager
+   * with no reports sees an EMPTY team rather than a department or an
+   * organization — a visible nothing beats a silent leak (§3.5).
+   *
+   * Hours come from `LearningHoursService`, not a second sum (§10.4), which
+   * is what lets this page state a monthly figure that agrees with the
+   * learner's own Learning Hours page.
    */
   async team(scope: OrgScope, userId: number) {
-    const me = await this.repository.findUser(scope, userId);
-    const department = me?.department ?? null;
+    const [rows, minutesByUser] = await Promise.all([
+      this.repository.directReports(scope.organizationId, userId),
+      this.hours.minutesByUser(scope),
+    ]);
 
-    if (!department) {
+    if (rows.length === 0) {
       return {
         team: [],
         summary: {
-          department: null,
           size: 0,
+          completed: 0,
+          inProgress: 0,
+          notStarted: 0,
           coursesAssigned: 0,
           coursesCompleted: 0,
           completionPct: 0,
-          hours: 0,
+          avgScore: null,
+          hoursThisMonth: 0,
+          avgHoursPerMonth: 0,
+          onTrackForHours: 0,
+          monthlyHoursGoal: MONTHLY_HOURS_GOAL,
+          needsAttention: 0,
           note:
-            'Your department is not set, so there is no team to show. An admin ' +
-            'can set it on your profile.',
+            'Nobody reports to you yet. An admin sets a manager on each ' +
+            'person from Manage Users, and they appear here as soon as ' +
+            'they do.',
         },
+        actions: [],
       };
     }
 
-    const rows = await this.repository.teamForDepartment(
-      scope.organizationId,
-      department,
-      userId,
-    );
+    const team = rows.map((r) => {
+      const assigned = Number(r.assigned ?? 0);
+      const completedCourses = Number(r.completed ?? 0);
+      const totalLessons = Number(r.total_lessons ?? 0);
+      const doneLessons = Number(r.done_lessons ?? 0);
+      const progressPct =
+        totalLessons > 0 ? Math.round((doneLessons / totalLessons) * 100) : 0;
+      const mins = minutesByUser.get(Number(r.id));
+      const hoursThisMonth = Math.round(((mins?.thisMonth ?? 0) / 60) * 10) / 10;
 
-    const team = rows.map((r) => ({
-      id: Number(r.id),
-      name: `${r.first_name} ${r.last_name}`,
-      department: r.department,
-      jobRole: r.job_role,
-      coursesAssigned: Number(r.assigned ?? 0),
-      coursesCompleted: Number(r.completed ?? 0),
-      // Lessons, not courses — the same definition the learner's own course
-      // cards use, so a manager and their report cannot read a different
-      // number for the same work. Course completion is still shown, as
-      // coursesCompleted/coursesAssigned beside it.
-      progressPct:
-        Number(r.total_lessons ?? 0) > 0
-          ? Math.round((Number(r.done_lessons ?? 0) / Number(r.total_lessons)) * 100)
-          : 0,
-      hours: Math.round((Number(r.minutes ?? 0) / 60) * 10) / 10,
-      lastActiveAt: r.last_active_at ?? null,
-    }));
+      /*
+       * Three states, from the same definition the rest of the product uses
+       * (§10.12's `statusOf`): finished everything assigned, started but not
+       * finished, or opened nothing. Somebody with no assignment at all is
+       * "not started" rather than a fourth state — they have nothing to do,
+       * which is the manager's problem to fix, not a status to invent.
+       */
+      let status: 'completed' | 'in_progress' | 'not_started';
+      if (assigned > 0 && totalLessons > 0 && doneLessons >= totalLessons) {
+        status = 'completed';
+      } else if (doneLessons > 0) {
+        status = 'in_progress';
+      } else {
+        status = 'not_started';
+      }
+
+      return {
+        id: Number(r.id),
+        name: `${r.first_name} ${r.last_name}`,
+        department: r.department,
+        jobRole: r.job_role,
+        status,
+        coursesAssigned: assigned,
+        coursesCompleted: completedCourses,
+        progressPct,
+        // Null, never 0: "no assessment taken" and "scored zero" are
+        // different facts and must not render alike (§10.3.1.8).
+        score: r.best_score !== null ? Math.round(Number(r.best_score)) : null,
+        passed: Number(r.passes ?? 0) > 0,
+        hoursThisMonth,
+        hoursAllTime: Math.round(((mins?.all ?? 0) / 60) * 10) / 10,
+        onTrackForHours: hoursThisMonth >= MONTHLY_HOURS_GOAL,
+        lastActiveAt: r.last_active_at ?? null,
+      };
+    });
 
     const assigned = team.reduce((n, m) => n + m.coursesAssigned, 0);
-    const completed = team.reduce((n, m) => n + m.coursesCompleted, 0);
+    const completedCourses = team.reduce((n, m) => n + m.coursesCompleted, 0);
+    const scored = team.filter((m) => m.score !== null);
+    const hoursThisMonth =
+      Math.round(team.reduce((n, m) => n + m.hoursThisMonth, 0) * 10) / 10;
+
+    /*
+     * ACTION REQUIRED — the panel that makes this page worth opening.
+     *
+     * Only things a manager can actually do something about, each naming the
+     * person and the gap. An empty list renders as "nothing needs attention",
+     * which is a claim worth making explicitly: an admin should be able to
+     * tell it from a panel that failed to load (§10.3.1.11).
+     */
+    const actions = team
+      .filter((m) => !m.onTrackForHours || m.status === 'not_started')
+      .map((m) => ({
+        userId: m.id,
+        name: m.name,
+        kind: m.status === 'not_started' && m.coursesAssigned > 0
+          ? ('not_started' as const)
+          : ('behind_hours' as const),
+        detail:
+          m.status === 'not_started' && m.coursesAssigned > 0
+            ? `${m.name.split(' ')[0]} has not started ${m.coursesAssigned} assigned course${m.coursesAssigned === 1 ? '' : 's'}`
+            : `${m.name.split(' ')[0]} at ${m.hoursThisMonth}h of ${MONTHLY_HOURS_GOAL}h goal`,
+      }));
 
     return {
       team,
       summary: {
-        department,
         size: team.length,
+        completed: team.filter((m) => m.status === 'completed').length,
+        inProgress: team.filter((m) => m.status === 'in_progress').length,
+        notStarted: team.filter((m) => m.status === 'not_started').length,
         coursesAssigned: assigned,
-        coursesCompleted: completed,
-        completionPct: assigned > 0 ? Math.round((completed / assigned) * 100) : 0,
-        hours: Math.round(team.reduce((n, m) => n + m.hours, 0) * 10) / 10,
+        coursesCompleted: completedCourses,
+        completionPct:
+          assigned > 0 ? Math.round((completedCourses / assigned) * 100) : 0,
+        // Averaged over the people who HAVE a score, not over the team — one
+        // untested person would otherwise drag the average toward zero and
+        // read as poor performance rather than missing data.
+        avgScore:
+          scored.length > 0
+            ? Math.round(
+                scored.reduce((n, m) => n + (m.score ?? 0), 0) / scored.length,
+              )
+            : null,
+        hoursThisMonth,
+        avgHoursPerMonth:
+          team.length > 0
+            ? Math.round((hoursThisMonth / team.length) * 10) / 10
+            : 0,
+        onTrackForHours: team.filter((m) => m.onTrackForHours).length,
+        monthlyHoursGoal: MONTHLY_HOURS_GOAL,
+        needsAttention: actions.length,
         note: null,
       },
+      actions,
+    };
+  }
+
+  /**
+   * Prod one report about their learning — the mock's "Nudge".
+   *
+   * A notification, not an email: this product has no mail transport, and a
+   * button that silently sends nothing would be worse than no button. The
+   * manager is NAMED in it, unlike session feedback, because a nudge from
+   * nobody is just nagging — the learner should know who is asking and can
+   * reply to them in person.
+   *
+   * Refuses for anybody who is not their report, so the id in the path cannot
+   * be swapped for a colleague's.
+   */
+  async nudge(
+    scope: OrgScope,
+    managerUserId: number,
+    targetUserId: number,
+    manager: { firstName?: string; lastName?: string; email?: string },
+  ) {
+    const reports = await this.repository.directReports(
+      scope.organizationId,
+      managerUserId,
+    );
+    const target = reports.find((r) => Number(r.id) === targetUserId);
+    if (!target) {
+      throw new NotFoundException('That person does not report to you');
+    }
+
+    const from = actorLabel(manager);
+    void this.notifications.notify({
+      organizationId: scope.organizationId,
+      userIds: [targetUserId],
+      type: 'manager_nudge',
+      title: `${from} nudged you about your learning`,
+      body: 'Your manager is checking in on your progress this month.',
+      link: '/my-courses',
+      subjectType: 'user',
+      subjectId: managerUserId,
+      actorName: from,
+    });
+
+    return { ok: true, nudged: `${target.first_name} ${target.last_name}` };
+  }
+
+  /**
+   * The team report as a workbook, rebuilt from the same `team()` the screen
+   * reads — so the file and the page can never disagree.
+   */
+  async teamWorkbook(
+    scope: OrgScope,
+    userId: number,
+    manager: { firstName?: string; lastName?: string; email?: string },
+  ) {
+    const { team, summary } = await this.team(scope, userId);
+    const generatedAt = new Date().toISOString().slice(0, 16).replace('T', ' ');
+
+    const summaryRows: (string | number)[][] = [
+      ['Team size', summary.size],
+      ['Completed', summary.completed],
+      ['In progress', summary.inProgress],
+      ['Not started', summary.notStarted],
+      ['Course completion %', summary.completionPct],
+      // An em dash, not a zero: nobody tested is not the same as everybody
+      // scoring nothing.
+      ['Average score %', summary.avgScore ?? '—'],
+      ['Hours this month', summary.hoursThisMonth],
+      ['On track for hours', `${summary.onTrackForHours} of ${summary.size}`],
+      ['Needs attention', summary.needsAttention],
+    ];
+
+    const rows = team.map((m) => [
+      m.name,
+      m.department ?? '—',
+      m.jobRole ?? '—',
+      m.status.replace('_', ' '),
+      m.coursesAssigned,
+      m.coursesCompleted,
+      m.progressPct,
+      m.score ?? '—',
+      m.score === null ? '—' : m.passed ? 'Yes' : 'No',
+      m.hoursThisMonth,
+      m.hoursAllTime,
+      m.lastActiveAt ? String(m.lastActiveAt).slice(0, 10) : '—',
+    ]);
+
+    const buffer = this.spreadsheets.buildTeamWorkbook({
+      managerName: actorLabel(manager),
+      generatedAt,
+      monthlyGoal: summary.monthlyHoursGoal,
+      summary: summaryRows,
+      rows,
+    });
+
+    return {
+      buffer,
+      filename: `Team_Report_${new Date().toISOString().slice(0, 10)}.xlsx`,
     };
   }
 

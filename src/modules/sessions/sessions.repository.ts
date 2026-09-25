@@ -349,7 +349,25 @@ export class SessionsRepository {
      does not exist. Filtering in the query makes the 404 fall out naturally.
 
      `orgScope` is still applied on top — the trainer axis narrows within the
-     tenant, it does not replace it. */
+     tenant, it does not replace it.
+
+     Both match `session_batches.trainer_user_id` as well as the session's own
+     column. A batch carries its own trainer (0025), so a trainer given one
+     sitting of a multi-batch session matched neither method before this and
+     saw an empty portal while holding real work. `trainerOwns` states the
+     rule once so the list and the ownership probe cannot disagree — if they
+     did, a session would appear in the list and 404 when opened. */
+
+  /** Assigned to the session, or to any of its sittings. */
+  private trainerOwns(trainerUserId: number) {
+    return sql`(
+      s.trainer_user_id = ${trainerUserId}
+      OR EXISTS (
+        SELECT 1 FROM session_batches b
+         WHERE b.session_id = s.id AND b.trainer_user_id = ${trainerUserId}
+      )
+    )`;
+  }
 
   async listForTrainer(scope: OrgScope, trainerUserId: number) {
     return this.db.all(sql`
@@ -368,7 +386,7 @@ export class SessionsRepository {
       FROM sessions s
       LEFT JOIN courses c ON c.id = s.course_id
       LEFT JOIN courses tc ON tc.session_id = s.id
-      WHERE ${orgScope('s', scope)} AND s.trainer_user_id = ${trainerUserId}
+      WHERE ${orgScope('s', scope)} AND ${this.trainerOwns(trainerUserId)}
       ORDER BY s.date DESC, s.start_time DESC
     `);
   }
@@ -387,7 +405,7 @@ export class SessionsRepository {
       LEFT JOIN courses tc ON tc.session_id = s.id
       WHERE s.id = ${sessionId}
         AND ${orgScope('s', scope)}
-        AND s.trainer_user_id = ${trainerUserId}
+        AND ${this.trainerOwns(trainerUserId)}
     `);
     return rows[0] ?? null;
   }

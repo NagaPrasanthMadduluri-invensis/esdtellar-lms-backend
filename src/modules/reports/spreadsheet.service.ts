@@ -202,6 +202,41 @@ export class SpreadsheetService {
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
   }
 
+  /**
+   * A manager's team report — one sheet, the same rows their screen shows.
+   *
+   * Rebuilt from the service rather than serialised from the browser's copy,
+   * so the file can never describe a different team from the one they were
+   * looking at. Same reason the reports exports rebuild through their own
+   * builders (§10.12).
+   */
+  buildTeamWorkbook(input: {
+    managerName: string;
+    generatedAt: string;
+    monthlyGoal: number;
+    summary: Cell[][];
+    rows: Cell[][];
+  }): Buffer {
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([
+      [`TEAM LEARNING REPORT — ${input.managerName}`],
+      [`Generated ${input.generatedAt} · monthly goal ${input.monthlyGoal}h`],
+      [],
+      ...input.summary,
+      [],
+      ['Member', 'Department', 'Job role', 'Status', 'Courses assigned',
+       'Courses completed', 'Progress %', 'Best score %', 'Passed',
+       `Hours this month (goal ${input.monthlyGoal}h)`, 'Hours all time',
+       'Last active'],
+      ...input.rows,
+    ]);
+    sheet['!cols'] = [22, 18, 22, 14, 16, 18, 12, 13, 9, 24, 15, 14].map(
+      (wch) => ({ wch }),
+    );
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Team Learning');
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  }
+
   private appendSheet(
     workbook: XLSX.WorkBook,
     name: string,

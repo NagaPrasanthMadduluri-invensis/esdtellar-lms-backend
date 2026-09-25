@@ -243,9 +243,24 @@ async function main() {
   // No separate cleanup: cascades away with invCourseId too.
 
   const today = new Date().toISOString().slice(0, 10);
+
+  // A session must name a trainer ACCOUNT, so the fixture resolves one at run
+  // time rather than typing a name. Discovered, not hardcoded, for the same
+  // reason the certificate fixture below picks its courses at run time: a
+  // fixture that assumes a particular id breaks the first time the seed moves.
+  const invTrainers = await api(invAdmin, 'GET', '/admin/sessions/trainers');
+  const invTrainerId = invTrainers.body?.trainers?.[0]?.id;
+  if (!invTrainerId) {
+    throw new Error(
+      'Fixture setup: Invensis has no trainer account, and a session now ' +
+        'requires one. Create one with scripts/create-org-user.mjs.',
+    );
+  }
+
   const invSessionCreate = await api(invAdmin, 'POST', '/admin/sessions', {
     title: `Isolation Suite Session (Invensis) ${RUN_ID}`,
     trainer: 'Isolation QA',
+    trainer_user_id: invTrainerId,
     venue_url: 'https://example.com/meet/isolation',
     date: today,
     start_time: '10:00',

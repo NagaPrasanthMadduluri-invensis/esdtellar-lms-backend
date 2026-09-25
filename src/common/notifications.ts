@@ -107,6 +107,23 @@ export const NOTIFICATION_TYPES = {
     icon: 'CalendarX',
     audience: ['learner', 'trainer'],
   },
+  /* The one notification in this catalogue that must carry NO actor. Every
+     other type names who caused it; naming the author here would undo the
+     anonymity the feedback form promises the learner (0032). */
+  session_feedback_received: {
+    label: 'New session feedback',
+    group: 'sessions',
+    icon: 'MessageSquare',
+    audience: ['trainer'],
+  },
+
+  /* ── A manager and their reports ── */
+  manager_nudge: {
+    label: 'Your manager nudged you',
+    group: 'learning',
+    icon: 'Bell',
+    audience: ['learner'],
+  },
 
   /* ── The admin's org ── */
   learner_onboarded: {

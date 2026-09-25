@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
 
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
+import { ReportsModule } from '@/modules/reports/reports.module';
+
 import { LeaderboardModule } from '@/modules/leaderboard/leaderboard.module';
 import { LearningHoursModule } from '@/modules/learning-hours/learning-hours.module';
 
@@ -17,7 +20,7 @@ import { JourneysModule } from '@/modules/journeys/journeys.module';
  * and on `GET /learner/achievements` (spec §4.5).
  */
 @Module({
-  imports: [LeaderboardModule, LearningHoursModule, CertificatesModule, BadgesModule, JourneysModule],
+  imports: [NotificationsModule, ReportsModule, LeaderboardModule, LearningHoursModule, CertificatesModule, BadgesModule, JourneysModule],
   controllers: [LearnerController],
   providers: [LearnerService, LearnerRepository],
 })

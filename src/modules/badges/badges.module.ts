@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { FeedbackModule } from '@/modules/feedback/feedback.module';
 import { NotificationsModule } from '@/modules/notifications/notifications.module';
 
 import { LeaderboardModule } from '@/modules/leaderboard/leaderboard.module';
@@ -14,7 +15,7 @@ import { LearnerBadgesController } from './learner-badges.controller';
  * §4.2) can award and sync without querying `user_badges` themselves.
  */
 @Module({
-  imports: [LeaderboardModule, NotificationsModule],
+  imports: [FeedbackModule, LeaderboardModule, NotificationsModule],
   controllers: [LearnerBadgesController],
   providers: [BadgesService, BadgesRepository],
   exports: [BadgesService],

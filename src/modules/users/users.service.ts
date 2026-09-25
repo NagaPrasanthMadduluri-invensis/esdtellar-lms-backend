@@ -146,6 +146,10 @@ export class UsersService {
         role: row.role,
         role_key: row.role_key ?? row.role,
         role_label: row.role_label ?? titleCase(row.role),
+        role_id: row.role_id !== null ? Number(row.role_id) : null,
+        manager_id: row.manager_id !== null ? Number(row.manager_id) : null,
+        manager_name: row.manager_name ?? null,
+        reports_count: Number(row.reports_count ?? 0),
         is_active: Number(row.is_active) === 1,
         created_at: row.created_at,
         last_activity: row.last_activity,
@@ -197,13 +201,29 @@ export class UsersService {
       throw new ConflictException('Email already in use');
     }
 
-    // The seat limit is checked HERE, before anything is written. A limit
-    // that is only displayed is decoration — worse than none, because it
-    // tells an admin they are capped while letting them past it.
-    await this.seats.assertSeatAvailable(scope);
+    /*
+     * WHICH role, and therefore whether this costs a seat.
+     *
+     * Omitted means `learner`, which is what every caller sent before the Add
+     * User dialog grew a role selector and what the bulk import still sends.
+     *
+     * The seat check runs ONLY for a learner-portal role. A seat is an active
+     * learner (`0028_seat_limits.sql`) — an organization should never have to
+     * choose between an extra trainer and an extra learner — so checking it
+     * for a trainer would refuse an account that consumes nothing. Equally,
+     * skipping it for a learner would make the cap decoration (§10.17).
+     */
+    const role = dto.role_id
+      ? await this.roles.roleForAssignment(scope, dto.role_id)
+      : await this.roles.roleByKey(scope, 'learner');
 
-    const learnerRole = await this.roles.roleByKey(scope, 'learner');
+    if (role.portal === 'learner') {
+      await this.seats.assertSeatAvailable(scope);
+    }
+
     const workforce = await this.resolveWorkforceFields(scope, dto);
+    // No subjectId: a row that does not exist yet cannot be in anybody's chain.
+    const managerId = await this.assertManager(scope, dto.manager_id);
 
     const user = await this.repository.createLearner(scope, {
       firstName: dto.first_name,
@@ -214,16 +234,17 @@ export class UsersService {
       location: workforce.location,
       jobRole: dto.job_role ?? null,
       jobLevel: workforce.jobLevel,
-      roleId: learnerRole.id,
+      managerId,
+      roleId: role.id,
       // Derived from the role, never assumed to be the string 'learner' — if
       // an organization ever points its `learner` key at another portal, the
       // portal selector follows the role rather than contradicting it.
-      role: learnerRole.portal,
+      role: role.portal,
     });
 
     await this.activity.record(scope, {
       type: 'user_created',
-      detail: `Added ${dto.first_name} ${dto.last_name} (learner${
+      detail: `Added ${dto.first_name} ${dto.last_name} (${role.label.toLowerCase()}${
         dto.department ? `, ${dto.department}` : ''
       })`,
       actor: actor ?? null,
@@ -267,6 +288,7 @@ export class UsersService {
     }
 
     const workforce = await this.resolveWorkforceFields(scope, dto);
+    const managerId = await this.assertManager(scope, dto.manager_id, userId);
 
     const updated = await this.repository.updateProfile(scope, userId, {
       firstName: dto.first_name,
@@ -276,6 +298,7 @@ export class UsersService {
       location: workforce.location,
       jobRole: dto.job_role ?? null,
       jobLevel: workforce.jobLevel,
+      managerId,
     });
 
     return { user: { ...updated, is_active: updated.is_active === 1 } };
@@ -605,6 +628,69 @@ export class UsersService {
    * the valid set a per-tenant query (§3: a rule that needs data is the
    * service's, not a decorator's).
    */
+  /**
+   * Validate a proposed manager, returning the id to store.
+   *
+   * Three refusals, and the third is the one that needs a query rather than a
+   * constraint:
+   *
+   *   - **not themselves.** A person who reports to themselves is their own
+   *     team, and Team Learning would list them looking at their own record.
+   *   - **same organization, active.** A manager from another tenant would
+   *     put one tenant's learning data on another tenant's screen — the
+   *     cross-tenant leak §10.12 records, through a column instead of a join.
+   *     404 rather than 403, so an id from another org is indistinguishable
+   *     from one that does not exist.
+   *   - **no cycle.** A manages B, B manages A: neither can be listed without
+   *     listing the other, and any code walking the chain loops forever. A
+   *     CHECK can express `manager_id <> id` and cannot express this, so both
+   *     live here rather than half in each place.
+   *
+   * `subjectId` is the person being edited — absent when creating, because a
+   * row that does not exist yet cannot be in anybody's chain.
+   */
+  private async assertManager(
+    scope: OrgScope,
+    managerId: number | null | undefined,
+    subjectId?: number,
+  ): Promise<number | null> {
+    if (managerId === null || managerId === undefined) return null;
+    if (!Number.isInteger(managerId) || managerId <= 0) {
+      throw new UnprocessableEntityException('manager_id must be a user id');
+    }
+    if (subjectId && managerId === subjectId) {
+      throw new UnprocessableEntityException(
+        'Somebody cannot be their own manager.',
+      );
+    }
+
+    const manager = await this.repository.findManagerCandidate(
+      scope,
+      managerId,
+    );
+    if (!manager) throw new NotFoundException('Manager not found');
+
+    if (subjectId) {
+      // Walk UP from the proposed manager. If we reach the person being
+      // edited, this edit would close a loop. Bounded by MAX_CHAIN so a cycle
+      // that somehow already exists cannot hang the request.
+      const MAX_CHAIN = 50;
+      let cursor: number | null = manager.manager_id;
+      for (let i = 0; cursor !== null && i < MAX_CHAIN; i += 1) {
+        if (cursor === subjectId) {
+          throw new UnprocessableEntityException(
+            `${manager.first_name} ${manager.last_name} already reports to ` +
+              'this person, directly or through somebody else. A reporting ' +
+              'line cannot form a loop.',
+          );
+        }
+        cursor = await this.repository.managerOf(scope, cursor);
+      }
+    }
+
+    return managerId;
+  }
+
   private async resolveWorkforceFields(
     scope: OrgScope,
     dto: { location?: string | null; job_level?: string | null },

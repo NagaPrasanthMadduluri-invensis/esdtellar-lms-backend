@@ -59,11 +59,20 @@ export class LearnerRepository {
    * `learning-hours` — writing a second definition here is exactly how the two
    * would come to disagree (§10.4).
    */
-  async teamForDepartment(
-    organizationId: number,
-    department: string,
-    excludeUserId: number,
-  ) {
+  /**
+   * The manager's DIRECT REPORTS — everyone whose `manager_id` is them.
+   *
+   * Replaced `teamForDepartment` in `0033`. A department is a reporting
+   * dimension, not a team: two managers in one department each saw the other's
+   * people, and a manager could not have a report outside their own
+   * department at all. `manager_id` says who reports to whom, so the query
+   * says it too.
+   *
+   * No `role = 'learner'` filter any more either. A manager can manage a
+   * trainer or another manager, and excluding them showed a team smaller than
+   * the org chart says it is — a silent omission rather than an empty cell.
+   */
+  async directReports(organizationId: number, managerUserId: number) {
     return this.db.all<{
       id: number;
       first_name: string;
@@ -76,6 +85,8 @@ export class LearnerRepository {
       done_lessons: number;
       minutes: number;
       last_active_at: string | null;
+      best_score: number | null;
+      passes: number;
     }>(sql`
       SELECT u.id, u.first_name, u.last_name, u.department, u.job_role,
              (SELECT COUNT(*) FROM user_course_assignments a
@@ -128,13 +139,21 @@ export class LearnerRepository {
                 WHERE c.user_id = u.id
              ), 0) AS minutes,
              (SELECT MAX(c.completed_at) FROM user_lesson_completions c
-               WHERE c.user_id = u.id) AS last_active_at
+               WHERE c.user_id = u.id) AS last_active_at,
+             -- Best assessment score and whether they have ever passed one.
+             -- The mock shows SCORE and PASS? as separate columns because
+             -- they answer different questions: 88% with no pass means they
+             -- scored well on something they have not yet cleared.
+             (SELECT MAX(at.percentage) FROM user_assessment_attempts at
+               WHERE at.user_id = u.id
+                 AND at.organization_id = ${organizationId}) AS best_score,
+             (SELECT COUNT(*) FROM user_assessment_attempts at
+               WHERE at.user_id = u.id AND at.is_passed = 1
+                 AND at.organization_id = ${organizationId}) AS passes
         FROM users u
        WHERE u.organization_id = ${organizationId}
-         AND u.role = 'learner'
          AND u.is_active = 1
-         AND u.department = ${department}
-         AND u.id <> ${excludeUserId}
+         AND u.manager_id = ${managerUserId}
        ORDER BY u.first_name, u.last_name
     `);
   }

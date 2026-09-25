@@ -592,6 +592,245 @@ Update this table with every module you move.
 | notifications (the bell, every portal) | 3 | `server/src/modules/notifications` |
 | geo reference data (countries, cities, industries) | 3 | `server/src/modules/geo` |
 | org workforce options (branch locations, job levels) | 4 | `server/src/modules/org-options` |
+| session feedback (learner writes, trainer reads anonymised) | 3 | `server/src/modules/feedback` |
+
+### 10.22 A reporting line, and Team Learning built on it
+
+`0033_user_manager.sql` adds `users.manager_id` and changes what a team means.
+
+**Team Learning was a DEPARTMENT and is now DIRECT REPORTS.** The old query
+was `WHERE department = <the manager's department>`, which had two faults that
+only show up with real org charts: two managers in one department each saw the
+other's people, and a manager could not have a report outside their own
+department at all. `manager_id` says who reports to whom, so the query says it
+too. That supersedes `specs/rbac.md` decision 3 as the definition of a TEAM —
+the RBAC row scope is a separate question and is untouched.
+
+**No `role = 'learner'` filter on the team, deliberately.** A manager is also a
+learner: the Manager role sits on the learner portal (decision 2), so they keep
+My Courses, hours and certificates and simply gain a module. It follows that a
+manager who reports to somebody appears in THAT person's team with their own
+progress, and filtering the query by role would have hidden exactly those
+people — a team smaller than the org chart says it is. Verified: a Manager
+appears in her manager's team with her own 5 courses and 7.3 hours.
+
+**Three refusals on a manager, and the third is why there is no CHECK
+constraint.** `manager_id <> id` could be one; a cycle of two cannot — that
+needs a walk up the chain, which is a query. Putting half the rule in the
+database and half in the service means two places to read and one lying by
+omission, so both live in `UsersService.assertManager`:
+
+| Refused | Why |
+|---|---|
+| themselves | they would be their own team, listed looking at their own record |
+| another organization's user | a cross-tenant leak through a column instead of a join. 404, not 403 |
+| a cycle | neither person can be listed without listing the other, and any walk loops |
+
+The walk is bounded by `MAX_CHAIN`, so a cycle that somehow already exists
+cannot hang the request.
+
+**`ON DELETE SET NULL`, never CASCADE.** A self-referencing CASCADE would take
+a manager's whole team when the manager is deleted, and then their teams. That
+is a delete nobody would predict from the button they pressed.
+
+**Hours come from `LearningHoursService`, not a second sum** (§10.4), which is
+what lets this page state a monthly figure that agrees with the learner's own
+Learning Hours page. `MONTHLY_HOURS_GOAL` is a constant at 10: it appears in
+one place and nothing else in the product has an opinion about it. Promoting it
+to a per-tenant setting means a migration, a form, and a decision about the
+months already measured against 10 — worth doing when somebody asks for a
+different number.
+
+**`avgScore` averages over the people who HAVE a score**, not over the team.
+One untested person would otherwise drag it toward zero and read as poor
+performance rather than missing data — and it is null, never 0, when nobody has
+been assessed.
+
+**A per-session average under three responses is withheld** is §10.20's rule;
+the same instinct here is `needsAttention`, which is only rendered when
+non-zero. A red "0 needs attention" is a false alarm.
+
+Two routes beside the read:
+
+```
+POST /api/learner/team/:userId/nudge   prod one report
+POST /api/learner/team/export          the same report as .xlsx
+```
+
+**Nudge is a notification, not an email** — this product has no mail transport,
+and a button that silently sends nothing is worse than no button. The manager
+IS named in it, unlike session feedback (§10.20): a nudge from nobody is just
+nagging, and the learner should know who is asking. The path id is checked
+against the caller's own reports, so it cannot be swapped for a colleague's.
+
+**The export rebuilds through the same `team()` the screen reads**, so the file
+can never describe a different team from the one on screen — the rule §10.12
+records for the reports exports. Both routes carry `view_team_learning`, the
+same permission as the read: a manager who can see somebody is behind can say
+so, and a separate permission would be one nobody thinks to grant.
+
+**A person with reports but no Manager role is FLAGGED, not auto-promoted.**
+The directory returns `reports_count`, and Manage Users renders "manages 3 · no
+Manager role" in `warning` beside their role. Auto-promoting would mean editing
+one person silently changing another's permissions and signing them out, which
+is a surprising blast radius for one form; doing nothing would leave data
+recorded that nobody can read. The Change role action that fixes it is on the
+same row (§10.21).
+
+### 10.21 An admin can finally create a trainer
+
+The session form's Trainer picker, `GET /admin/sessions/trainers` and the
+name-derivation behind it all existed and all worked. The list was empty in
+every organization anyway, because **nothing in the product could put a person
+on a trainer role**:
+
+| Step | Before |
+|---|---|
+| Create a trainer ROLE (`/admin/roles`) | worked, and offered the trainer portal |
+| Put somebody IN it | `PATCH /admin/users/:id/role` existed, guarded, and **no client called it** |
+| Create a user AS a trainer | `UsersService.create` hardcoded `roleByKey(scope, 'learner')` |
+
+So the only route to a trainer account was `scripts/create-org-user.mjs` over
+SSH, and its own docblock said so: *"A role selector in the Add User dialog is
+the proper fix."* A guarded endpoint with no trigger is the same failure as a
+permission with no guard (§5.2.1) seen from the other side — the screen does
+not lie about what it can do, it simply never offers it.
+
+**`CreateUserDto.role_id` is optional and means the learner role when
+omitted**, which is exactly what the dialog did before and what the bulk
+import still sends. It is a role ID, not a portal or a key: `users.role` is
+written from `roles.portal`, so a caller cannot hold a learner role while
+sitting on the trainer portal. An id from another tenant 404s.
+
+**The seat check moved behind a portal test.** A seat is an active learner
+(`0028`), so `assertSeatAvailable` now runs only when the chosen role is
+learner-portal. Checking it for a trainer would refuse an account that
+consumes nothing; skipping it for a learner would make the cap decoration.
+
+#### Two holes closed in `RolesService.assign`
+
+Both were reachable before any of this and neither had anything to do with
+trainers:
+
+**A role change could walk past the seat cap.** `assign` wrote the row with no
+seat check at all, so an organization at its limit could convert a trainer or
+an admin into a learner and exceed a number `create` refuses to let them
+exceed. §10.17 calls a displayed-but-unenforced limit worse than none; this
+was that limit enforced on one path and open on the other. Now, moving an
+ACTIVE user onto a learner-portal role from a non-learner role asks
+`assertSeatAvailable` first. Verified: at a cap of 21 the conversion returned
+409 naming the number, and succeeded once the cap was raised.
+
+**The last admin could be demoted.** Nothing stopped an admin moving the only
+active admin-portal account onto another portal, leaving a tenant nobody can
+administer — the exact state provisioning goes to a transaction to prevent
+(§10.17) and the directory renders as a warning. `countActiveAdmins` excludes
+the user being changed and the move is refused with a 409 when it would reach
+zero. It counts `roles.portal = 'admin'`, not `users.role`, for the reason
+`listOrganizationStats` already records.
+
+**Assigning the role somebody already holds is a no-op that returns
+`unchanged: true`** rather than bumping their `perm_version`. Without that,
+re-saving the same role signed the person out for nothing.
+
+`listDirectory` now also returns `role_id`, so the Change role dialog can
+preselect what they already hold — without it the select opened blank and an
+admin could not tell a no-op from a change.
+
+#### A session now requires a trainer account
+
+`SessionsService.create` refuses a session with no `trainer_user_id`, with a
+422 naming the way out. **Enforced in the service, not the DTO**, because
+`SessionDto` is shared with `update()` and sessions that predate trainer
+accounts carry a typed name with no link — requiring it on edit would make
+fixing a venue typo on one of those impossible without also reassigning its
+trainer. Linking the account is the whole point: it is what puts the session
+in a trainer's portal, which is where attendance is marked.
+
+One consequence worth knowing: `npm run test:isolation` creates a session in
+its fixture, so that fixture now resolves a trainer from
+`/admin/sessions/trainers` at run time. It is discovered rather than
+hardcoded, the same way the certificate fixture picks its courses — an
+organization with no trainer fails setup with a sentence saying so.
+
+### 10.20 Session feedback, and why the trainer never sees a name
+
+`0032_session_feedback.sql` adds the table behind the trainer portal's
+Feedback page and the learner's "Give feedback" control. Read the migration
+header first; the summary:
+
+**`user_id` is STORED and no trainer route SELECTS it.** Both halves are
+load-bearing and neither works alone:
+
+- stored, because `UNIQUE (session_id, user_id)` is what stops one learner
+  rating a session five times, and because an admin investigating an abusive
+  comment has to be able to attribute it. Anonymity to the trainer is a
+  promise about who READS the column, not about whether it exists;
+- never selected, because a learner who knows their trainer sees their name
+  writes something politer than what they think. A named channel produces
+  courtesy, and courtesy is not the point of asking.
+
+That asymmetry survives only because it is enforced in ONE place.
+`FeedbackRepository` groups its trainer methods under a heading that says so,
+and they name their columns explicitly. §3.1 already forbids `SELECT *`; in
+this table it is not merely over-fetching, it is breaking a promise the form
+makes to the learner in words. **The notification carries the same rule** —
+`session_feedback_received` is the only type in `common/notifications.ts`
+written with no `actorName`, because a bell reading "Sneha rated your session"
+would undo the whole feature.
+
+**Eligibility reuses `FEEDBACK_ELIGIBLE_ATTENDANCE`, which is deliberately the
+same three statuses that credit the training** (§10.7): `present`, `late`,
+`partial`. One definition of "was in the room", not two that drift. It is
+checked in the service rather than by a constraint, because attendance is
+corrected afterwards (`syncCompletions` moves credit both ways) and a CHECK
+would turn an admin fixing a mis-marked absence into a foreign-key error.
+
+**Three ratings, not one average.** Content, trainer and delivery fail
+separately and have different owners — thin material is the admin's to fix, an
+unclear explanation is the trainer's, a broken joining link is neither. One
+number would tell a trainer they scored 3.1 and nothing about which to change,
+and two of the three are not theirs to change at all. `common/feedback.ts`
+carries `ownedBy` for exactly that, and the trainer page prints it.
+
+**An average over fewer than `MIN_RESPONSES_FOR_AVERAGE` (3) responses is
+WITHHELD, not shown.** The service sends null and the count; the page says
+"1 response — too few to average". Rendering a single 2/5 as "2.0 average"
+invites a conclusion three more responses might reverse — the same refusal
+§10.12 records as `sufficient: false` on the analytics trends. The headline
+figures average over SESSIONS that clear the bar, not over every row, so one
+heavily-answered session cannot drown out five quiet ones and the number
+agrees with the cards under it.
+
+**Submitting is an upsert and returns 200, not 201** — a learner correcting
+their own answer has created nothing. It re-notifies only on the FIRST
+submission: a trainer whose bell rang on every edit would learn to ignore it
+(§10.18).
+
+**`feedback_hero` was unearnable until this shipped.** `BadgesService.getStats`
+hardcoded `feedbackCount: 0` with a comment saying no feedback table existed,
+so a badge in the catalogue could not be unlocked by any amount of work. It
+now counts real rows through `FeedbackService` — the module, never the
+repository (§3.2).
+
+#### A trainer assigned to a BATCH saw nothing
+
+Found while building the calendar, and older than it. `session_batches`
+carries its own `trainer_user_id` (0025), but `listForTrainer` and
+`findTrainerSession` both filtered on `sessions.trainer_user_id` alone — so a
+trainer given one sitting of a multi-batch session matched neither and opened
+an empty portal while holding real work.
+
+Both now go through `SessionsRepository.trainerOwns`, one private helper, so
+the list and the ownership probe cannot disagree. That matters more than it
+looks: had only the list been fixed, a session would appear on the calendar
+and 404 when opened. `FeedbackRepository` has its own copy for the same
+predicate over its own joins.
+
+**The trainer's Training Calendar added NO endpoint.** It is a second view
+over `GET /api/trainer/sessions`, which already returns date, times, venue and
+attendance counts. A calendar endpoint beside it would be a second definition
+of "my sessions" free to disagree with the first.
 
 ### 10.19 Branch locations and job levels became per-tenant data
 
@@ -877,11 +1116,12 @@ grant migration** (after 0016 and 0022) — read 0022's header for why the
 backfill is safe. It bumps `perm_version`, so deploying it signs every
 organization out once, deliberately.
 
-**`phone` was added; `manager` was not.** A phone number is a fact nothing has
-to interpret. A manager is not: there is no reporting line in this product — a
-Manager's scope is a department, not a set of direct reports — so a
-`manager_id` would render as "—" forever, the empty-column failure §10.12
-records for the three report types left out of the builder.
+**`phone` was added; `manager` was not** — and `0033` has since reversed that.
+The reasoning at the time was that there was no reporting line in the product,
+so a `manager_id` would render as "—" forever, the empty-column failure §10.12
+records. The owner then asked for the reporting line itself, which removed the
+premise rather than the argument. See §10.22; `UpdateProfileDto` still excludes
+it, for the same reason it excludes `department`.
 
 **A patch that names nothing is now a READ, not a 500.** Drizzle throws "No
 values to set" on an empty `.set()`, which the filter correctly masks as

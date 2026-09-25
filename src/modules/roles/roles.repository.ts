@@ -61,6 +61,42 @@ export class RolesRepository {
     `);
   }
 
+  /** The user's CURRENT role and whether they are active, for the guards. */
+  async findUserRole(scope: OrgScope, userId: number) {
+    const rows = await this.db.all<{
+      id: number;
+      role_id: number;
+      role: string;
+      is_active: number;
+    }>(sql`
+      SELECT u.id, u.role_id, u.role, u.is_active
+        FROM users u
+       WHERE u.id = ${userId} AND ${orgScope('u', scope)}
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Active admin-portal accounts in this organization, EXCLUDING one.
+   *
+   * `roles.portal = 'admin'`, not `users.role = 'admin'` — the same
+   * distinction `listOrganizationStats` records: a trainer's role sits on the
+   * trainer portal, and the two columns agreeing today is exactly why the
+   * difference is worth writing down.
+   */
+  async countActiveAdmins(scope: OrgScope, exceptUserId: number) {
+    const rows = await this.db.all<{ total: number }>(sql`
+      SELECT COUNT(*)::int AS total
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+       WHERE ${orgScope('u', scope)}
+         AND r.portal = 'admin'
+         AND u.is_active = 1
+         AND u.id <> ${exceptUserId}
+    `);
+    return Number(rows[0]?.total ?? 0);
+  }
+
   async findById(scope: OrgScope, roleId: number) {
     const rows = await this.db.all<{
       id: number;

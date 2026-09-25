@@ -38,6 +38,15 @@ export const users = pgTable(
      */
     phone: text('phone'),
     /**
+     * Who this person reports to. Nullable, self-referencing, ON DELETE SET
+     * NULL — deleting a manager orphans their reports rather than deleting
+     * them, which a CASCADE on a self-reference would do recursively.
+     *
+     * This is what Team Learning selects on since `0033`. The self-reference
+     * is declared with a callback because the table is still being defined.
+     */
+    managerId: integer('manager_id'),
+    /**
      * Seniority band — one of `JOB_LEVELS` in `common/workforce.ts`, or null
      * for a user nobody has set it on yet. Added by
      * `0018_workforce_and_activity_log.sql`.
@@ -90,6 +99,10 @@ export const users = pgTable(
     // The two Reports dimensions that filter and group on their own column.
     // `department` is already covered by idx_users_department above.
     index('idx_users_org_job_level').on(table.organizationId, table.jobLevel),
+    // Team Learning's entire predicate. The migration declares it PARTIAL
+    // (WHERE manager_id IS NOT NULL); Drizzle has no expression for that, and
+    // the migration is what executes (§6.3).
+    index('idx_users_manager').on(table.managerId),
     index('idx_users_org_location').on(table.organizationId, table.location),
   ],
 );

@@ -10,6 +10,7 @@ import {
   MaxLength,
   MinLength,
   ValidateNested,
+  IsInt,
 } from 'class-validator';
 
 
@@ -44,6 +45,40 @@ export class CreateUserDto {
   @IsString()
   @MinLength(6, { message: 'password must be at least 6 characters' })
   password!: string;
+
+  /**
+   * Which of the organization's roles the new account holds. Optional: omitted
+   * means the `learner` role, which is what every caller sent before this
+   * existed and what the bulk import still sends.
+   *
+   * It is a ROLE ID, not a portal or a role key. The portal is derived from
+   * the role row (`users.role` is written from `roles.portal`), so a caller
+   * cannot put somebody on the trainer portal while holding a learner role —
+   * the two columns cannot be made to disagree from outside.
+   *
+   * The service checks the id belongs to the caller's own organization and
+   * 404s otherwise, for the reason `RolesService.assign` already documents: a
+   * role id from another tenant must not be distinguishable from one that
+   * does not exist.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'role_id must be a role in this organization' })
+  role_id?: number;
+
+  /**
+   * Who this person reports to, and therefore whose Team Learning they appear
+   * in. Optional; an explicit null clears it (§10.10's patch semantics).
+   *
+   * Validated in the service, not here: the checks are "is this a real active
+   * user in the SAME organization", "is it not themselves" and "does it not
+   * create a cycle", and none of those is knowable from the value alone.
+   */
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === '' || value === null || value === undefined ? null : Number(value),
+  )
+  manager_id?: number | null;
 
   @IsOptional()
   @Transform(nullable)
@@ -98,6 +133,17 @@ export class UpdateUserDto {
   @IsOptional()
   @Transform(nullable)
   department?: string | null;
+
+  /**
+   * Who this person reports to. An explicit null clears it; omitting the key
+   * leaves it alone (§10.10). Validated in the service — same organization,
+   * not themselves, and no cycle.
+   */
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === '' || value === null || value === undefined ? null : Number(value),
+  )
+  manager_id?: number | null;
 
   @IsOptional()
   @Transform(nullable)
