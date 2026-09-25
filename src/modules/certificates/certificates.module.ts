@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
+
 import { ActivityModule } from '@/modules/activity/activity.module';
 
 import { AdminCertificatesController } from './admin-certificates.controller';
@@ -14,7 +16,7 @@ import { PublicCertificatesController } from './public-certificates.controller';
  * cross-module dependency certificates has.
  */
 @Module({
-  imports: [ActivityModule],
+  imports: [ActivityModule, NotificationsModule],
   controllers: [
     LearnerCertificatesController,
     AdminCertificatesController,

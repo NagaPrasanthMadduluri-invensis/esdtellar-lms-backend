@@ -20,6 +20,8 @@ import type {
 import { batchDisplayStatus } from '@/common/session-enrolment';
 import { displayStatus } from './session-status.util';
 import { SessionsRepository, type AttendanceRow } from './sessions.repository';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { actorLabel } from '@/common/notifications';
 
 /** Attendance states that count as having taken the training. */
 const CREDITING_STATUSES = ['present', 'late', 'partial'] as const;
@@ -52,6 +54,8 @@ export class SessionsService {
     private readonly media: MediaService,
     /** Best-effort (§8.4) — `record` never throws. */
     private readonly activity: ActivityService,
+    /** Best-effort (§8.4) — `notify` cannot throw. */
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -305,6 +309,15 @@ export class SessionsService {
       subjectId: id,
     });
 
+    void this.announceTrainer(scope, {
+      sessionId: id,
+      title: dto.title,
+      date: dto.date ?? null,
+      trainerUserId: trainer?.id ?? null,
+      trainerName: dto.trainer ?? trainer?.name ?? null,
+      actor,
+    });
+
     return {
       session: this.withDisplayStatus(
         await this.repository.findWithCourse(scope, id),
@@ -318,6 +331,17 @@ export class SessionsService {
     if (trainer) dto.trainer = trainer.name;
     const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
+
+    /*
+     * Who was running it BEFORE this save, read before the update overwrites
+     * it. Every session edit posts the whole form, so "the trainer field was
+     * submitted" does not mean it changed — without this comparison an admin
+     * fixing a typo in the venue would re-announce the trainer to the whole
+     * roster.
+     */
+    const previous = await this.repository.findWithCourse(scope, sessionId);
+    const trainerChanged =
+      (previous?.trainer ?? null) !== (dto.trainer ?? null);
 
     const requested = dto.status ?? 'upcoming';
     if (requested === 'completed' && before.status !== 'completed') {
@@ -340,6 +364,16 @@ export class SessionsService {
       this.trainingValues(dto),
     );
     await this.syncTrainingThumbnail(scope, sessionId, dto.thumbnail_url);
+
+    if (trainerChanged) {
+      void this.announceTrainer(scope, {
+        sessionId,
+        title: dto.title,
+        date: dto.date ?? null,
+        trainerUserId: trainer?.id ?? null,
+        trainerName: dto.trainer ?? null,
+      });
+    }
 
     if (requested === 'completed') {
       await this.repository.syncCompletions(scope, sessionId);
@@ -447,6 +481,34 @@ export class SessionsService {
     if (session?.status === 'completed') {
       await this.repository.syncCompletions(scope, sessionId);
     }
+
+    /*
+     * Tell the people just booked on it.
+     *
+     * The recipient list is the ROSTER as it now stands, not the ids in the
+     * request: `enroll_all + department` names no ids at all, so reading the
+     * result is the only way to know who was added. The cost is that an
+     * existing member re-notified when somebody else joins — acceptable
+     * against silently telling nobody in the department case, and the roster
+     * insert is ON CONFLICT DO NOTHING so this stays rare.
+     */
+    void (async () => {
+      const full = await this.repository.findWithCourse(scope, sessionId);
+      void this.notifications.notify({
+        userIds: await this.notifications.sessionRoster(sessionId),
+        organizationId: scope.organizationId,
+        type: 'session_enrolled',
+        title: `You are booked on "${full?.title ?? 'a session'}"`,
+        body: [full?.date, full?.start_time, full?.venue]
+          .filter(Boolean)
+          .join(' · ') || 'Check My Courses for the details.',
+        link: '/training-calendar',
+        subjectType: 'session',
+        subjectId: sessionId,
+        actorName: 'Your L&D team',
+        exceptUserId: adminId,
+      });
+    })();
 
     return this.roster(scope, sessionId);
   }
@@ -834,6 +896,81 @@ export class SessionsService {
    * it. The composite FK would also reject a cross-org id, but a 404 is a
    * better answer than a 500 from a constraint violation.
    */
+  /**
+   * A session touches three audiences and each is told a different sentence.
+   *
+   * The TRAINER is being given work — "you are running this" — and is the
+   * only one for whom it is an instruction. The ADMINS are being told the
+   * assignment landed, which is confirmation. The LEARNERS on the roster are
+   * being told who will be teaching them, which is news. One shared message
+   * would be wrong for at least two of them, which is why the catalogue has
+   * separate types rather than one fanned out.
+   *
+   * Learners are notified only when there is already a roster — on create
+   * there never is, so they get nothing here and hear about it from
+   * `addToRoster` instead. Sending both would tell an enrolled learner twice.
+   *
+   * Never throws: every call is `void`-ed and `notify` swallows its own
+   * errors (§8.4).
+   */
+  private async announceTrainer(
+    scope: OrgScope,
+    input: {
+      sessionId: number;
+      title: string;
+      date: string | null;
+      trainerUserId: number | null;
+      trainerName: string | null;
+      actor?: AuthenticatedUser;
+    },
+  ): Promise<void> {
+    const when = input.date ? ` on ${input.date}` : '';
+
+    if (input.trainerUserId) {
+      void this.notifications.notify({
+        userIds: [input.trainerUserId],
+        organizationId: scope.organizationId,
+        type: 'session_assigned_trainer',
+        title: `You are running "${input.title}"`,
+        body: `Scheduled${when}. Open your sessions to see the participants.`,
+        link: '/trainer/sessions',
+        subjectType: 'session',
+        subjectId: input.sessionId,
+        actorName: actorLabel(input.actor),
+        exceptUserId: input.actor?.userId ?? null,
+      });
+    }
+
+    if (!input.trainerName) return;
+
+    void this.notifications.notify({
+      userIds: await this.notifications.adminsOf(scope.organizationId),
+      organizationId: scope.organizationId,
+      type: 'session_trainer_set',
+      title: `${input.trainerName} is running "${input.title}"`,
+      body: `Scheduled${when}.`,
+      link: '/admin/sessions',
+      subjectType: 'session',
+      subjectId: input.sessionId,
+      actorName: actorLabel(input.actor),
+      exceptUserId: input.actor?.userId ?? null,
+    });
+
+    const roster = await this.notifications.sessionRoster(input.sessionId);
+    if (roster.length === 0) return;
+    void this.notifications.notify({
+      userIds: roster,
+      organizationId: scope.organizationId,
+      type: 'session_trainer_set',
+      title: `${input.trainerName} will be running "${input.title}"`,
+      body: `Scheduled${when}.`,
+      link: '/training-calendar',
+      subjectType: 'session',
+      subjectId: input.sessionId,
+      actorName: 'Your L&D team',
+    });
+  }
+
   private async resolveTrainer(
     scope: OrgScope,
     trainerUserId: unknown,

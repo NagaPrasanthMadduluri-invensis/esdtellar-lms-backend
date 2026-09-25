@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { BillingModule } from '@/modules/billing/billing.module';
 import { SeatsModule } from '@/modules/seats/seats.module';
+import { OrgOptionsModule } from '@/modules/org-options/org-options.module';
 
 import { AdminOrganizationController } from './admin-organization.controller';
 import { OrganizationsRepository } from './organizations.repository';
@@ -25,7 +26,7 @@ import { PlatformOrganizationsController } from './platform-organizations.contro
  * is guaranteed to have already run.
  */
 @Module({
-  imports: [BillingModule, SeatsModule],
+  imports: [BillingModule, SeatsModule, OrgOptionsModule],
   controllers: [
     PlatformOrganizationsController,
     PlatformAnalyticsController,

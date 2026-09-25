@@ -6,6 +6,8 @@ import { REQUEST_STATUSES } from '@/common/edstellar-services';
 import { ActivityService } from '@/modules/activity/activity.service';
 
 import { ServicesRepository } from './services.repository';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { actorLabel } from '@/common/notifications';
 import type {
   CreateServiceRequestDto,
   RespondToRequestDto,
@@ -18,6 +20,8 @@ export class ServicesService {
   constructor(
     private readonly repository: ServicesRepository,
     private readonly activity: ActivityService,
+    /** Best-effort (§8.4) — `notify` cannot throw. */
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -109,6 +113,34 @@ export class ServicesService {
       responseNote: dto.response_note ?? null,
     });
     if (!updated) throw new NotFoundException('Service request not found');
+
+    /*
+     * Tell the TENANT that Edstellar replied.
+     *
+     * `existing` is a raw-SQL row (snake_case) while `updated` is a Drizzle
+     * `.returning()` (camelCase) — the §10.10 seam this very file documents
+     * three paragraphs down. The org id comes from `existing`, deliberately,
+     * because that is the raw row and `organization_id` is the name it uses.
+     */
+    const organizationId = Number(existing.organization_id);
+    if (Number.isInteger(organizationId)) {
+      void (async () => {
+        void this.notifications.notify({
+          userIds: await this.notifications.adminsOf(organizationId),
+          organizationId,
+          type: 'service_request_answered',
+          title: `Edstellar replied about ${String(existing.ref_no ?? 'your request')}`,
+          body:
+            dto.response_note?.trim() ||
+            `Status is now ${dto.status.replace(/_/g, ' ')}.`,
+          link: '/admin/services',
+          subjectType: 'service_request',
+          subjectId: id,
+          actorName: 'Edstellar',
+        });
+      })();
+    }
+
     // `respond` IS a Drizzle `.returning()`, so this one does need shaping.
     return { request: this.shape(updated) };
   }
@@ -189,6 +221,40 @@ export class ServicesService {
       subjectType: 'service_request',
       subjectId: request.id,
     });
+
+    /*
+     * Both sides get told, and they are told different things.
+     *
+     * Edstellar needs to act on it, so their notification points at the
+     * platform queue. The tenant's other admins need to know it went — this
+     * is the one feature whose output leaves the building (§10.14), and a
+     * colleague opening a commercial conversation on the organization's
+     * behalf is worth surfacing rather than burying in a list.
+     */
+    void this.notifications.notifyPlatform({
+      type: 'service_requested',
+      title: `${dto.service} — new request`,
+      body: `${actorLabel(actor)} raised ${refNo}. Open the queue to respond.`,
+      link: '/platform/services',
+      subjectType: 'service_request',
+      subjectId: request.id,
+      actorName: actorLabel(actor),
+    });
+
+    void (async () => {
+      void this.notifications.notify({
+        userIds: await this.notifications.adminsOf(scope.organizationId),
+        organizationId: scope.organizationId,
+        type: 'service_requested',
+        title: `Service request ${refNo} sent to Edstellar`,
+        body: `${dto.service}. Edstellar follows up within 2 business days.`,
+        link: '/admin/services',
+        subjectType: 'service_request',
+        subjectId: request.id,
+        actorName: actorLabel(actor),
+        exceptUserId: actor.userId,
+      });
+    })();
 
     return { request: this.shape(request) };
   }

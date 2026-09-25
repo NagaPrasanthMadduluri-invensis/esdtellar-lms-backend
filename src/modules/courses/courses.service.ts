@@ -20,6 +20,8 @@ import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { MediaService } from '@/modules/media/media.service';
 
 import { CoursesRepository } from './courses.repository';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { actorLabel } from '@/common/notifications';
 import type {
   BulkCourseActionDto,
   CourseDto,
@@ -47,6 +49,8 @@ export class CoursesService {
     private readonly scorm: ScormService,
     /** Best-effort (§8.4) — never wrapped, `record` cannot throw. */
     private readonly activity: ActivityService,
+    /** Best-effort (§8.4) — `notify` cannot throw. */
+    private readonly notifications: NotificationsService,
   ) {}
 
   /* ── Lesson content rules ── */
@@ -1041,6 +1045,33 @@ export class CoursesService {
       actor: actor ?? null,
       subjectType: 'course',
       subjectId: courseId,
+    });
+
+    /*
+     * The NOTIFICATION is the opposite shape to the activity row above: one
+     * per learner, because each of them is being told something about their
+     * own workload. That is the whole distinction between the two tables
+     * (`0030_notifications.sql`), and it is why this is a fan-out while the
+     * line above is a single row.
+     *
+     * `inScope`, not the rows the insert created: an already-assigned learner
+     * whose due date just moved still wants telling. Best-effort and
+     * unawaited (§8.4) — an assignment must not fail over a bell.
+     */
+    const course = await this.repository.findById(scope, courseId);
+    void this.notifications.notify({
+      userIds: inScope,
+      organizationId: scope.organizationId,
+      type: 'course_assigned',
+      title: course?.name ? `New course: ${course.name}` : 'A new course was assigned to you',
+      body: dto.due_date
+        ? `Due ${dto.due_date}. Open My Courses to start.`
+        : 'Open My Courses to start.',
+      link: '/my-courses',
+      subjectType: 'course',
+      subjectId: courseId,
+      actorName: actorLabel(actor),
+      exceptUserId: adminId,
     });
 
     return { assigned, requested: dto.user_ids.length };

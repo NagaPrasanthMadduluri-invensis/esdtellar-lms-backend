@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { ActivityModule } from '@/modules/activity/activity.module';
+import { OrgOptionsModule } from '@/modules/org-options/org-options.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { AuthController } from './auth.controller';
 import { AuthRepository } from './auth.repository';
@@ -12,7 +13,7 @@ import { TokenService } from './token.service';
  * incoming requests.
  */
 @Module({
-  imports: [OrganizationsModule, ActivityModule],
+  imports: [OrganizationsModule, ActivityModule, OrgOptionsModule],
   controllers: [AuthController],
   providers: [AuthService, AuthRepository, TokenService],
   exports: [TokenService, AuthRepository],

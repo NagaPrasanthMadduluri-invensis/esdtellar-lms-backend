@@ -8,12 +8,19 @@ import {
 import type { OrgScope } from '@/database/org-scope';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
+import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { actorLabel } from '@/common/notifications';
+
 import { SeatsRepository } from './seats.repository';
 import type { RespondToSeatsDto, SeatRequestDto, SetSeatLimitDto } from './dto/seats.dto';
 
 @Injectable()
 export class SeatsService {
-  constructor(private readonly repository: SeatsRepository) {}
+  constructor(
+    private readonly repository: SeatsRepository,
+    /** Best-effort (§8.4) — `notify` cannot throw. */
+    private readonly notifications: NotificationsService,
+  ) {}
 
   /**
    * Seats used, the limit, and what is left.
@@ -34,6 +41,23 @@ export class SeatsService {
       is_full: limit !== null && used >= limit,
       /** 80% or more. A prompt to ask before it bites, not a failure. */
       is_near_limit: limit !== null && limit > 0 && used / limit >= 0.8,
+
+      /*
+       * Who is in the organization, for the panel's legend.
+       *
+       * Context, NOT arithmetic: only `learners` counts against `limit`.
+       * The reference mock adds all three together into the used figure, and
+       * that was considered and rejected — `0028_seat_limits.sql` records why
+       * admins and trainers are not seats, and the panel says so in words so
+       * the numbers cannot be read the mock's way by mistake.
+       */
+      breakdown: {
+        admins: Number(row.admins),
+        trainers: Number(row.trainers),
+        learners: Number(row.learners),
+      },
+      /** `organizations.created_at` — the "onboarded" date on the panel. */
+      onboarded_at: row.onboarded_at || null,
     };
   }
 
@@ -106,6 +130,35 @@ export class SeatsService {
       contactEmail: actor.email,
     });
 
+    // Edstellar has to decide; the tenant's other admins should know it was
+    // asked, so nobody files a second one the moment the unique index frees.
+    void this.notifications.notifyPlatform({
+      type: 'seat_requested',
+      title: `Seat request — ${dto.requested_seats} seats`,
+      body: `${actorLabel(actor)} asked to raise the limit from ${
+        seats.limit ?? 'unlimited'
+      }. ${seats.used} learners are active.`,
+      link: '/platform/seats',
+      subjectType: 'seat_request',
+      subjectId: Number(request.id),
+      actorName: actorLabel(actor),
+    });
+
+    void (async () => {
+      void this.notifications.notify({
+        userIds: await this.notifications.adminsOf(scope.organizationId),
+        organizationId: scope.organizationId,
+        type: 'seat_requested',
+        title: `Seat request sent — ${dto.requested_seats} seats`,
+        body: 'Edstellar will respond. You can have one open request at a time.',
+        link: '/admin/users',
+        subjectType: 'seat_request',
+        subjectId: Number(request.id),
+        actorName: actorLabel(actor),
+        exceptUserId: actor.userId,
+      });
+    })();
+
     return { request };
   }
 
@@ -163,6 +216,36 @@ export class SeatsService {
       responseNote: dto.response_note ?? null,
       approvedSeats: granted,
     });
+
+    /*
+     * The tenant is told, and the wording follows what actually happened —
+     * approving WRITES the limit, so "you now have 30 seats" is a statement
+     * of fact rather than a status change they have to go and verify.
+     */
+    const organizationId = Number(existing.organization_id);
+    if (Number.isInteger(organizationId)) {
+      void (async () => {
+        void this.notifications.notify({
+          userIds: await this.notifications.adminsOf(organizationId),
+          organizationId,
+          type: 'seat_request_answered',
+          title:
+            dto.status === 'approved'
+              ? `Seat request approved — you now have ${granted} seats`
+              : 'Seat request declined',
+          body:
+            dto.response_note?.trim() ||
+            (dto.status === 'approved'
+              ? 'Your new limit is live in Manage Users.'
+              : 'Talk to your Edstellar contact if you need more.'),
+          link: '/admin/users',
+          subjectType: 'seat_request',
+          subjectId: id,
+          actorName: 'Edstellar',
+        });
+      })();
+    }
+
     return { request };
   }
 

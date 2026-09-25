@@ -4,7 +4,8 @@
   "private": true,
   "description": "Edstellar LMS backend. NestJS + Drizzle + PostgreSQL. Owns the entire database schema and every API endpoint.",
   "scripts": {
-    "build": "nest build",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && nest build",
     "dev": "nest start --watch",
     "start": "nest start",
     "start:prod": "node dist/main",
@@ -35,6 +36,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "cookie-parser": "^1.4.7",
+    "country-state-city": "^3.2.1",
     "drizzle-orm": "^0.38.0",
     "fast-xml-parser": "^5.9.2",
     "pg": "^8.13.0",

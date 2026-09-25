@@ -5,14 +5,13 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
-  IsIn,
   IsOptional,
   IsString,
+  MaxLength,
   MinLength,
   ValidateNested,
 } from 'class-validator';
 
-import { JOB_LEVELS, LOCATIONS } from '@/common/workforce';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -57,7 +56,10 @@ export class CreateUserDto {
    */
   @IsOptional()
   @Transform(nullable)
-  @IsIn(LOCATIONS, { message: `location must be one of: ${LOCATIONS.join(', ')}` })
+  // Checked against THIS organization's branch locations in the service,
+  // not here: the valid set became a per-tenant query in `0031` and a
+  // decorator is evaluated at import time. See `UsersService`.
+  @IsString() @MaxLength(120)
   location?: string | null;
 
   /** Deliberately free text — it is a job title, not a reporting dimension. */
@@ -68,7 +70,8 @@ export class CreateUserDto {
   /** Closed list. This is the Reports "Job Level" filter and comparison axis. */
   @IsOptional()
   @Transform(nullable)
-  @IsIn(JOB_LEVELS, { message: `job_level must be one of: ${JOB_LEVELS.join(', ')}` })
+  // Same — validated per organization in the service.
+  @IsString() @MaxLength(120)
   job_level?: string | null;
 }
 
@@ -98,7 +101,10 @@ export class UpdateUserDto {
 
   @IsOptional()
   @Transform(nullable)
-  @IsIn(LOCATIONS, { message: `location must be one of: ${LOCATIONS.join(', ')}` })
+  // Checked against THIS organization's branch locations in the service,
+  // not here: the valid set became a per-tenant query in `0031` and a
+  // decorator is evaluated at import time. See `UsersService`.
+  @IsString() @MaxLength(120)
   location?: string | null;
 
   @IsOptional()
@@ -107,7 +113,8 @@ export class UpdateUserDto {
 
   @IsOptional()
   @Transform(nullable)
-  @IsIn(JOB_LEVELS, { message: `job_level must be one of: ${JOB_LEVELS.join(', ')}` })
+  // Same — validated per organization in the service.
+  @IsString() @MaxLength(120)
   job_level?: string | null;
 }
 

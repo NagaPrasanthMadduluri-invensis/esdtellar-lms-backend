@@ -1,7 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
-import { JOB_LEVELS, LOCATIONS } from '@/common/workforce';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -33,9 +32,9 @@ const nullable = ({ value }: { value: unknown }) => {
  *     promotion is the obvious thing to get wrong once, and there is no
  *     reason for this DTO to be the place it becomes possible.
  *
- * `job_level` and `location` ARE editable and are closed lists, validated
- * against `common/workforce.ts` exactly as the admin's user form is — one
- * rule, whichever screen sent it (§10.3.1.1).
+ * `job_level` and `location` ARE editable and are validated against this
+ * ORGANIZATION's curated lists, exactly as the admin's user form is — one
+ * rule, whichever screen sent it.
  */
 export class UpdateProfileDto {
   @IsOptional()
@@ -55,17 +54,18 @@ export class UpdateProfileDto {
   @IsOptional() @MaxLength(40) @Transform(nullable) phone?: string | null;
   @IsOptional() @MaxLength(120) @Transform(nullable) job_role?: string | null;
 
-  @IsOptional()
-  @IsIn(JOB_LEVELS, {
-    message: `job_level must be one of: ${JOB_LEVELS.join(', ')}`,
-  })
-  @Transform(nullable)
+  /*
+   * NOT `@IsIn` any more: the valid set is this organization's own list
+   * (`0031`), which is a query, and a decorator is evaluated at import time.
+   * `AuthService.updateProfile` checks both against `OrgOptionsService` and
+   * throws 422 with the tenant's own valid values — the enforcement moved to
+   * the layer that can see the organization (§3), it did not go away. Writing
+   * a value nothing can filter on is the silent-omission failure §10.12
+   * records, so this is the one place the check must stay.
+   */
+  @IsOptional() @IsString() @MaxLength(120) @Transform(nullable)
   job_level?: string | null;
 
-  @IsOptional()
-  @IsIn(LOCATIONS, {
-    message: `location must be one of: ${LOCATIONS.join(', ')}`,
-  })
-  @Transform(nullable)
+  @IsOptional() @IsString() @MaxLength(120) @Transform(nullable)
   location?: string | null;
 }

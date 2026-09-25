@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { OrgOptionsModule } from '@/modules/org-options/org-options.module';
+
 import { ActivityModule } from '@/modules/activity/activity.module';
 import { LeaderboardModule } from '@/modules/leaderboard/leaderboard.module';
 import { LearningHoursModule } from '@/modules/learning-hours/learning-hours.module';
@@ -16,7 +18,7 @@ import { SpreadsheetService } from './spreadsheet.service';
  * bulk-upload template download.
  */
 @Module({
-  imports: [ActivityModule, LearningHoursModule, LeaderboardModule],
+  imports: [ActivityModule, LearningHoursModule, LeaderboardModule, OrgOptionsModule],
   controllers: [ReportsController],
   providers: [
     AnalyticsService,

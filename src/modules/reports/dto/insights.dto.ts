@@ -7,10 +7,10 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
 } from 'class-validator';
 
-import { JOB_LEVELS, LOCATIONS } from '@/common/workforce';
 
 import {
   COMPARISON_DIMENSIONS,
@@ -52,23 +52,30 @@ export class AnalyticsQueryDto {
  * The audience filters, shared by every report scope.
  *
  * `location` and `job_level` validate against the closed lists and the other
- * two do not, which is the same split `common/workforce.ts` draws: those two
- * ARE the closed lists, `department` and `job_role` are free text whose values
- * come from whatever is in the table.
+ * two do not: `location` and `job_level` come from the organization's curated
+ * lists, `department` and `job_role` are free text whose values come from
+ * whatever is in the table.
+ *
+ * **None of the four is `@IsIn`-validated any more, and that is correct for a
+ * FILTER.** The two curated lists became per-organization tables in `0031`, so
+ * the valid set is a query and a decorator cannot do queries. The check was
+ * not moved to the service either, because a filter is not a write: an
+ * unrecognised value matches no rows and returns an empty report, which is a
+ * true answer. Compare `UpdateProfileDto`, where the same two fields DO get a
+ * service-side check — writing a value nothing can filter on is the failure
+ * §10.12 records, and reading one is not.
  */
 export class ReportFilterDto {
-  @IsOptional() @Transform(nullable) @IsString()
+  @IsOptional() @Transform(nullable) @IsString() @MaxLength(120)
   department?: string | null;
 
-  @IsOptional() @Transform(nullable)
-  @IsIn(LOCATIONS, { message: `location must be one of: ${LOCATIONS.join(', ')}` })
+  @IsOptional() @Transform(nullable) @IsString() @MaxLength(120)
   location?: string | null;
 
-  @IsOptional() @Transform(nullable) @IsString()
+  @IsOptional() @Transform(nullable) @IsString() @MaxLength(120)
   job_role?: string | null;
 
-  @IsOptional() @Transform(nullable)
-  @IsIn(JOB_LEVELS, { message: `job_level must be one of: ${JOB_LEVELS.join(', ')}` })
+  @IsOptional() @Transform(nullable) @IsString() @MaxLength(120)
   job_level?: string | null;
 }
 

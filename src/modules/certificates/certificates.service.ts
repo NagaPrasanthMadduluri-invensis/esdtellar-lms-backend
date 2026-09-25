@@ -11,6 +11,7 @@ import {
 import type { OrgScope } from '@/database/org-scope';
 import { ActivityService } from '@/modules/activity/activity.service';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
 
 import {
   CertificatesRepository,
@@ -36,6 +37,8 @@ export class CertificatesService {
     private readonly repository: CertificatesRepository,
     /** Best-effort (§8.4) — `record` never throws. */
     private readonly activity: ActivityService,
+    /** Best-effort (§8.4) — `notify` cannot throw. */
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -148,13 +151,53 @@ export class CertificatesService {
       // `certificates` is an activity table — it takes the learner's org,
       // which is exactly what `scope` is here: the caller is the learner
       // completing their own lesson/assessment.
-      return await this.repository.insert(scope, {
+      const certificateId = await this.repository.insert(scope, {
         userId,
         courseId,
         certificateCode: this.generateCode(courseId, userId),
         issuedAt: new Date().toISOString(),
         finalScore: verdict.finalScore,
       });
+
+      /*
+       * Two notifications, because two different things just happened and the
+       * learner cares about both: they finished the course, and they have a
+       * certificate for it.
+       *
+       * This is the right place for "course completed" precisely because of
+       * the guard clauses above — `existing` makes it fire once and never on a
+       * replay, and the completion verdict is the same definition the rest of
+       * the product uses (§10.11). Putting it on the lesson-complete write
+       * would fire on every lesson instead of on the last one.
+       */
+      void this.notifications.notify({
+        userIds: [userId],
+        organizationId: scope.organizationId,
+        type: 'course_completed',
+        title: `Course completed: ${snapshot.courseName ?? 'your course'}`,
+        body:
+          verdict.finalScore !== null
+            ? `Final score ${verdict.finalScore}%. Well done.`
+            : 'Well done.',
+        link: '/my-courses',
+        subjectType: 'course',
+        subjectId: courseId,
+        actorName: 'Edstellar',
+      });
+
+      void this.notifications.notify({
+        userIds: [userId],
+        organizationId: scope.organizationId,
+        type: 'certificate_issued',
+        title: 'Your certificate is ready',
+        body: `${snapshot.courseName ?? 'Your course'} — download it from Certificates.`,
+        link: '/certifications',
+        subjectType: 'certificate',
+        subjectId: certificateId,
+        actorName: 'Edstellar',
+      });
+
+      return certificateId;
     } catch (error) {
       // A race on UNIQUE(user_id, course_id) or a transient database error must
       // not fail the lesson/assessment flow that triggered this.

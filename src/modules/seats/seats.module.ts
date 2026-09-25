@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
+
 import { PlatformSeatsController } from './platform-seats.controller';
 import { SeatsController } from './seats.controller';
 import { SeatsRepository } from './seats.repository';
@@ -11,6 +13,7 @@ import { SeatsService } from './seats.service';
  * enforcement that makes the limit real rather than decorative.
  */
 @Module({
+  imports: [NotificationsModule],
   controllers: [SeatsController, PlatformSeatsController],
   providers: [SeatsService, SeatsRepository],
   exports: [SeatsService],

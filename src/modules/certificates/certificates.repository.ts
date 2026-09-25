@@ -27,6 +27,13 @@ export interface CompletionSnapshot {
    * hand, so auto-issue steps aside — see CertificatesService.autoIssue.
    */
   sessionId: number | null;
+  /**
+   * For the completion notification's wording. Selected here rather than
+   * fetched separately because this method already anchors on `courses` six
+   * times — one more scalar subquery costs nothing, and a second round trip
+   * on the completion path would (§7.5).
+   */
+  courseName: string | null;
 }
 
 @Injectable()
@@ -142,6 +149,13 @@ export class CertificatesRepository {
         and(eq(courses.id, courseId), eq(courses.organizationId, scope.organizationId)),
       );
 
+    const courseName = this.db
+      .select({ value: courses.name })
+      .from(courses)
+      .where(
+        and(eq(courses.id, courseId), eq(courses.organizationId, scope.organizationId)),
+      );
+
     const rows = await this.db.all<{
       total_lessons: number;
       completed_lessons: number;
@@ -149,6 +163,7 @@ export class CertificatesRepository {
       best_score: number | null;
       passed_count: number;
       session_id: number | null;
+      course_name: string | null;
     }>(sql`
       SELECT
         (${totalLessons})      AS total_lessons,
@@ -156,7 +171,8 @@ export class CertificatesRepository {
         (${activeAssessments}) AS assessment_count,
         (${bestScore})         AS best_score,
         (${passedAttempts})    AS passed_count,
-        (${sessionId})         AS session_id
+        (${sessionId})         AS session_id,
+        (${courseName})        AS course_name
     `);
     const row = rows[0];
 
@@ -167,6 +183,7 @@ export class CertificatesRepository {
       hasPassed: Number(row.passed_count) > 0,
       bestScore: row.best_score === null ? null : Number(row.best_score),
       sessionId: row.session_id === null ? null : Number(row.session_id),
+      courseName: row.course_name ?? null,
     };
   }
 

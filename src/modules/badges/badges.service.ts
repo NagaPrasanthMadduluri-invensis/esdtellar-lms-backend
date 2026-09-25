@@ -10,6 +10,7 @@ import {
 } from '@/common/badges';
 import type { OrgScope } from '@/database/org-scope';
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
 
 import { badgeHint } from './badge-hint.util';
 import { BadgesRepository } from './badges.repository';
@@ -39,6 +40,8 @@ export class BadgesService {
   constructor(
     private readonly repository: BadgesRepository,
     private readonly leaderboard: LeaderboardService,
+    /** Best-effort (§8.4) — `notify` cannot throw. */
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -110,6 +113,59 @@ export class BadgesService {
     );
     const awarded =
       eligible.length > 0 ? await this.repository.awardMany(scope, userId, eligible) : [];
+
+    /*
+     * One notification per NEWLY earned badge.
+     *
+     * `awardMany` is ON CONFLICT DO NOTHING and returns only the rows it
+     * actually inserted, so replaying this on every completion trigger — which
+     * is exactly what it is designed for — cannot re-notify. That property is
+     * why badges need no dedupe while the rank below does.
+     */
+    for (const id of awarded as BadgeId[]) {
+      void this.notifications.notify({
+        userIds: [userId],
+        organizationId: scope.organizationId,
+        type: 'badge_earned',
+        title: `Badge earned: ${BADGES[id as BadgeId]?.label ?? id}`,
+        body: BADGES[id as BadgeId]?.description ?? 'Open Achievements to see it.',
+        link: '/achievements',
+        subjectType: 'badge',
+        subjectId: null,
+        actorName: 'Edstellar',
+      });
+    }
+
+    /*
+     * Top three only, and once a week at most.
+     *
+     * Notifying on every rank change would fire on somebody else's activity
+     * as well as their own, and a bell that moves when you did nothing is
+     * noise. The rank is the `subjectId`, so re-entering 2nd after a week is
+     * news again but staying there is not.
+     */
+    void (async () => {
+      try {
+        const standings = await this.leaderboard.standings(scope);
+        const rank = standings.entries.findIndex((e) => e.id === userId) + 1;
+        if (rank < 1 || rank > 3) return;
+        void this.notifications.notifyOnce({
+          userIds: [userId],
+          organizationId: scope.organizationId,
+          type: 'leaderboard_rank',
+          title: `You are #${rank} on the leaderboard`,
+          body: `${stats.points} points. See where everyone stands.`,
+          link: '/leaderboard',
+          subjectType: 'leaderboard',
+          subjectId: rank,
+          actorName: 'Edstellar',
+          withinDays: 7,
+        });
+      } catch {
+        // Best-effort (§8.4): a standings read must not break a badge sync,
+        // which must not break marking a lesson complete.
+      }
+    })();
 
     return { stats, awarded: awarded as BadgeId[] };
   }

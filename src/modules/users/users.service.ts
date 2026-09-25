@@ -3,14 +3,14 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
 import {
-  JOB_LEVELS,
-  LOCATION_ALIASES,
-  LOCATIONS,
-} from '@/common/workforce';
+  OptionNotOfferedError,
+  OrgOptionsService,
+} from '@/modules/org-options/org-options.service';
 import { RolesService } from '@/modules/roles/roles.service';
 import { ActivityService } from '@/modules/activity/activity.service';
 import { SeatsService } from '@/modules/seats/seats.service';
@@ -24,6 +24,8 @@ import type {
 import type { OrgScope } from '@/database/org-scope';
 
 import { UsersRepository } from './users.repository';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { actorLabel } from '@/common/notifications';
 
 /** Applied to bulk-imported learners who arrive without a password column. */
 const DEFAULT_BULK_PASSWORD = 'Edstellar@123';
@@ -51,6 +53,11 @@ export class UsersService {
      * screen. The SERVICE, never the repository (§3.2).
      */
     private readonly seats: SeatsService,
+    /** Best-effort (§8.4) — `notify` cannot throw. */
+    private readonly notifications: NotificationsService,
+    /** The per-tenant branch locations and job levels that replaced
+     *  `common/workforce.ts` (`0031`). */
+    private readonly orgOptions: OrgOptionsService,
   ) {}
 
   async listLearners(scope: OrgScope) {
@@ -196,6 +203,7 @@ export class UsersService {
     await this.seats.assertSeatAvailable(scope);
 
     const learnerRole = await this.roles.roleByKey(scope, 'learner');
+    const workforce = await this.resolveWorkforceFields(scope, dto);
 
     const user = await this.repository.createLearner(scope, {
       firstName: dto.first_name,
@@ -203,9 +211,9 @@ export class UsersService {
       email: dto.email,
       passwordHash: hashPassword(dto.password),
       department: dto.department ?? null,
-      location: dto.location ?? null,
+      location: workforce.location,
       jobRole: dto.job_role ?? null,
-      jobLevel: dto.job_level ?? null,
+      jobLevel: workforce.jobLevel,
       roleId: learnerRole.id,
       // Derived from the role, never assumed to be the string 'learner' — if
       // an organization ever points its `learner` key at another portal, the
@@ -223,6 +231,31 @@ export class UsersService {
       subjectId: user.id,
     });
 
+    /*
+     * Tell the org's OTHER admins, not the one who just did it.
+     *
+     * `exceptUserId` matters more here than anywhere else: onboarding is
+     * usually a run of ten or twenty in a sitting, and an admin whose own bell
+     * lights up twenty times learns within a day to ignore it — at which
+     * point every other notification is lost too.
+     */
+    void (async () => {
+      void this.notifications.notify({
+        userIds: await this.notifications.adminsOf(scope.organizationId),
+        organizationId: scope.organizationId,
+        type: 'learner_onboarded',
+        title: `${dto.first_name} ${dto.last_name} was onboarded`,
+        body: dto.department
+          ? `Added to ${dto.department}. They can sign in now.`
+          : 'They can sign in now.',
+        link: '/admin/users',
+        subjectType: 'user',
+        subjectId: user.id,
+        actorName: actorLabel(actor),
+        exceptUserId: actor?.userId ?? null,
+      });
+    })();
+
     return { user };
   }
 
@@ -233,14 +266,16 @@ export class UsersService {
       throw new ConflictException('Email is already in use by another account');
     }
 
+    const workforce = await this.resolveWorkforceFields(scope, dto);
+
     const updated = await this.repository.updateProfile(scope, userId, {
       firstName: dto.first_name,
       lastName: dto.last_name,
       email: dto.email,
       department: dto.department ?? null,
-      location: dto.location ?? null,
+      location: workforce.location,
       jobRole: dto.job_role ?? null,
-      jobLevel: dto.job_level ?? null,
+      jobLevel: workforce.jobLevel,
     });
 
     return { user: { ...updated, is_active: updated.is_active === 1 } };
@@ -475,28 +510,53 @@ export class UsersService {
         continue;
       }
 
-      // A CSV reaches this loop without the `@IsIn` the admin form has, so the
-      // closed lists are enforced here or not at all — and an import is
-      // exactly how a location nobody can filter on got into the table the
-      // first time. Known alternative spellings are accepted and rewritten;
-      // anything else fails the row, with the valid values in the reason, so
-      // the admin fixes the CSV rather than discovering months later that
-      // these learners are missing from every location report.
-      const location = normaliseLocation(row.location ?? null);
-      if (location === INVALID) {
+      /*
+       * A CSV reaches this loop without the validation the admin form has, so
+       * the lists are enforced here or not at all — an import is exactly how a
+       * location nobody can filter on got into the table the first time.
+       *
+       * The valid set is now this ORGANIZATION's branch locations and job
+       * levels rather than a constant (`0031`), so the check is a service call
+       * and the failure reason names that tenant's own options. A bad row
+       * fails with the valid values in the reason, so the admin fixes the CSV
+       * rather than discovering months later that these learners are missing
+       * from every location report.
+       *
+       * Matching is case-insensitive and the STORED value is the list's
+       * spelling, which is what the alias table used to do for
+       * Bengaluru/Bangalore and now happens for every value automatically.
+       */
+      let location: string | null;
+      let jobLevel: string | null;
+      try {
+        location = await this.orgOptions.assertLocation(
+          scope.organizationId,
+          row.location ?? null,
+        );
+      } catch (error) {
         failed.push({
           row: rowNum,
           email,
-          reason: `Location must be one of: ${LOCATIONS.join(', ')}`,
+          reason:
+            error instanceof OptionNotOfferedError
+              ? error.message
+              : 'Location could not be validated',
         });
         continue;
       }
-      const jobLevel = row.job_level ?? null;
-      if (jobLevel !== null && !(JOB_LEVELS as readonly string[]).includes(jobLevel)) {
+      try {
+        jobLevel = await this.orgOptions.assertJobLevel(
+          scope.organizationId,
+          row.job_level ?? null,
+        );
+      } catch (error) {
         failed.push({
           row: rowNum,
           email,
-          reason: `Job level must be one of: ${JOB_LEVELS.join(', ')}`,
+          reason:
+            error instanceof OptionNotOfferedError
+              ? error.message
+              : 'Job level could not be validated',
         });
         continue;
       }
@@ -534,26 +594,34 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found');
     if (user.role === 'admin') throw new ForbiddenException(message);
   }
-}
 
-/** Sentinel for "present but not a value we accept". `null` means "not given". */
-const INVALID = Symbol('invalid-location') as unknown as string;
+  /**
+   * Resolve `location` and `job_level` against THIS organization's curated
+   * lists, returning the list's own spelling.
+   *
+   * One helper for create, update and the bulk importer, so a value the form
+   * accepts cannot be one the CSV rejects. Throws 422 with the tenant's own
+   * valid values — the check the DTO's `@IsIn` used to do before `0031` made
+   * the valid set a per-tenant query (§3: a rule that needs data is the
+   * service's, not a decorator's).
+   */
+  private async resolveWorkforceFields(
+    scope: OrgScope,
+    dto: { location?: string | null; job_level?: string | null },
+  ): Promise<{ location: string | null; jobLevel: string | null }> {
+    try {
+      const [location, jobLevel] = await Promise.all([
+        this.orgOptions.assertLocation(scope.organizationId, dto.location),
+        this.orgOptions.assertJobLevel(scope.organizationId, dto.job_level),
+      ]);
+      return { location, jobLevel };
+    } catch (error) {
+      throw new UnprocessableEntityException(
+        error instanceof Error ? error.message : 'Invalid value',
+      );
+    }
+  }
 
-/**
- * Accept a known alternative spelling, reject anything else.
- *
- * Forgiving where it safely can be (`Bengaluru` and `Bangalore` are the same
- * office) and strict where it cannot: an unrecognised value is not silently
- * nulled, because a learner with no location and a learner with a location the
- * filter cannot offer look identical afterwards and only one of them is a
- * mistake somebody can find.
- */
-function normaliseLocation(value: string | null): string | null {
-  if (value === null) return null;
-  const canonical = LOCATION_ALIASES[value] ?? value;
-  return (LOCATIONS as readonly string[]).includes(canonical)
-    ? canonical
-    : INVALID;
 }
 
 /** `admin` -> `Admin`. Only a fallback for a user whose role row is missing. */

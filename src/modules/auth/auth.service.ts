@@ -15,6 +15,7 @@ import type {
 } from '@/common/types/authenticated-request';
 
 import { ActivityService } from '@/modules/activity/activity.service';
+import { OrgOptionsService } from '@/modules/org-options/org-options.service';
 
 import { OrganizationsService } from '../organizations/organizations.service';
 import { AuthRepository } from './auth.repository';
@@ -83,6 +84,8 @@ export class AuthService {
     private readonly organizations: OrganizationsService,
     private readonly tokenService: TokenService,
     private readonly activity: ActivityService,
+    /** Per-tenant branch locations and job levels (`0031`). */
+    private readonly orgOptions: OrgOptionsService,
   ) {}
 
   async login(dto: LoginDto): Promise<AuthResult> {
@@ -261,13 +264,49 @@ export class AuthService {
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
+    /*
+     * `location` and `job_level` are checked HERE rather than by an `@IsIn`
+     * on the DTO, because since `0031` the valid set is this organization's
+     * own curated list and a decorator cannot query. The refusal names the
+     * tenant's own options.
+     *
+     * The returned value is the LIST's spelling, so the column ends up
+     * holding one casing of each value however the caller typed it — which is
+     * the entire point of a closed list as a reporting dimension.
+     */
+    const profile = await this.repository.findProfile(userId);
+    if (!profile) throw new NotFoundException('User not found');
+
+    let location: string | null | undefined;
+    let jobLevel: string | null | undefined;
+    try {
+      location =
+        dto.location === undefined
+          ? undefined
+          : await this.orgOptions.assertLocation(
+              Number(profile.organization_id),
+              dto.location,
+            );
+      jobLevel =
+        dto.job_level === undefined
+          ? undefined
+          : await this.orgOptions.assertJobLevel(
+              Number(profile.organization_id),
+              dto.job_level,
+            );
+    } catch (error) {
+      throw new UnprocessableEntityException(
+        error instanceof Error ? error.message : 'Invalid value',
+      );
+    }
+
     await this.repository.updateProfile(userId, {
       firstName: dto.first_name,
       lastName: dto.last_name,
       phone: dto.phone,
       jobRole: dto.job_role,
-      jobLevel: dto.job_level,
-      location: dto.location,
+      jobLevel,
+      location,
     });
     /*
      * Re-read rather than echo the patch back.

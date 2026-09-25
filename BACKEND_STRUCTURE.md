@@ -589,6 +589,144 @@ Update this table with every module you move.
 | tenant directory + access control (platform) | 3 | `server/src/modules/organizations` |
 | billing — invoices and payments (platform) | 7 | `server/src/modules/billing` |
 | seats — limit, usage, requests (tenant + platform) | 6 | `server/src/modules/seats` |
+| notifications (the bell, every portal) | 3 | `server/src/modules/notifications` |
+| geo reference data (countries, cities, industries) | 3 | `server/src/modules/geo` |
+| org workforce options (branch locations, job levels) | 4 | `server/src/modules/org-options` |
+
+### 10.19 Branch locations and job levels became per-tenant data
+
+`0031_org_workforce_options.sql` deletes `common/workforce.ts` and moves
+`LOCATIONS` and `JOB_LEVELS` into `organization_locations` and
+`organization_job_levels`, curated by the platform admin at onboarding.
+
+**This reverses §10.12's stated decision, and the reason it is safe is WHO
+curates.** That section argued there must be no table behind either list
+because "a table would let an org invent a value, which is exactly what makes
+`job_role` useless". The point stands — a reporting dimension is worth nothing
+if its values do not repeat. What changed is that these tables are written by
+`@PlatformAdmin()` routes ONLY; a tenant admin reads its own list and picks
+from it, exactly as they picked from the constant. The values still repeat.
+What Edstellar gains is the thing a nine-city Indian constant could not give:
+a customer in Dubai.
+
+**`users.location` and `users.job_level` stay `text`, with NO foreign key.**
+This is the load-bearing decision:
+
+- the reports builder filters and groups on those columns directly (§10.12); an
+  FK means rewriting every one of those queries through a join for no gain,
+  since the report needs the name the column already holds;
+- an FK would make the migration non-additive — every existing value would have
+  to resolve to a row first, and anything that did not would have to be
+  destroyed. §6.2 calls that a human checkpoint, not a boot migration;
+- renaming a branch must not rewrite history. Somebody recorded in "Bangalore"
+  in 2024 still worked there after the office is renamed.
+
+So the tables supply the OPTIONS a form may offer. They do not own the values
+already on people.
+
+**The backfill is the whole safety argument.** Without it the lists start
+empty and every existing learner's location becomes unselectable — still in
+the column, still grouping in reports, but no form could set it again. That is
+the silent-omission failure §10.12 records for the two legacy spellings,
+reintroduced deliberately. So `0031` inserts the DISTINCT values actually in
+use per organization first, then the old constants. Verified after running:
+**zero orphans** — no user holds a location or level absent from their org's
+list.
+
+**Removal is deactivation, never deletion** (`is_active = 0`). A branch no
+longer offered still names where somebody worked, and with no FK to protect it
+a delete would leave a value nothing could explain.
+
+**Validation moved from the DTO to the service, and only where it is a WRITE.**
+`@IsIn` compares against a value known at import time; the valid set is now a
+per-tenant query. So:
+
+| Path | Where it is checked |
+|---|---|
+| create / update a user, bulk import, own profile | `OrgOptionsService.assert*`, 422 naming that tenant's own options |
+| reports FILTERS | nowhere — an unrecognised filter matches no rows and returns an empty report, which is a true answer |
+
+The asserters return the LIST's spelling, so `"dubai"` is stored as `Dubai` —
+one casing per value, which is the entire point of a closed list as a
+dimension. That subsumes the old `LOCATION_ALIASES` Bengaluru/Bangalore table.
+
+**The city database is server-side only.** `country-state-city` unpacks to
+~17 MB. `GeoService` reads it and serves 250 countries and one country's
+cities on demand; shipping it to the browser to fill one dropdown on one admin
+screen would be the worst trade in the codebase. Cities are de-duplicated by
+name — the source lists some once per district — and carry their state for
+display only.
+
+**`common/industries.ts` IS still a code catalogue**, and the distinction is
+worth keeping straight: a branch location is a fact about one customer's
+offices that only they know, while an industry is how EDSTELLAR segments its
+own customer base. A list only Edstellar writes, read across every tenant to
+compare them, belongs in code.
+
+### 10.18 Notifications
+
+`0030_notifications.sql` adds the bell that all four portals share. Read the
+migration header first; the summary:
+
+**A notification is NOT an activity row, and the difference is the recipient.**
+`activity_log` is one row per event scoped to an ORGANIZATION, read as a feed,
+with no addressee and no read state. A notification is addressed to ONE PERSON
+and carries whether THEY have seen it. Assigning a course to fifteen learners
+writes **one** activity row and **fifteen** notifications. Folding them
+together would need a join table keyed by (row, user) — which is this table
+with extra steps.
+
+**`read_at`, not a boolean.** When somebody saw a thing is worth more than
+that they saw it, and costs the same. NULL is unread; the badge is `COUNT(*)`
+over NULLs, served by a PARTIAL index over unread rows only — that query runs
+on every page load in every portal, so it is the one worth indexing well.
+
+**`NotificationsService.notify()` never throws** (§8.4), the identical
+contract to `ActivityService.record()` and for the identical reason: telling
+somebody about a thing is secondary to the thing. Every caller `void`s it. The
+cost is stated where it matters — the notifications that are missing are the
+ones whose write failed, so nothing here may be the only way a person learns
+something. The data is on their screens regardless; the bell is a prompt to
+look.
+
+`NotificationsModule` is **dependency-free**, like `ActivityModule` and
+`JourneyGateModule` — every module that does something worth announcing
+imports it, so it can import none of them. That is why
+`platformRecipients()` resolves the platform org from
+`organizations.is_platform` itself rather than taking an id: the alternative
+was making eight callers inject `OrganizationsService` to fetch one number.
+
+**One multi-row INSERT per fan-out**, never one per recipient (§7.1).
+Assigning to a department is forty notifications on an admin's Save.
+
+**`exceptUserId` is on almost every call, and it matters most where the volume
+is.** An admin onboarding twenty people in a sitting must not get twenty
+notifications about their own clicks — an admin whose bell lights up at their
+own actions learns within a day to ignore it, and every other notification is
+lost with it.
+
+**Discrete events need no dedupe; recomputed state does.** Badges are safe
+because `awardMany` is ON CONFLICT DO NOTHING and returns only rows it
+actually inserted, so replaying the sync on every completion trigger cannot
+re-notify. A leaderboard RANK has no such row, so `notifyOnce()` checks for
+the same (user, type, subject) within N days — without it, "you are #2" would
+fire on every lesson a learner finishes.
+
+**A session announces to three audiences with three different sentences.** The
+trainer is being given work, the admins are being told it landed, the roster is
+being told who teaches them. One shared message would be wrong for at least
+two of them. On create there is no roster yet, so learners hear it from
+`addToRoster` instead — sending both would tell an enrolled learner twice.
+`update()` compares the trainer before and after, because every session edit
+posts the whole form and without that comparison fixing a typo in the venue
+re-announces the trainer to everybody.
+
+**`/api/notifications` has no `@Roles()` and no `@Permissions()`.** All four
+audiences have a bell, so gating it to one would give three of them a control
+that 403s; and your own notifications are not a capability an organization
+grants. No route takes a user id — identity comes from the token and
+`user_id` is in every predicate, so there is no parameter that could read or
+clear somebody else's bell.
 
 ### 10.17 The super-admin portal: tenants, money, seats
 
@@ -657,6 +795,20 @@ out. A limit that is displayed but not enforced is decoration and worse than
 none — it tells an admin they are capped while letting them past it. Verified:
 creating a learner at the cap is refused, deactivating frees a seat,
 reactivating is gated again.
+
+**`usage()` also returns a BREAKDOWN, and it is not part of the sum.**
+`admins`, `trainers` and `learners` partition on `users.role` so the three are
+the active headcount with nobody double-counted, and `learners` repeats the
+same predicate as `used` rather than aliasing it — the panel prints both, and
+if they ever diverge that is a bug worth seeing. Only `learners` counts
+against the limit. The reference mock adds all three into its "used" figure;
+that was considered and rejected, because it would mean an org choosing
+between an extra trainer and an extra learner, and it would change
+`assertSeatAvailable` to refuse admin and trainer creation at the cap. A
+MANAGER rides in the learner portal and therefore does consume a seat — always
+true of `used`, now stated rather than left to be discovered.
+
+`onboarded_at` is `organizations.created_at`, for the panel's subtitle.
 
 **Approving a seat request WRITES `organizations.seat_limit`.** An approval
 that only moved a status would leave the tenant still capped while being told

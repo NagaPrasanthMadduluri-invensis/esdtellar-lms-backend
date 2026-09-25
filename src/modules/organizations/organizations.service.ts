@@ -11,6 +11,7 @@ import { SYSTEM_ROLES, type RolePortal } from '@/common/permissions';
 import { contractState } from '@/common/tenant-account';
 import { BillingService } from '@/modules/billing/billing.service';
 import { SeatsService } from '@/modules/seats/seats.service';
+import { OrgOptionsService } from '@/modules/org-options/org-options.service';
 import { createOrgScope, type OrgScope } from '@/database/org-scope';
 
 import type { UpdateOrgSettingsDto } from './dto/org-settings.dto';
@@ -89,6 +90,8 @@ export class OrganizationsService implements OnModuleInit {
     // `seat_limit` lives on `organizations`, but SeatsService is its one
     // writer — see `createOrganization`.
     private readonly seats: SeatsService,
+    /** Branch locations and job levels for a new tenant (`0031`). */
+    private readonly orgOptions: OrgOptionsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -337,6 +340,26 @@ export class OrganizationsService implements OnModuleInit {
     // about what a tenant is entitled to.
     if (dto.seatLimit !== undefined) {
       await this.seats.setLimit(created.id, { seat_limit: dto.seatLimit });
+    }
+
+    /*
+     * Branch locations and job levels for the new tenant (`0031`).
+     *
+     * Job levels are SEEDED with a default so the tenant's admin is not handed
+     * an empty dropdown on the first learner they onboard. Branch locations
+     * are not seeded and are not guessed — Edstellar cannot know where a
+     * customer's offices are, and the onboarding form asks for them instead.
+     */
+    await this.orgOptions.seedDefaults(created.id);
+    if (dto.locations && dto.locations.length > 0) {
+      await this.orgOptions.setLocations(created.id, {
+        locations: dto.locations,
+      });
+    }
+    if (dto.jobLevels && dto.jobLevels.length > 0) {
+      await this.orgOptions.setJobLevels(created.id, {
+        job_levels: dto.jobLevels,
+      });
     }
 
     this.logger.log(

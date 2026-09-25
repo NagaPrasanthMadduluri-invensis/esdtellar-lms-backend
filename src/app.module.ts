@@ -13,6 +13,9 @@ import { DatabaseModule } from './database/database.module';
 import { AssessmentsModule } from './modules/assessments/assessments.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ActivityModule } from './modules/activity/activity.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { GeoModule } from './modules/geo/geo.module';
+import { OrgOptionsModule } from './modules/org-options/org-options.module';
 import { ServicesModule } from './modules/services/services.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { SeatsModule } from './modules/seats/seats.module';
@@ -58,6 +61,9 @@ import { UsersModule } from './modules/users/users.module';
     JourneysModule,
     BadgesModule,
     ActivityModule,
+    NotificationsModule,
+    GeoModule,
+    OrgOptionsModule,
     ServicesModule,
     BillingModule,
     SeatsModule,

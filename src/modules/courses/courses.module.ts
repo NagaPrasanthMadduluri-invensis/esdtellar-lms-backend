@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
+
 import { ActivityModule } from '@/modules/activity/activity.module';
 
 import { ScormModule } from '../scorm/scorm.module';
@@ -16,7 +18,7 @@ import { CoursesRepository } from './courses.repository';
 import { CoursesService } from './courses.service';
 
 @Module({
-  imports: [ActivityModule, MediaModule, ScormModule],
+  imports: [ActivityModule, MediaModule, ScormModule, NotificationsModule],
   controllers: [
     CoursesController,
     ModulesController,

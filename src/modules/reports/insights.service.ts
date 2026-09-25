@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
-import { JOB_LEVELS, LOCATIONS } from '@/common/workforce';
+import { OrgOptionsService } from '@/modules/org-options/org-options.service';
 import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
 
 import {
@@ -118,6 +118,8 @@ export class InsightsService {
      * hours traces back to `lessonSource`.
      */
     private readonly hours: LearningHoursService,
+    /** Branch locations and job levels, per tenant (`0031`). */
+    private readonly orgOptions: OrgOptionsService,
   ) {}
 
   // ═══════════════════════════ ANALYTICS ═══════════════════════════════
@@ -341,9 +343,10 @@ export class InsightsService {
 
   /** Everything the builder's controls need, with the live filter values. */
   async reportOptions(scope: OrgScope) {
-    const [rows, learners] = await Promise.all([
+    const [rows, learners, options] = await Promise.all([
       this.repository.filterOptions(scope),
       this.repository.learnersFiltered(scope, {}),
+      this.orgOptions.forScope(scope),
     ]);
     const of = (kind: string) => rows.filter((r) => r.kind === kind).map((r) => r.value);
     return {
@@ -353,12 +356,16 @@ export class InsightsService {
       metrics: COMPARISON_METRICS.map((m) => ({ ...m })),
       filters: {
         departments: of('department'),
-        // The two closed lists are offered in FULL, not only the values
-        // currently in use: an admin filtering for a location with nobody in
-        // it should see an empty report, which is an answer, rather than find
-        // the option missing and wonder whether the filter is broken.
-        locations: [...LOCATIONS],
-        jobLevels: [...JOB_LEVELS],
+        // The two curated lists are offered in FULL, not only the values
+        // currently in use: an admin filtering for a branch with nobody in it
+        // should see an empty report, which is an answer, rather than find the
+        // option missing and wonder whether the filter is broken.
+        //
+        // They come from THIS organization's own lists now rather than a
+        // constant (`0031`), so a tenant in Dubai no longer sees nine Indian
+        // cities in its report filter.
+        locations: options.locations.map((l) => l.name),
+        jobLevels: options.job_levels.map((j) => j.name),
         jobRoles: of('jobRole'),
       },
       learners: learners.map((l) => ({

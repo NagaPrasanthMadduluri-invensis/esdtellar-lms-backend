@@ -22,16 +22,59 @@ export class SeatsRepository {
    * decisions are spelled out in `0028_seat_limits.sql`.
    */
   async usage(scope: OrgScope) {
-    const rows = await this.db.all<{ seat_limit: number | null; used: number }>(sql`
+    const rows = await this.db.all<{
+      seat_limit: number | null;
+      used: number;
+      admins: number;
+      trainers: number;
+      learners: number;
+      onboarded_at: string;
+    }>(sql`
       SELECT o.seat_limit,
+             o.created_at AS onboarded_at,
              (SELECT COUNT(*)::int FROM users u
                WHERE u.organization_id = o.id
-                 AND u.role = 'learner' AND u.is_active = 1) AS used
+                 AND u.role = 'learner' AND u.is_active = 1) AS used,
+             /*
+              * The breakdown the Seat Licence panel shows beside the meter.
+              * (No backticks in this literal -- it sits inside a tagged
+              * template and one would open a JS substitution.)
+              *
+              * learners is the SAME predicate as used above, deliberately
+              * duplicated rather than aliased: the panel prints both, and if
+              * they ever stop being the same number that is a bug worth
+              * seeing rather than one the query hides.
+              *
+              * All three partition on users.role, the portal selector, so
+              * admins + trainers + learners is exactly the active headcount
+              * with nobody double counted. A MANAGER rides in the learner
+              * portal (rbac decision 2) and therefore counts as a learner
+              * here and consumes a seat -- which is what used has always
+              * done, stated now rather than left to be discovered.
+              */
+             (SELECT COUNT(*)::int FROM users u
+               WHERE u.organization_id = o.id
+                 AND u.role = 'admin' AND u.is_active = 1) AS admins,
+             (SELECT COUNT(*)::int FROM users u
+               WHERE u.organization_id = o.id
+                 AND u.role = 'trainer' AND u.is_active = 1) AS trainers,
+             (SELECT COUNT(*)::int FROM users u
+               WHERE u.organization_id = o.id
+                 AND u.role = 'learner' AND u.is_active = 1) AS learners
         FROM organizations o
        WHERE o.id = ${scope.organizationId}
        LIMIT 1
     `);
-    return rows[0] ?? { seat_limit: null, used: 0 };
+    return (
+      rows[0] ?? {
+        seat_limit: null,
+        used: 0,
+        admins: 0,
+        trainers: 0,
+        learners: 0,
+        onboarded_at: '',
+      }
+    );
   }
 
   /** The same figures for every tenant — the platform's seat column. */

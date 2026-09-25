@@ -33,6 +33,32 @@ export interface AttendanceRow {
   marker_last: string | null;
 }
 
+/**
+ * What `findWithCourse` returns.
+ *
+ * The query is `SELECT s.*`, so the named fields below are the ones callers
+ * actually read rather than a complete list of the row — hence the index
+ * signature. It was previously untyped (`db.all` with no parameter, which
+ * infers `{}`), so every property access on it was a compile error waiting
+ * for the first caller to try one. Naming the columns the service depends on
+ * is the difference between that and a typo being caught.
+ */
+export interface SessionWithCourseRow {
+  id: number;
+  title: string;
+  status: string;
+  date: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  venue: string | null;
+  trainer: string | null;
+  course_name: string | null;
+  training_course_id: number | null;
+  thumbnail_url: string | null;
+  /** The rest of `s.*`, not enumerated. */
+  [key: string]: unknown;
+}
+
 @Injectable()
 export class SessionsRepository {
   constructor(private readonly database: DatabaseService) {}
@@ -376,8 +402,11 @@ export class SessionsRepository {
     `);
   }
 
-  async findWithCourse(scope: OrgScope, sessionId: number) {
-    const rows = await this.db.all(sql`
+  async findWithCourse(
+    scope: OrgScope,
+    sessionId: number,
+  ): Promise<SessionWithCourseRow | null> {
+    const rows = await this.db.all<SessionWithCourseRow>(sql`
       SELECT s.*, c.name AS course_name, tc.id AS training_course_id,
         tc.thumbnail_url AS thumbnail_url
       FROM sessions s

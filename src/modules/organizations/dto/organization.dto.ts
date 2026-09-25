@@ -1,5 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsDefined,
   IsEmail,
@@ -16,6 +18,7 @@ import {
 } from 'class-validator';
 
 import { BILLING_CYCLES, PLANS } from '@/common/tenant-account';
+import { BranchLocationDto } from '@/modules/org-options/dto/org-options.dto';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -132,6 +135,20 @@ export class CreateOrganizationDto {
 
   @IsOptional() @IsNumber({}, { message: 'seatLimit must be a number' })
   @Min(1) @Type(() => Number) seatLimit?: number | null;
+
+  /*
+   * The tenant's BRANCH LOCATIONS, chosen from the country's cities on the
+   * onboarding form (`0031`). Optional here, but the form asks for at least
+   * one — until a tenant has one, its admin cannot set a location on any
+   * learner they onboard.
+   */
+  @IsOptional() @IsArray() @ArrayMaxSize(200)
+  @ValidateNested({ each: true }) @Type(() => BranchLocationDto)
+  locations?: BranchLocationDto[];
+
+  /** Overrides the seeded default. */
+  @IsOptional() @IsArray() @ArrayMaxSize(40) @IsString({ each: true })
+  jobLevels?: string[];
 }
 
 /** Renames and/or activates/deactivates. Deactivating never deletes anything. */
