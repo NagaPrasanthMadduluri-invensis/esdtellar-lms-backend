@@ -58,6 +58,25 @@ export const NOTIFICATION_TYPES = {
     audience: ['learner'],
   },
 
+  /* Self-enrolment opened (0035). TWO types rather than one "something is
+     open", because the two are different invitations: a course can be
+     started now and a session is a date somebody has to keep free. One
+     shared sentence would be wrong for whichever it was not written for —
+     the same reason a session already announces to its three audiences in
+     three sentences below. */
+  course_open_enrolment: {
+    label: 'A course is open to join',
+    group: 'learning',
+    icon: 'BookOpen',
+    audience: ['learner'],
+  },
+  session_open_enrolment: {
+    label: 'A session is open for booking',
+    group: 'sessions',
+    icon: 'CalendarPlus',
+    audience: ['learner'],
+  },
+
   /* ── Recognition ── */
   badge_earned: {
     label: 'Badge earned',
@@ -115,6 +134,18 @@ export const NOTIFICATION_TYPES = {
     group: 'sessions',
     icon: 'MessageSquare',
     audience: ['trainer'],
+  },
+
+  /* Course feedback (0034). The learner IS named, unlike
+     `session_feedback_received` above — the owner's rule is "anonymous to
+     everyone except the admin", and an admin is exactly who this goes to.
+     Only the FIRST submission notifies; revising an answer must not ring a
+     bell again. */
+  course_feedback_received: {
+    label: 'New course feedback',
+    group: 'learning',
+    icon: 'MessageSquare',
+    audience: ['admin'],
   },
 
   /* ── A manager and their reports ── */

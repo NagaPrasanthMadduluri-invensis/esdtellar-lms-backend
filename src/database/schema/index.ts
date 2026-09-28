@@ -34,3 +34,6 @@ export * from './notifications.schema';
 
 /** Session feedback, written by learners and read anonymised by trainers (0032). */
 export * from './feedback.schema';
+
+/** Editable course-feedback templates and the answers learners gave (0034). */
+export * from './course-feedback.schema';

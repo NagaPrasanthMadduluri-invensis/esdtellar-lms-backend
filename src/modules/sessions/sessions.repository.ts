@@ -531,18 +531,32 @@ export class SessionsRepository {
    * can never be added, so in practice the two coincide — but the value
    * written is always the learner's own.
    */
+  /**
+   * Returns the user ids ACTUALLY inserted — empty when the person was
+   * already on the roster, or is not a learner in this org.
+   *
+   * `RETURNING` past an `ON CONFLICT DO NOTHING` yields only real inserts,
+   * which is what lets the service notify exactly who joined. Before that it
+   * notified the whole roster on every add, because the ids in the request
+   * were the only thing it had and the department path carries none at all —
+   * tolerable while an admin added people one at a time, and not once
+   * learners could add themselves (0035): twenty self-enrolments would have
+   * sent the first person nineteen notifications.
+   */
   async addToRoster(
     scope: OrgScope,
     sessionId: number,
     userId: number,
-  ): Promise<void> {
-    await this.db.run(sql`
+  ): Promise<number[]> {
+    const rows = await this.db.all<{ user_id: number }>(sql`
       INSERT INTO session_roster (organization_id, session_id, user_id)
       SELECT u.organization_id, ${sessionId}, u.id
       FROM users u
       WHERE u.id = ${userId} AND u.role = 'learner' AND ${orgScope('u', scope)}
       ON CONFLICT (session_id, user_id) DO NOTHING
+      RETURNING user_id
     `);
+    return rows.map((r) => Number(r.user_id));
   }
 
   /**
@@ -553,8 +567,8 @@ export class SessionsRepository {
     scope: OrgScope,
     sessionId: number,
     department: string,
-  ): Promise<void> {
-    await this.db.run(sql`
+  ): Promise<number[]> {
+    const rows = await this.db.all<{ user_id: number }>(sql`
       INSERT INTO session_roster (organization_id, session_id, user_id)
       SELECT u.organization_id, ${sessionId}, u.id FROM users u
       WHERE u.role = 'learner' AND u.is_active = 1
@@ -564,7 +578,96 @@ export class SessionsRepository {
           SELECT user_id FROM session_roster WHERE session_id = ${sessionId}
         )
       ON CONFLICT (session_id, user_id) DO NOTHING
+      RETURNING user_id
     `);
+    return rows.map((r) => Number(r.user_id));
+  }
+
+  /* ── Self-enrolment (0035) ── */
+
+  /**
+   * How full a session is, counting the roster rather than a stored number.
+   *
+   * A stored count is a second definition of the same fact, free to drift the
+   * first time an admin removes somebody — the reason `display_status` is
+   * derived too (§10.7).
+   */
+  async rosterCount(scope: OrgScope, sessionId: number): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM session_roster sr
+       WHERE sr.session_id = ${sessionId} AND ${orgScope('sr', scope)}
+    `);
+    return rows[0]?.n ?? 0;
+  }
+
+  /**
+   * Put somebody in the queue. Returns their 1-based position, or null when
+   * they were already queuing — position is by arrival, so the queue needs no
+   * rank column and the count of earlier rows IS the position.
+   */
+  async addToWaitlist(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+  ): Promise<number | null> {
+    const inserted = await this.db.all<{ id: number }>(sql`
+      INSERT INTO session_waitlist (organization_id, session_id, user_id)
+      VALUES (${scope.organizationId}, ${sessionId}, ${userId})
+      ON CONFLICT (session_id, user_id) DO NOTHING
+      RETURNING id
+    `);
+    if (inserted.length === 0) return null;
+    return this.waitlistPosition(scope, sessionId, userId);
+  }
+
+  async waitlistPosition(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+  ): Promise<number | null> {
+    const rows = await this.db.all<{ position: number }>(sql`
+      SELECT COUNT(*)::int + 1 AS position
+        FROM session_waitlist w
+       WHERE w.session_id = ${sessionId}
+         AND ${orgScope('w', scope)}
+         AND w.created_at < (
+           SELECT m.created_at FROM session_waitlist m
+            WHERE m.session_id = ${sessionId} AND m.user_id = ${userId}
+         )
+    `);
+    return rows[0] ? Number(rows[0].position) : null;
+  }
+
+  /**
+   * This learner's attendance status for a session, or null when nobody has
+   * marked them. The marker of the line a self-leave may not cross.
+   */
+  async attendanceFor(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+  ): Promise<string | null> {
+    const rows = await this.db.all<{ status: string | null }>(sql`
+      SELECT sa.status FROM session_attendance sa
+       WHERE sa.session_id = ${sessionId} AND sa.user_id = ${userId}
+         AND ${orgScope('sa', scope)}
+       LIMIT 1
+    `);
+    return rows[0]?.status ?? null;
+  }
+
+  /** Is this learner already on the roster of this session? */
+  async isOnRoster(
+    scope: OrgScope,
+    sessionId: number,
+    userId: number,
+  ): Promise<boolean> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM session_roster sr
+       WHERE sr.session_id = ${sessionId} AND sr.user_id = ${userId}
+         AND ${orgScope('sr', scope)}
+    `);
+    return (rows[0]?.n ?? 0) > 0;
   }
 
   async removeFromRoster(
@@ -965,7 +1068,16 @@ export class SessionsRepository {
              s.description, s.status, s.capacity,
              c.name AS course_name,
              tc.id AS training_course_id,
-             sa.status AS attendance_status
+             -- A session's picture IS its companion training course's (§10.10),
+             -- so the card has art without a second column or a new upload.
+             tc.thumbnail_url AS thumbnail_url,
+             sa.status AS attendance_status,
+             -- Has this learner already rated it? The card offers "Give
+             -- feedback" only where the API would accept one, so the control
+             -- is absent rather than refused (§10.3.1.2, §10.20).
+             (SELECT f.id FROM session_feedback f
+               WHERE f.session_id = s.id AND f.user_id = sr.user_id)
+               AS feedback_id
       FROM session_roster sr
       JOIN sessions s ON s.id = sr.session_id
       LEFT JOIN courses c ON c.id = s.course_id

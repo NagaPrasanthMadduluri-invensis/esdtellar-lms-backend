@@ -278,6 +278,7 @@ export class LearnerRepository {
       passing_score: number | null;
       has_passed: number | null;
       assessment_count: number;
+      certificate_id: number | null;
       passed_assessments: number;
       session_id: number | null;
       session_type: string | null;
@@ -325,6 +326,16 @@ export class LearnerRepository {
          WHERE a.course_id = c.id AND t.user_id = ${userId}) AS has_passed,
         (SELECT COUNT(*) FROM assessments a
          WHERE a.course_id = c.id AND a.is_active = 1) AS assessment_count,
+        -- The certificate for THIS course, if one was ever issued to them.
+        -- Carried on the card so the Certificate button can appear only where
+        -- it leads somewhere: a session training never auto-issues one
+        -- (§10.7), so "completed" does not imply a certificate exists.
+        -- A REVOKED one is excluded — it is not a thing to go and look at.
+        (SELECT ct.id FROM certificates ct
+          WHERE ct.course_id = c.id AND ct.user_id = ${userId}
+            AND ct.organization_id = ${scope.organizationId}
+            AND ct.is_revoked = 0
+          ORDER BY ct.issued_at DESC LIMIT 1) AS certificate_id,
         -- DISTINCT, matching LeaderboardRepository.standings: re-passing an
         -- assessment already passed pays nothing, so the card must not count
         -- it as progress toward the course's total either.

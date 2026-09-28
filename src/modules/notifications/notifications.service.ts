@@ -154,6 +154,39 @@ export class NotificationsService {
     await this.notify({ ...input, userIds, organizationId });
   }
 
+  /**
+   * Learners who could newly act on something that has just opened for
+   * self-enrolment (0035) — active, on the learner portal, and not already
+   * holding it.
+   */
+  async learnersForOpenCourse(
+    organizationId: number,
+    courseId: number,
+  ): Promise<number[]> {
+    try {
+      return await this.repository.learnerRecipientsWithoutCourse(
+        organizationId,
+        courseId,
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  async learnersForOpenSession(
+    organizationId: number,
+    sessionId: number,
+  ): Promise<number[]> {
+    try {
+      return await this.repository.learnerRecipientsNotOnSession(
+        organizationId,
+        sessionId,
+      );
+    } catch {
+      return [];
+    }
+  }
+
   /** Everyone on a session's roster. */
   async sessionRoster(sessionId: number): Promise<number[]> {
     try {

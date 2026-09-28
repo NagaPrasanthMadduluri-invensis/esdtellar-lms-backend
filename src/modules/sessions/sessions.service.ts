@@ -340,6 +340,18 @@ export class SessionsService {
       actor,
     });
 
+    // A session learners may book themselves onto is news to all of them, not
+    // just to a roster that does not exist yet (0035).
+    if (this.isOpenToLearners({ enroll_mode: dto.enroll_mode ?? 'assigned', status: dto.status ?? 'upcoming', archived_at: null })) {
+      void this.announceOpenSession(scope, {
+        id,
+        title: dto.title,
+        date: dto.date ?? null,
+        start_time: dto.start_time ?? null,
+        session_type: dto.session_type ?? null,
+      });
+    }
+
     return {
       session: this.withDisplayStatus(
         await this.repository.findWithCourse(scope, id),
@@ -394,6 +406,37 @@ export class SessionsService {
         date: dto.date ?? null,
         trainerUserId: trainer?.id ?? null,
         trainerName: dto.trainer ?? null,
+      });
+    }
+
+    /*
+     * Opened for self-enrolment by this save. Same before/after comparison
+     * the trainer uses directly above, and for the same reason: the form
+     * posts `enroll_mode` on every edit, so without it a venue typo would
+     * re-invite the whole organization.
+     */
+    // `findWithCourse` is raw SQL and comes back loosely typed, so the three
+    // fields are narrowed here rather than asserted away.
+    const asText = (v: unknown): string | null =>
+      typeof v === 'string' ? v : null;
+    const wasArchived = asText(previous?.archived_at);
+    const wasOpen = this.isOpenToLearners({
+      enroll_mode: asText(previous?.enroll_mode) ?? 'assigned',
+      status: asText(previous?.status) ?? 'upcoming',
+      archived_at: wasArchived,
+    });
+    const nowOpen = this.isOpenToLearners({
+      enroll_mode: dto.enroll_mode ?? 'assigned',
+      status: requested,
+      archived_at: wasArchived,
+    });
+    if (!wasOpen && nowOpen) {
+      void this.announceOpenSession(scope, {
+        id: sessionId,
+        title: dto.title,
+        date: dto.date ?? null,
+        start_time: dto.start_time ?? null,
+        session_type: dto.session_type ?? null,
       });
     }
 
@@ -483,10 +526,11 @@ export class SessionsService {
     const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
+    let added: number[];
     if (dto.enroll_all && dto.department) {
-      await this.repository.enrollDepartment(scope, sessionId, dto.department);
+      added = await this.repository.enrollDepartment(scope, sessionId, dto.department);
     } else if (dto.user_id) {
-      await this.repository.addToRoster(scope, sessionId, dto.user_id);
+      added = await this.repository.addToRoster(scope, sessionId, dto.user_id);
     } else {
       throw new BadRequestException('user_id or enroll_all+department required');
     }
@@ -505,19 +549,23 @@ export class SessionsService {
     }
 
     /*
-     * Tell the people just booked on it.
+     * Tell exactly the people just booked on it — the ids the INSERT actually
+     * returned, not the whole roster.
      *
-     * The recipient list is the ROSTER as it now stands, not the ids in the
-     * request: `enroll_all + department` names no ids at all, so reading the
-     * result is the only way to know who was added. The cost is that an
-     * existing member re-notified when somebody else joins — acceptable
-     * against silently telling nobody in the department case, and the roster
-     * insert is ON CONFLICT DO NOTHING so this stays rare.
+     * It used to read the roster as it now stood, because `enroll_all +
+     * department` names no ids in the request and that was the only way to
+     * know who had been added. The cost was an existing member re-notified
+     * whenever anybody else joined, written off as rare because an admin adds
+     * people in one go. Self-enrolment (0035) removed that assumption:
+     * twenty learners booking themselves onto one session would have sent the
+     * first of them nineteen notifications. `RETURNING` past the
+     * ON CONFLICT is what makes the honest list available.
      */
+    if (added.length === 0) return this.roster(scope, sessionId);
     void (async () => {
       const full = await this.repository.findWithCourse(scope, sessionId);
       void this.notifications.notify({
-        userIds: await this.notifications.sessionRoster(sessionId),
+        userIds: added,
         organizationId: scope.organizationId,
         type: 'session_enrolled',
         title: `You are booked on "${full?.title ?? 'a session'}"`,
@@ -533,6 +581,114 @@ export class SessionsService {
     })();
 
     return this.roster(scope, sessionId);
+  }
+
+  /* ── Self-enrolment, from the Course Catalogue (0035) ── */
+
+  /**
+   * A learner books themselves onto a session.
+   *
+   * Goes through `addToRoster`, NEVER a direct insert — being on the roster
+   * IS being assigned the companion training (§10.7), and a hand-written
+   * roster row would enrol somebody in name only: no course card, no hours,
+   * nothing for attendance to credit. §10.16 already states this rule for
+   * `promoteFromWaitlist`, and it is the same rule.
+   *
+   * The learner's own id is passed as the assigner, which is deliberate and
+   * is the whole record that this was self-service:
+   * `user_course_assignments.assigned_by = user_id` and no new column
+   * (0035's header). It also means `exceptUserId` filters them out of the
+   * "you are booked on" notification, which is right — they just pressed the
+   * button.
+   *
+   * At capacity they join the WAITLIST rather than being refused. A queue is
+   * what a full self-enrol session is for, and it already exists (0025); a
+   * 409 would send them away with nothing to do.
+   */
+  async selfEnrol(scope: OrgScope, sessionId: number, userId: number) {
+    const session = await this.repository.findWithCourse(scope, sessionId);
+    if (!session) throw new NotFoundException('Session not found');
+
+    if (
+      !this.isOpenToLearners({
+        enroll_mode: typeof session.enroll_mode === 'string' ? session.enroll_mode : null,
+        status: typeof session.status === 'string' ? session.status : null,
+        archived_at: typeof session.archived_at === 'string' ? session.archived_at : null,
+      })
+    ) {
+      throw new UnprocessableEntityException(
+        'This session is not open for self-enrolment. Ask your L&D team to add you.',
+      );
+    }
+
+    // Already booked: say so rather than 409. The catalogue does not offer
+    // the button in that state, so reaching here means two tabs or a stale
+    // page, and the honest answer to "put me on this" is that they are on it.
+    if (await this.repository.isOnRoster(scope, sessionId, userId)) {
+      return { state: 'enrolled' as const, already: true, position: null };
+    }
+
+    const capacity = Number(session.capacity ?? 0);
+    const taken = await this.repository.rosterCount(scope, sessionId);
+    if (capacity > 0 && taken >= capacity) {
+      const position =
+        (await this.repository.addToWaitlist(scope, sessionId, userId)) ??
+        (await this.repository.waitlistPosition(scope, sessionId, userId));
+      return { state: 'waitlisted' as const, already: false, position };
+    }
+
+    await this.addToRoster(scope, sessionId, userId, { user_id: userId });
+    return { state: 'enrolled' as const, already: false, position: null };
+  }
+
+  /**
+   * A learner drops a session they booked themselves.
+   *
+   * Refused once ATTENDANCE HAS BEEN MARKED, which is the line that matters:
+   * `removeFromRoster` withdraws the training and deletes the completion it
+   * credited (§10.7), so letting somebody leave after the fact would erase a
+   * record of training they actually did — and, if they were marked absent,
+   * would let them quietly remove the evidence.
+   *
+   * There is deliberately no equivalent for a COURSE. Leaving one would
+   * delete lesson completions the learner has genuinely earned, with no undo
+   * and no admin in the loop; an admin can still unassign from the roster
+   * screen, knowing what it costs.
+   */
+  async selfLeave(scope: OrgScope, sessionId: number, userId: number) {
+    const session = await this.repository.findStatus(scope, sessionId);
+    if (!session) throw new NotFoundException('Session not found');
+
+    // Leaving the QUEUE is always allowed and costs nothing — no roster row,
+    // no assignment, nothing credited.
+    const removedFromQueue = await this.repository.removeFromWaitlist(
+      scope,
+      sessionId,
+      userId,
+    );
+    if (removedFromQueue > 0) {
+      return { state: 'left' as const, was: 'waitlisted' as const };
+    }
+
+    if (!(await this.repository.isOnRoster(scope, sessionId, userId))) {
+      throw new NotFoundException('You are not booked on this session');
+    }
+
+    if (session.status === 'completed') {
+      throw new UnprocessableEntityException(
+        'This session has already been completed. Ask your L&D team if you need to be taken off it.',
+      );
+    }
+
+    const marked = await this.repository.attendanceFor(scope, sessionId, userId);
+    if (marked) {
+      throw new UnprocessableEntityException(
+        'Your attendance for this session has already been marked, so it is part of your training record. Ask your L&D team to remove it.',
+      );
+    }
+
+    await this.removeFromRoster(scope, sessionId, userId);
+    return { state: 'left' as const, was: 'enrolled' as const };
   }
 
   async removeFromRoster(scope: OrgScope, sessionId: number, userId: number) {
@@ -918,6 +1074,70 @@ export class SessionsService {
    * it. The composite FK would also reject a cross-org id, but a 404 is a
    * better answer than a 500 from a constraint violation.
    */
+  /**
+   * Can a learner book themselves onto this session right now?
+   *
+   * One definition, read by the create announcement, the update transition
+   * test, the catalogue list and the self-enrol write — so a session that is
+   * announced but not listed, or listed and then refused, cannot happen.
+   *
+   * A COMPLETED or CANCELLED session is not bookable however its mode reads:
+   * the mode says who may join, the status says whether joining means
+   * anything. A past-but-not-yet-completed session deliberately still is —
+   * `display_status` calls that `in_progress` (§10.7), and an admin adding a
+   * late arrival to a sitting that has started is a real thing.
+   */
+  isOpenToLearners(session: {
+    enroll_mode?: string | null;
+    status?: string | null;
+    archived_at?: string | null;
+  }): boolean {
+    return (
+      session.enroll_mode === 'self' &&
+      session.status !== 'completed' &&
+      session.status !== 'cancelled' &&
+      !session.archived_at
+    );
+  }
+
+  /**
+   * "<Session> is open for booking" to every active learner not already on
+   * its roster or its waitlist.
+   *
+   * Never throws; always `void`-ed (§8.4). Deliberately a different TYPE from
+   * the course announcement — a session is a date somebody has to keep free,
+   * and the sentence that says so is not the sentence that says a course can
+   * be started now.
+   */
+  private async announceOpenSession(
+    scope: OrgScope,
+    session: {
+      id: number;
+      title: string;
+      date: string | null;
+      start_time: string | null;
+      session_type: string | null;
+    },
+  ): Promise<void> {
+    const when = [session.date, session.start_time].filter(Boolean).join(' · ');
+    await this.notifications.notify({
+      userIds: await this.notifications.learnersForOpenSession(
+        scope.organizationId,
+        session.id,
+      ),
+      organizationId: scope.organizationId,
+      type: 'session_open_enrolment',
+      title: `"${session.title}" is open for booking`,
+      body: when
+        ? `${when}${session.session_type ? ` · ${session.session_type}` : ''} — book your place from the Course Catalogue.`
+        : 'Book your place from the Course Catalogue.',
+      link: '/catalogue',
+      subjectType: 'session',
+      subjectId: session.id,
+      actorName: 'Your L&D team',
+    });
+  }
+
   /**
    * A session touches three audiences and each is told a different sentence.
    *

@@ -60,6 +60,39 @@ export const courses = pgTable(
      * lives in migration 0005.
      */
     sessionId: integer('session_id'),
+    /**
+     * Does this course ask the learner for feedback when they finish? (0034)
+     *
+     * Two columns rather than one nullable id, because "off" and "which
+     * form" are different questions. Feedback is NEVER part of completion —
+     * a learner who ignores it still earns the hours and the certificate.
+     */
+    feedbackEnabled: integer('feedback_enabled').notNull().default(1),
+    /**
+     * An explicit template, overriding the one the CATEGORY implies. Null is
+     * the default and means "follow the category" (Technical -> technical,
+     * Compliance -> compliance, everything else -> standard), which is why no
+     * existing course needed a backfill.
+     *
+     * Declared without `.references()` for the same reason `sessionId` is:
+     * `course-feedback.schema.ts` already imports this file for `courses`,
+     * and the reverse reference here would make the two circular. The foreign
+     * key and its ON DELETE SET NULL live in migration 0034.
+     */
+    feedbackTemplateId: integer('feedback_template_id'),
+    /**
+     * May a learner add themselves to this course? (0035)
+     *
+     * Additive, never exclusive: an admin can still assign a self-enrol
+     * course to a department, and both routes write the same
+     * `user_course_assignments` row. That is why this is a flag and not a
+     * mode like `sessions.enroll_mode` — a session has seats that one side
+     * or the other must own, and a course does not.
+     *
+     * A row a learner created for themselves is the one whose `assigned_by`
+     * equals its `user_id`; no second column records it.
+     */
+    selfEnrol: integer('self_enrol').notNull().default(0),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

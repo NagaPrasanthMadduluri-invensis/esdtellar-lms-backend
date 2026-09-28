@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, max, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, max, sql } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
 import { contentScope, orgScope, type OrgScope } from '@/database/org-scope';
@@ -10,6 +10,7 @@ import {
   courses,
   journeys,
   lessons,
+  organizations,
   userAssessmentAttempts,
   userLessonCompletions,
   users,
@@ -61,6 +62,25 @@ export class CertificatesRepository {
     userId: number,
     courseId: number,
   ): Promise<CompletionSnapshot> {
+    /*
+     * THE COURSE IS CONTENT, SO IT MAY BE PLATFORM-OWNED.
+     *
+     * Every subquery below used `courses.organization_id = <this org>`, which
+     * is `orgScope` applied to a CONTENT row — §10.12's rule read backwards.
+     * A course Edstellar publishes to every tenant carries the PLATFORM org's
+     * id, so for a tenant's learner all seven resolved to zero rows:
+     * `totalLessons` came back 0, `evaluate()` read that as `no_lessons`, and
+     * `autoIssue` returned null. A learner could finish a platform course
+     * completely and never be issued a certificate, silently.
+     *
+     * The Drizzle equivalent of `contentScope` — the raw-SQL helper cannot be
+     * used inside a query-builder `and()`. One constant, so the seven call
+     * sites cannot drift apart.
+     */
+    const courseIsVisible = inArray(courses.organizationId, [
+      scope.organizationId,
+      scope.platformOrganizationId,
+    ]);
     // `courses` is the query root here: every subquery below is independent
     // (no shared FROM), so each one re-anchors on it rather than trusting an
     // already-scoped caller. A courseId from another org resolves to zero
@@ -75,7 +95,7 @@ export class CertificatesRepository {
           eq(courseModules.courseId, courseId),
           eq(lessons.isActive, 1),
           eq(courseModules.isActive, 1),
-          eq(courses.organizationId, scope.organizationId),
+          courseIsVisible,
         ),
       );
 
@@ -91,7 +111,11 @@ export class CertificatesRepository {
           eq(lessons.isActive, 1),
           eq(courseModules.isActive, 1),
           eq(userLessonCompletions.userId, userId),
-          eq(courses.organizationId, scope.organizationId),
+          courseIsVisible,
+          // The completion is ACTIVITY and belongs to ONE tenant, even when
+          // the course is shared. Without this, a platform course completed
+          // in another org would count toward this learner's certificate.
+          eq(userLessonCompletions.organizationId, scope.organizationId),
         ),
       );
 
@@ -103,7 +127,7 @@ export class CertificatesRepository {
         and(
           eq(assessments.courseId, courseId),
           eq(assessments.isActive, 1),
-          eq(courses.organizationId, scope.organizationId),
+          courseIsVisible,
         ),
       );
 
@@ -120,7 +144,9 @@ export class CertificatesRepository {
           eq(assessments.courseId, courseId),
           eq(assessments.isActive, 1),
           eq(userAssessmentAttempts.userId, userId),
-          eq(courses.organizationId, scope.organizationId),
+          courseIsVisible,
+          // Activity again — see the note on completedLessons.
+          eq(userAssessmentAttempts.organizationId, scope.organizationId),
         ),
       );
 
@@ -138,7 +164,8 @@ export class CertificatesRepository {
           eq(assessments.isActive, 1),
           eq(userAssessmentAttempts.userId, userId),
           eq(userAssessmentAttempts.isPassed, 1),
-          eq(courses.organizationId, scope.organizationId),
+          courseIsVisible,
+          eq(userAssessmentAttempts.organizationId, scope.organizationId),
         ),
       );
 
@@ -146,14 +173,14 @@ export class CertificatesRepository {
       .select({ value: courses.sessionId })
       .from(courses)
       .where(
-        and(eq(courses.id, courseId), eq(courses.organizationId, scope.organizationId)),
+        and(eq(courses.id, courseId), courseIsVisible),
       );
 
     const courseName = this.db
       .select({ value: courses.name })
       .from(courses)
       .where(
-        and(eq(courses.id, courseId), eq(courses.organizationId, scope.organizationId)),
+        and(eq(courses.id, courseId), courseIsVisible),
       );
 
     const rows = await this.db.all<{
@@ -325,11 +352,25 @@ export class CertificatesRepository {
         issuedAt: certificates.issuedAt,
         finalScore: certificates.finalScore,
         isRevoked: certificates.isRevoked,
+        /*
+         * WHOSE certificate this is, by organization.
+         *
+         * Joined on `certificates.organization_id`, which is the LEARNER's
+         * org, not the course's — so a platform-authored course completed at
+         * Invensis prints "Invensis Technologies". The document belongs to
+         * the employer who put the person through the training; Edstellar
+         * authored the material, which is a different claim.
+         */
+        organizationName: organizations.name,
       })
       .from(certificates)
       .leftJoin(courses, eq(courses.id, certificates.courseId))
       .leftJoin(journeys, eq(journeys.id, certificates.journeyId))
       .innerJoin(users, eq(users.id, certificates.userId))
+      .innerJoin(
+        organizations,
+        eq(organizations.id, certificates.organizationId),
+      )
       .where(
         and(
           eq(certificates.id, id),

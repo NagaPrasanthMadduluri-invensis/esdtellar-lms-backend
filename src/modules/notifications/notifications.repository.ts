@@ -204,6 +204,72 @@ export class NotificationsRepository {
     };
   }
 
+  /**
+   * Active learner-portal accounts in an organization who are NOT already
+   * assigned this course — the audience for "a course is open to join"
+   * (0035).
+   *
+   * The NOT EXISTS is the whole point. Telling somebody a course is newly
+   * available when it has been sitting in their My Courses for a month is
+   * exactly the kind of notification that teaches people to stop reading the
+   * bell, and §10.18 already pays for that lesson with `exceptUserId`.
+   *
+   * `r.portal = 'learner'` rather than `users.role`, the same discriminator
+   * `adminRecipients` uses above — and it is what correctly INCLUDES a
+   * manager, who rides in the learner portal and takes courses like anybody
+   * else, while excluding trainers.
+   */
+  async learnerRecipientsWithoutCourse(
+    organizationId: number,
+    courseId: number,
+  ): Promise<number[]> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      SELECT u.id
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+       WHERE u.organization_id = ${organizationId}
+         AND u.is_active = 1
+         AND r.portal = 'learner'
+         AND NOT EXISTS (
+           SELECT 1 FROM user_course_assignments uca
+            WHERE uca.user_id = u.id AND uca.course_id = ${courseId}
+         )
+    `);
+    return rows.map((r) => Number(r.id));
+  }
+
+  /**
+   * The same audience for a SESSION: active learners not already on its
+   * roster and not already queuing on its waitlist.
+   *
+   * Both exclusions are needed. Somebody on the waitlist has already acted on
+   * this session and is waiting on a seat; re-inviting them to book it would
+   * read as the seat having come free, which is a promise this notification
+   * cannot keep.
+   */
+  async learnerRecipientsNotOnSession(
+    organizationId: number,
+    sessionId: number,
+  ): Promise<number[]> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      SELECT u.id
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+       WHERE u.organization_id = ${organizationId}
+         AND u.is_active = 1
+         AND r.portal = 'learner'
+         AND NOT EXISTS (
+           SELECT 1 FROM session_roster sr
+            WHERE sr.user_id = u.id AND sr.session_id = ${sessionId}
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM session_waitlist sw
+            WHERE sw.user_id = u.id AND sw.session_id = ${sessionId}
+         )
+    `);
+    return rows.map((r) => Number(r.id));
+  }
+
   /** Everyone currently on a session's roster. */
   async sessionRosterRecipients(sessionId: number): Promise<number[]> {
     const rows = await this.db.all<{ id: number }>(sql`

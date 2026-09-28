@@ -413,6 +413,9 @@ export class CoursesService {
     isMandatory?: number | null;
     expiryMonths?: number | null;
     tags?: string | null;
+    feedbackEnabled?: number | null;
+    feedbackTemplateId?: number | null;
+    selfEnrol?: number | null;
     archivedAt?: string | null;
     createdAt: unknown;
     updatedAt: unknown;
@@ -436,6 +439,15 @@ export class CoursesService {
       }),
       expiry_months: course.expiryMonths ?? null,
       tags: course.tags ?? null,
+      // Feedback (0034). `feedback_template_id` null means "follow the
+      // category" — which template that actually resolves to is answered by
+      // GET /admin/surveys/courses/:id, never recomputed here, so the course
+      // form and the learner's page cannot disagree about it.
+      feedback_enabled: Number(course.feedbackEnabled ?? 1) === 1,
+      feedback_template_id: course.feedbackTemplateId ?? null,
+      // Self-enrolment (0035). Defaults to off, so a course nobody has opened
+      // reads as closed rather than as unset.
+      self_enrol: Number(course.selfEnrol ?? 0) === 1,
       archived_at: course.archivedAt ?? null,
       created_at: course.createdAt,
       updated_at: course.updatedAt,
@@ -473,6 +485,12 @@ export class CoursesService {
       // Technical and still print "Renews every 12 mo" on its card.
       expiryMonths: dto.category === COMPLIANCE_CATEGORY ? (dto.expiry_months ?? null) : null,
       tags: dto.tags ?? null,
+      // Feedback is ON by default, matching the column's own DEFAULT 1, and
+      // follows the category unless the admin picked a template.
+      feedbackEnabled: dto.feedback_enabled ?? true,
+      feedbackTemplateId: dto.feedback_template_id ?? null,
+      // Closed unless the admin says otherwise, matching the column default.
+      selfEnrol: dto.self_enrol ?? false,
     });
 
     await this.activity.record(scope, {
@@ -483,7 +501,113 @@ export class CoursesService {
       subjectId: course.id,
     });
 
+    // Tell the learners who can now act on it. Best-effort (§8.4) — a bell
+    // that did not ring must never fail a course create.
+    if (this.isOpenToLearners(course)) {
+      void this.announceOpenCourse(scope, course);
+    }
+
     return { course: this.shape(course) };
+  }
+
+  /**
+   * A learner adds an open course to their own learning (0035).
+   *
+   * Writes the ordinary `user_course_assignments` row — the same row an admin
+   * assignment writes — so My Courses, progress, learning hours, the
+   * leaderboard and certificates all pick it up through definitions that
+   * already work. Nothing here teaches any of them about self-enrolment,
+   * which is the same reasoning §10.7 gives for a session being a course.
+   *
+   * `assignedBy` is the learner themselves. That IS the record of how the row
+   * got there (0035's header), and `createAssignment` leaves
+   * `source_journey_id` NULL, so the course is open rather than gated behind
+   * a journey the learner is not on (§10.11).
+   *
+   * No due date: nobody set them a deadline, and inventing one would turn a
+   * course somebody chose into a course they are late for.
+   */
+  async selfEnrol(scope: OrgScope, courseId: number, userId: number) {
+    const course = await this.repository.findById(scope, courseId);
+    if (!course) throw new NotFoundException('Course not found');
+
+    if (!this.isOpenToLearners(course)) {
+      throw new UnprocessableEntityException(
+        'This course is not open to self-enrolment. Ask your L&D team to assign it to you.',
+      );
+    }
+
+    // Already theirs — by an admin's assignment, by a journey, or by a second
+    // tab. Saying so beats a 409: the catalogue does not offer the button in
+    // that state, and the honest answer to "add this" is that they have it.
+    const existing = await this.repository.findAssignment(scope, userId, courseId);
+    if (existing) return { enrolled: true, already: true, course_id: courseId };
+
+    await this.repository.createAssignment({
+      organizationId: scope.organizationId,
+      userId,
+      courseId,
+      assignedBy: userId,
+      dueDate: null,
+    });
+
+    return { enrolled: true, already: false, course_id: courseId };
+  }
+
+  /**
+   * Can a learner reach this course from the Course Catalogue right now?
+   *
+   * All three conditions, in one place, because three screens ask the
+   * question — the catalogue read, the create announcement and the update
+   * transition test — and a course that is announced but not listed (or the
+   * reverse) is the worst outcome the feature has.
+   *
+   * A session's companion training is excluded: it is reached by booking the
+   * session, and offering it as a course would enrol somebody in a training
+   * with no sitting behind it (§10.7).
+   */
+  private isOpenToLearners(course: {
+    selfEnrol?: number | null;
+    isActive: number;
+    archivedAt?: string | null;
+    sessionId: number | null;
+  }): boolean {
+    return (
+      Number(course.selfEnrol ?? 0) === 1 &&
+      Number(course.isActive) === 1 &&
+      !course.archivedAt &&
+      course.sessionId === null
+    );
+  }
+
+  /**
+   * "<Course> is now open to join" to every active learner who does not
+   * already have it.
+   *
+   * Never throws and is always `void`ed by its callers (§8.4). One multi-row
+   * insert for the whole audience (§7.1), so opening a course to a
+   * 500-learner tenant is one statement rather than 500.
+   */
+  private async announceOpenCourse(
+    scope: OrgScope,
+    course: { id: number; name: string; category: string | null },
+  ): Promise<void> {
+    await this.notifications.notify({
+      userIds: await this.notifications.learnersForOpenCourse(
+        scope.organizationId,
+        course.id,
+      ),
+      organizationId: scope.organizationId,
+      type: 'course_open_enrolment',
+      title: `"${course.name}" is open to join`,
+      body: course.category
+        ? `${course.category} · add it to your learning from the Course Catalogue.`
+        : 'Add it to your learning from the Course Catalogue.',
+      link: '/catalogue',
+      subjectType: 'course',
+      subjectId: course.id,
+      actorName: 'Your L&D team',
+    });
   }
 
   async update(scope: OrgScope, courseId: number, dto: CourseDto) {
@@ -523,12 +647,44 @@ export class CoursesService {
           : dto.is_mandatory,
       expiryMonths: nextExpiryMonths(dto, existing),
       tags: dto.tags === undefined ? existing.tags : dto.tags,
+      // Omitted means "leave it alone", the same rule as the four above: the
+      // settings form does not send either field, and a rename must not turn
+      // a course's survey off or drop its chosen template.
+      feedbackEnabled:
+        dto.feedback_enabled === undefined
+          ? existing.feedbackEnabled === 1
+          : dto.feedback_enabled,
+      feedbackTemplateId:
+        dto.feedback_template_id === undefined
+          ? existing.feedbackTemplateId
+          : dto.feedback_template_id,
+      selfEnrol:
+        dto.self_enrol === undefined
+          ? existing.selfEnrol === 1
+          : dto.self_enrol,
     });
 
     // Only once the row is written, and only for the picture it no longer
     // points at (§8.4 — a failed delete must not fail the edit).
     if (existing.thumbnailUrl && existing.thumbnailUrl !== thumbnailUrl) {
       await this.media.discardCourseThumbnail(existing.thumbnailUrl);
+    }
+
+    /*
+     * Announce only on the TRANSITION into being open, never on every save.
+     *
+     * The settings form posts the whole course on every edit, so without the
+     * before/after comparison, fixing a typo in the description would
+     * re-announce the course to every learner who has not taken it. §10.18
+     * records the identical trap on a session's trainer, and the fix is the
+     * same shape.
+     *
+     * It fires for either half of "open": switching self-enrolment on, and
+     * publishing a draft that already had it on. Both are the moment a
+     * learner can first act.
+     */
+    if (!this.isOpenToLearners(existing) && this.isOpenToLearners(course)) {
+      void this.announceOpenCourse(scope, course);
     }
 
     return { course: this.shape(course) };

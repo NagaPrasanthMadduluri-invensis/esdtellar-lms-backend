@@ -129,6 +129,13 @@ export class CoursesRepository {
       FROM courses c
       WHERE ${contentScope('c', scope)}
         AND c.archived_at IS ${archived ? sql`NOT NULL` : sql`NULL`}
+        -- E-LEARNING ONLY. A session's companion training course (§10.7) is
+        -- an implementation detail of Live Sessions, not a library entry: it
+        -- is created and renamed by the session, the course editor refuses to
+        -- touch it, and it cannot be published, assigned or archived on its
+        -- own. Listing it here offered an admin a row where almost every
+        -- control was refused. Sessions & Attendance is where they live.
+        AND c.session_id IS NULL
       ORDER BY c.created_at DESC
     `);
   }
@@ -138,6 +145,9 @@ export class CoursesRepository {
     const rows = await this.db.all<{ n: number }>(sql`
       SELECT COUNT(*)::int AS n FROM courses c
       WHERE ${contentScope('c', scope)} AND c.archived_at IS NOT NULL
+        -- Same predicate as the list above, or the badge promises rows the
+        -- toggle will not show.
+        AND c.session_id IS NULL
     `);
     return Number(rows[0]?.n ?? 0);
   }
@@ -405,6 +415,9 @@ export class CoursesRepository {
     isMandatory: boolean;
     expiryMonths: number | null;
     tags: string | null;
+    feedbackEnabled: boolean;
+    feedbackTemplateId: number | null;
+    selfEnrol: boolean;
   }) {
     const [created] = await this.db
       .insert(courses)
@@ -418,6 +431,9 @@ export class CoursesRepository {
         isMandatory: input.isMandatory ? 1 : 0,
         expiryMonths: input.expiryMonths,
         tags: input.tags,
+        feedbackEnabled: input.feedbackEnabled ? 1 : 0,
+        feedbackTemplateId: input.feedbackTemplateId,
+        selfEnrol: input.selfEnrol ? 1 : 0,
       })
       .returning();
     return created;
@@ -435,6 +451,9 @@ export class CoursesRepository {
       isMandatory: boolean;
       expiryMonths: number | null;
       tags: string | null;
+      feedbackEnabled: boolean;
+      feedbackTemplateId: number | null;
+      selfEnrol: boolean;
     },
   ) {
     const [updated] = await this.db
@@ -448,6 +467,9 @@ export class CoursesRepository {
         isMandatory: input.isMandatory ? 1 : 0,
         expiryMonths: input.expiryMonths,
         tags: input.tags,
+        feedbackEnabled: input.feedbackEnabled ? 1 : 0,
+        feedbackTemplateId: input.feedbackTemplateId,
+        selfEnrol: input.selfEnrol ? 1 : 0,
         updatedAt: sql`now()`,
       })
       .where(and(eq(courses.id, id), eq(courses.organizationId, scope.organizationId)))

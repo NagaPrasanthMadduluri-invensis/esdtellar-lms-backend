@@ -196,10 +196,32 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async courses(scope: OrgScope, userId: number) {
-    const [rows, contentRows] = await Promise.all([
+    const [allRows, contentRows] = await Promise.all([
       this.repository.assignedCourses(scope, userId),
       this.repository.courseContentTypes(scope, userId),
     ]);
+
+    /*
+     * SESSIONS ARE EXCLUDED FROM MY COURSES — they have their own module.
+     *
+     * A session still IS a course assignment (§10.7): it owns a companion
+     * training course, and that is what credits attendance, hours, the
+     * leaderboard and certificates. None of that changes. What changes is
+     * only which LIST it appears in, so a learner browsing courses is not
+     * shown rows whose progress bar they cannot move themselves.
+     *
+     * Filtered HERE rather than in `assignedCourses`, deliberately: three
+     * other callers share that query — `dashboard`, `progress` and
+     * `courseDetail` — and a session is still part of what a learner has been
+     * assigned. Narrowing the repository would have silently dropped sessions
+     * out of their totals too, which nobody asked for and which would make
+     * the dashboard disagree with Learning Hours.
+     *
+     * Learning hours are untouched by construction: `LearningHoursService`
+     * reads `user_lesson_completions` directly (§10.4), never this payload,
+     * so a session's minutes keep counting exactly as before.
+     */
+    const rows = allRows.filter((row) => !row.session_id);
 
     // What each course actually holds, rather than a hard-coded assumption.
     const typesByCourse = new Map(
@@ -258,6 +280,16 @@ export class LearnerService {
         passingScore:
           row.passing_score !== null ? Number(row.passing_score) : 60,
         hasFailed,
+        /*
+         * The certificate for this course, or null. The card shows its
+         * Certificate button ONLY when this is set — a completed course does
+         * not imply one exists: a session training never auto-issues
+         * (§10.7), and a revoked certificate is excluded by the query. A
+         * button that led to a page not listing this course would be the
+         * screen-that-lies failure §10.3.1.2 exists to prevent.
+         */
+        certificateId:
+          row.certificate_id !== null ? Number(row.certificate_id) : null,
         course: {
           id: row.course_id,
           name: row.name,

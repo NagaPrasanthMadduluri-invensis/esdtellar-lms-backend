@@ -593,6 +593,349 @@ Update this table with every module you move.
 | geo reference data (countries, cities, industries) | 3 | `server/src/modules/geo` |
 | org workforce options (branch locations, job levels) | 4 | `server/src/modules/org-options` |
 | session feedback (learner writes, trainer reads anonymised) | 3 | `server/src/modules/feedback` |
+| course feedback — editable templates + learner answers | 8 | `server/src/modules/surveys` |
+| course catalogue — self-enrolment in courses and sessions | 4 | `server/src/modules/catalogue` |
+
+### 10.25 Self-enrolment, and the Course Catalogue
+
+`0035_self_enrolment.sql` adds ONE column — `courses.self_enrol` — and the
+rest of the feature is code. Read the migration header first; the summary:
+
+**Half of it already existed and had no trigger.** `sessions.enroll_mode`
+(`assigned` | `self`) and `session_waitlist` both shipped with 0025, but no
+admin control set the mode and no learner route acted on it. TASTE §10.3.1.17
+had already written the consequence down: *"there is no learner self-enrolment
+endpoint in this product, so a Register button would be a control that does
+nothing."* That is §5.2.1's screen-that-lies seen from the other side — the
+capability was real, guarded and unreachable. So a second `self_enrol` column
+on `sessions` would have been a second vocabulary for a state that was already
+stored.
+
+**A course gets a FLAG, a session keeps its MODE, and the difference is
+seats.** A session's two values are exclusive: either an admin books people
+onto a finite sitting or learners book themselves. A course has no seats, so
+self-enrolment there is strictly additive — an admin may still assign it to a
+department while learners also find it in the catalogue, and both write the
+same `user_course_assignments` row. Modelling that as a mode would force a
+choice the product does not need to make.
+
+**A self-enrolled row is the one whose `assigned_by = user_id`.** No new
+column: a row a learner created for themselves is precisely one whose assigner
+is the assignee. §10.12 dropped the reports builder's self-vs-assigned
+enrolment split because "there is no self-enrolment in this product, so the
+split would be 100%/0% by construction" — that premise is gone, and the split
+is now expressible from a column that already exists.
+
+**Nothing downstream learned a new concept, and that is the whole design.**
+A self-enrolled course writes the ordinary assignment row, so My Courses,
+progress, learning hours, the leaderboard and certificates pick it up through
+definitions that already work. A self-enrolled session goes through
+`SessionsService.addToRoster`, never a direct insert, because being on the
+roster IS being assigned the companion training (§10.7) — the same rule
+§10.16 states for `promoteFromWaitlist`, and a hand-written roster row would
+enrol somebody in name only.
+
+Measured rather than asserted: a learner self-booked onto a session, was
+marked present and the session completed, and their all-time hours moved
+**29.1 → 32.8** — exactly the 222 minutes the sitting was scheduled for. No
+code in `LearningHoursService` was touched.
+
+**At capacity a learner joins the WAITLIST rather than being refused.** The
+queue is what a full self-enrol session is for and it already existed; a 409
+would send somebody away with nothing to do. `is_full`, `seats_left` and
+`waitlist_position` are all derived by the service and sent down, so the
+browser cannot hold a second definition of "full" that disagrees with the
+write.
+
+**Leaving is a SESSION-only route, refused once attendance is marked.**
+`removeFromRoster` withdraws the training and deletes the completion it
+credited, so allowing a late exit would erase a record of training somebody
+actually did — and let a learner marked absent quietly remove the evidence.
+There is deliberately no course equivalent at all: leaving one would delete
+lesson completions genuinely earned, with no undo and no admin in the loop.
+An admin can still unassign, knowing what it costs.
+
+**Announcements fire on the TRANSITION into being open, never on every save.**
+Both forms post the whole row on every edit, so `CoursesService.update` and
+`SessionsService.update` each compare before and after — without that, fixing
+a typo in a description would re-announce the thing to the whole
+organization. §10.18 records the identical trap on a session's trainer. It
+fires for either half of "open": switching self-enrolment on, and publishing a
+draft that already had it on.
+
+The audience is **active learner-portal accounts who do not already hold it**,
+resolved by `learnerRecipientsWithoutCourse` / `learnerRecipientsNotOnSession`.
+`r.portal = 'learner'` rather than `users.role`, which correctly includes a
+Manager and excludes trainers — verified: opening a course notified 20
+learners and 1 manager, no admins, no trainers, and nothing cross-tenant. The
+NOT EXISTS is the point: telling somebody a course is newly available when it
+has sat in their My Courses for a month is how people learn to ignore the
+bell.
+
+**Two notification types, not one.** A course can be started now; a session is
+a date somebody has to keep free. One shared sentence would be wrong for
+whichever it was not written for — the same reason a session already
+announces to its three audiences in three sentences (§10.18).
+
+Announcements are fired from `create` and `update` only. A bulk publish or
+restore that happens to open a course does NOT announce; the catalogue is
+still correct, and the bell is a prompt rather than the record (§10.18's own
+framing).
+
+#### A pre-existing over-notification, fixed on the way past
+
+`SessionsService.addToRoster` notified **the whole roster as it then stood**,
+not the people it had just added, because `enroll_all + department` names no
+ids in the request and reading the roster back was the only list available.
+The comment there wrote it off as rare — true while an admin adds people in
+one go, and false the moment learners could add themselves: twenty
+self-enrolments onto one session would have sent the first person nineteen
+notifications.
+
+`addToRoster` and `enrollDepartment` now `RETURNING user_id` past their
+`ON CONFLICT DO NOTHING`, so the insert itself reports who actually joined and
+the notification goes to exactly them. The department path gets the same fix
+for free.
+
+Routes, all `@Roles('learner')` and no `@Permissions()` — joining something
+the organization has deliberately opened to everybody is not a capability it
+then withholds from individuals:
+
+```
+GET    /api/learner/catalogue                          open courses + sessions, with my state
+POST   /api/learner/catalogue/courses/:id/enrol        add a course (200, idempotent)
+POST   /api/learner/catalogue/sessions/:id/enrol       book a place, or join the queue (200)
+DELETE /api/learner/catalogue/sessions/:id/enrol       give up a place, or leave the queue
+```
+
+**`CatalogueModule` composes; it does not duplicate.** The list is its own
+query because neither Courses nor Sessions can answer half of it, but every
+write delegates to the service that owns the rule — the module, never the
+repository (§3.2). Nothing imports `CatalogueModule`, so the two it imports
+cannot become a cycle.
+
+**The list's scope split is §10.12's rule applied in three places.** A course
+is CONTENT (`contentScope`, so a platform-owned course is genuinely joinable),
+the enrolment counted against it is ACTIVITY (its own `orgScope`, or a shared
+course would show this tenant another tenant's headcount), and a session is
+org-owned so `orgScope` is the whole predicate. Verified: an Invensis learner
+sees none of Edstellar's open items.
+
+#### Found while testing, NOT fixed here
+
+`LearnerService.completeLesson` enforces the JOURNEY gate
+(`assertCourseUnlocked`) but **not** the within-module sequential lock that
+`LearnerService.lesson` enforces. Reproduced on a locked lesson: `GET
+/api/learner/lessons/1` returned 403 *"This lesson is locked. Complete the
+previous lesson first"* while `POST /api/learner/lessons/1/complete` returned
+200 and credited the hours. That is exactly the failure §10.11 describes for
+the journey gate — *"Gating only the read was the first version, and it was
+worth nothing"* — one level down, and it predates this work entirely. It is
+recorded here rather than fixed because changing lesson-completion semantics
+reaches hours, certificates and journeys, and deserves its own change.
+
+### 10.24 Course feedback: templates the admin writes
+
+`0034_course_feedback.sql` adds three tables and two columns on `courses`.
+Read the migration header first; the summary:
+
+**IT IS NEVER PART OF COMPLETION, and that is the requirement rather than an
+implementation detail.** Nothing in `CertificatesService.evaluate()`, the
+completion definition (§10.11), `LearningHoursService` or the leaderboard
+reads these tables, and `SurveysService.submit` writes nothing but its own
+row. A learner who never answers still finishes the course, still earns the
+hours, still gets the certificate — and the card, the dialog header and the
+course form each say so in words, because a form sitting under the
+assessments is otherwise read as the last thing standing between somebody and
+their certificate.
+
+**This is NOT `session_feedback` (0032), and the difference is the subject.**
+That asks three FIXED questions about a sitting and its trainer reads it with
+no names; this asks whatever the admin wrote about a COURSE and the admin
+reads it with names. One table for both would be one table whose columns are
+meaningful for half its rows. The one thing they share — `user_id` stored so
+one person cannot answer twice — is stored for the same reason and read by a
+different audience:
+
+| | who may see the author |
+|---|---|
+| `session_feedback` | the admin only; no trainer route selects `user_id` |
+| `course_feedback` | the admin, and the form says so before the first answer |
+
+**Which form a course shows is resolved in ONE method**,
+`SurveysService.resolveTemplate`, read by the learner's form, the learner's
+submit and the admin's course editor:
+
+```
+feedback_enabled = 0        -> none
+feedback_template_id SET    -> that template, whatever the category says
+feedback_template_id NULL   -> the CATEGORY's: Technical -> technical,
+                               Compliance -> compliance, else standard
+a session's companion course -> none (it is rated through the session, §10.7)
+```
+
+Two columns rather than one nullable id, because "off" and "which one" are
+different questions. NULL is the default, so every existing course followed
+its category the moment the migration ran — no backfill, no course form to
+open. `GET /admin/surveys/options` returns `category_templates` already
+resolved so the browser renders the answer instead of mirroring the rule;
+a copy of it in JavaScript would be free to drift from the form a learner is
+actually shown.
+
+**The three seeded templates cannot be deleted, and everything else about
+them can change.** The resolver looks them up BY KEY, so deleting `technical`
+would leave every Technical course resolving to nothing with nothing on
+screen to say why. Their names, descriptions and whole question sets are
+editable, which is what the owner asked for; `is_active` is also refused on
+them, for the same reason — turning feedback off is a per-COURSE control,
+which is where an admin looks for it.
+
+**`answers` is a jsonb document, with §10.14's cost restated because it
+applies unchanged.** Five question types over a fully custom question set is
+not a relational shape. So: **`answers` is not queryable as structured
+data.** "Average rating across Technical courses" is not a SELECT over this
+column, and anything that needs reporting on must first be promoted to a real
+column — the way `service_requests.timeline` was.
+
+**`validateAnswers` is a WHITELIST, not a type check.** It keeps only answers
+to questions that are actually on the template, because the column is written
+from a request body and without it a caller could store arbitrary keys of
+arbitrary size in something nothing validates. The per-type checks (a rating
+is 1–5, a choice is one of the offered ones) sit inside the same loop.
+
+**An open text question is never required.** Enforced in
+`normaliseQuestions`, not merely disabled in the editor: a mandatory essay is
+how a form gets abandoned, and an abandoned form collects nothing at all.
+
+**Questions are validated BEFORE the template row is written.** They were not
+at first, and a mistyped choice list left an empty template behind on every
+refused create — so the next attempt with the same name silently got a `-2`
+key. Same ordering now in `update`, so a refused question set cannot leave
+the name already renamed.
+
+**`replaceQuestions` deletes and re-inserts in one transaction** — the editor
+always resends the whole ordered list, so a diff would be a slower route to
+the same rows. The cost is stated where it lands: answers already given are
+keyed by the OLD question ids and keep them, so the admin's read pairs what
+it can and lists the rest as *"a question that has since been changed"*.
+Re-labelling an old answer with new wording would put words in somebody's
+mouth.
+
+**`course_feedback` is ACTIVITY, so `orgScope`, never `contentScope`** — even
+though the COURSE may be platform-owned and shared. §10.12's rule applied
+before rather than after a leak: the content predicate says whether this admin
+may see the course and nothing at all about whose opinion is counted against
+it. Verified: an Invensis admin sees none of Edstellar's answers and 404s on
+its templates.
+
+**`course_feedback_received` notifies the org's admins on the FIRST
+submission only.** An upsert that re-rang the bell on every edit is one
+admins learn to ignore (§10.18), so the repository returns `xmax = 0` as
+`created` and the service branches on it. The learner IS named, unlike
+`session_feedback_received` — the rule is anonymous to everyone except the
+admin, and an admin is exactly who receives it.
+
+**Submitting returns 200, not 201**, with `@HttpCode(200)`: the row is an
+upsert and a learner correcting their own answer has created nothing.
+
+**Timestamps are converted to ISO at the service boundary.** `toIso()` in
+`surveys.service.ts` — a Postgres timestamp has a space and a `+00` that
+`new Date()` rejects, which TASTE §10.3.1.15 records as a whole column of `—`
+on a screen being sent real dates. Every date this module sends is real ISO,
+so the browser needs no patching up.
+
+**No new permission.** The admin controller carries `manage_courses`, which
+is a truthful guard rather than a convenient one: which form a course shows
+is literally a column on `courses`. A dedicated `manage_surveys` would need
+its own grant migration, and every one of those bumps `perm_version` and
+signs every user in every organization out once (§10.17). When an
+organization needs somebody who can read feedback without editing courses,
+that is the moment to add it and pay for the migration.
+
+Routes:
+
+```
+GET    /api/admin/surveys/templates                the org's forms + three counts
+GET    /api/admin/surveys/templates/:id            one, with its questions
+POST   /api/admin/surveys/templates                create
+PATCH  /api/admin/surveys/templates/:id            name, description, active, questions
+DELETE /api/admin/surveys/templates/:id            refused for a seeded one
+GET    /api/admin/surveys/responses                what learners said, paginated
+GET    /api/admin/surveys/options                  filters + the category mapping
+GET    /api/admin/surveys/courses/:courseId        what THIS course resolves to
+
+GET    /api/learner/courses/:courseId/feedback     the form + my own answer
+POST   /api/learner/courses/:courseId/feedback     submit or revise (200)
+```
+
+### 10.23 A platform course could never issue a certificate
+
+`CertificatesRepository.getCompletionSnapshot` scoped the COURSE with a raw
+`courses.organization_id = <this org>` in all seven of its correlated
+subqueries. That is §10.12's rule read backwards: a course is CONTENT, and a
+course Edstellar publishes to every tenant carries the PLATFORM org's id.
+
+For a tenant's learner every subquery therefore resolved to zero rows —
+`totalLessons` came back 0, `evaluate()` read that as `no_lessons`, and
+`autoIssue` returned null. **A learner could finish a global course completely
+and never be issued a certificate, with nothing anywhere saying why.** Found in
+the local database: seven learners across two tenants had completed every
+lesson of the one platform course and held no certificate between them. The two
+certificates that did exist were written by `db:seed-history` directly, never
+through `autoIssue` — which is exactly why the gap survived.
+
+**The fix is the §10.12 pairing, applied per subquery rather than globally:**
+
+| Subquery | Course predicate | Activity predicate |
+|---|---|---|
+| totalLessons, activeAssessments, sessionId, courseName | content (org + platform) | — |
+| completedLessons | content | `user_lesson_completions.organization_id = org` |
+| bestScore, passedAttempts | content | `user_assessment_attempts.organization_id = org` |
+
+Widening the course WITHOUT adding the activity predicate would have been the
+worse bug: a shared course completed in another tenant would have counted
+toward this learner's certificate. Both halves are needed, and the activity
+tables carry `organization_id` precisely so this is expressible — verified,
+514 completion rows, zero whose org disagrees with their user's.
+
+`contentScope()` could not be used: it emits raw SQL with an alias and this
+repository builds its subqueries with Drizzle, so the equivalent is one
+`inArray(courses.organizationId, [org, platform])` constant shared by all
+seven call sites rather than seven chances to drift.
+
+**The certificate row is written to the LEARNER's org, not the course's** —
+`create()` already did this, and it is what makes a shared course issue an
+Edstellar certificate to an Edstellar learner and an Invensis one to theirs.
+Verified end to end through the real learner API: the same course issued
+`EDS-19-6-...` into org 10 and `EDS-19-21-...` into org 11.
+
+**The certificate names the ORGANIZATION, not the product.** `findDetailById`
+joins `organizations` on `certificates.organization_id` — the LEARNER's org,
+not the course's author — so one platform-authored course prints "Edstellar"
+for an Edstellar learner and "Invensis Technologies" for theirs. The document
+is issued by the employer who put the person through the training; Edstellar
+authored the material, which is a different claim and not one a certificate
+should make on a customer's behalf.
+
+**The public verify route was deliberately left alone.** It returns the course
+name, issue date and revocation state and NOT the learner's name; adding the
+organization would tell anyone holding a code which company a person works
+for. A certificate is shown to whoever the holder chooses; the verify endpoint
+answers a narrower question and should keep answering only that.
+
+**Backfill.** `autoIssue` fires once, at the moment a lesson is marked
+complete — there is no scheduler and no retry — so fixing the query stops the
+loss but cannot reach backwards. The four learners whose completions predated
+the fix were issued through `POST /admin/certificates`
+(`CertificatesService.issueManually`), never by writing rows: that path
+re-checks completion itself and reports `hadCompleted`, so a backfill cannot
+mint a certificate for somebody who did not finish. Verified afterwards: zero
+learners still owed, and every certificate's organization matches its own
+learner's.
+
+**Production is not affected yet and this is preventative there** — it holds
+zero platform-owned courses, so the gap would have bitten the first time
+Edstellar published a global course to its tenants.
 
 ### 10.22 A reporting line, and Team Learning built on it
 

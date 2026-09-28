@@ -26,5 +26,9 @@ import { SessionsService } from './sessions.service';
     TrainerSessionsController,
   ],
   providers: [SessionsService, SessionsRepository],
+  // The Course Catalogue delegates its session writes here, so a learner
+  // booking themselves in goes through the same `addToRoster` an admin does
+  // (§3.2 — the service, never the repository).
+  exports: [SessionsService],
 })
 export class SessionsModule {}

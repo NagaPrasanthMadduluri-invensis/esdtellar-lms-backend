@@ -98,6 +98,36 @@ export class CourseDto {
    * nothing else — which is the test for when free text is safe.
    */
   @IsOptional() @MaxLength(300) @Transform(nullable) tags?: string | null;
+
+  /**
+   * Does this course ask the learner for feedback? (0034)
+   *
+   * Omitted means "leave it alone", like every other field on this DTO — the
+   * settings form does not send it, and a rename must not silently switch a
+   * course's survey off.
+   */
+  @IsOptional() @IsBoolean() feedback_enabled?: boolean;
+
+  /**
+   * An explicit feedback template, overriding the one the CATEGORY implies.
+   * Null clears the override and returns the course to its category default,
+   * which is a working state — so `nullable` is right here, unlike on
+   * `thumbnail_url` where a collapsed empty string destroyed a file.
+   */
+  @IsOptional()
+  @Transform(nullable)
+  @IsInt({ message: 'feedback_template_id must be a template id' })
+  feedback_template_id?: number | null;
+
+  /**
+   * May a learner add themselves to this course from the Course Catalogue?
+   * (0035)
+   *
+   * Omitted means "leave it alone", like every other field here. A course
+   * that is open to self-enrolment can still be assigned by an admin — the
+   * two are additive, which is why this is a flag and not a mode.
+   */
+  @IsOptional() @IsBoolean() self_enrol?: boolean;
 }
 
 /** Which courses the admin library is asking for. */

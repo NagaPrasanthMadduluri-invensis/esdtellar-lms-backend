@@ -368,6 +368,10 @@ export class CertificatesService {
       learnerName: `${row.firstName} ${row.lastName}`,
       courseName: row.courseName,
       journeyName: row.journeyName,
+      // The employer the certificate is issued under — printed where the
+      // product name used to be. See the repository's note on why this is the
+      // learner's org and not the course's author.
+      organizationName: row.organizationName,
       issuedAt: row.issuedAt,
       finalScore: row.finalScore,
       isRevoked: row.isRevoked === 1,
