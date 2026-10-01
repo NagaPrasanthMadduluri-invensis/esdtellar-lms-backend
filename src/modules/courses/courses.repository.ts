@@ -136,6 +136,7 @@ export class CoursesRepository {
         -- own. Listing it here offered an admin a row where almost every
         -- control was refused. Sessions & Attendance is where they live.
         AND c.session_id IS NULL
+         AND c.external_certification_id IS NULL
       ORDER BY c.created_at DESC
     `);
   }
@@ -148,6 +149,7 @@ export class CoursesRepository {
         -- Same predicate as the list above, or the badge promises rows the
         -- toggle will not show.
         AND c.session_id IS NULL
+         AND c.external_certification_id IS NULL
     `);
     return Number(rows[0]?.n ?? 0);
   }
@@ -173,6 +175,7 @@ export class CoursesRepository {
        WHERE c.id IN ${idList(ids)}
          AND c.organization_id = ${scope.organizationId}
          AND c.session_id IS NULL
+         AND c.external_certification_id IS NULL
       RETURNING c.id
     `);
     return rows.length;
@@ -198,6 +201,7 @@ export class CoursesRepository {
        WHERE c.id IN ${idList(ids)}
          AND c.organization_id = ${scope.organizationId}
          AND c.session_id IS NULL
+         AND c.external_certification_id IS NULL
          AND c.archived_at IS NULL
       RETURNING c.id
     `);

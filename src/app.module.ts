@@ -16,6 +16,7 @@ import { ActivityModule } from './modules/activity/activity.module';
 import { FeedbackModule } from './modules/feedback/feedback.module';
 import { SurveysModule } from './modules/surveys/surveys.module';
 import { CatalogueModule } from './modules/catalogue/catalogue.module';
+import { ExternalCertificationsModule } from './modules/external-certifications/external-certifications.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { OrgOptionsModule } from './modules/org-options/org-options.module';
@@ -67,6 +68,7 @@ import { UsersModule } from './modules/users/users.module';
     FeedbackModule,
     SurveysModule,
     CatalogueModule,
+    ExternalCertificationsModule,
     NotificationsModule,
     GeoModule,
     OrgOptionsModule,

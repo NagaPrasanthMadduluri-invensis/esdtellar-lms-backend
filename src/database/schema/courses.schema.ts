@@ -93,6 +93,21 @@ export const courses = pgTable(
      * equals its `user_id`; no second column records it.
      */
     selfEnrol: integer('self_enrol').notNull().default(0),
+    /**
+     * Set when this course IS one learner's approved EXTERNAL certification
+     * rather than a library entry (0036) — the same marker role
+     * `sessionId` plays for a session's companion training.
+     *
+     * Anywhere a session training is excluded from a list an admin or a
+     * learner browses, this is excluded beside it: it is one person's
+     * record of training done elsewhere, and it can be neither published,
+     * assigned, archived nor edited.
+     *
+     * Declared without `.references()` because
+     * `external-certifications.schema.ts` imports this file; the foreign key
+     * lives in migration 0036.
+     */
+    externalCertificationId: integer('external_certification_id'),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

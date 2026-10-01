@@ -148,6 +148,36 @@ export const NOTIFICATION_TYPES = {
     audience: ['admin'],
   },
 
+  /* External certifications (0036). Four types because four different
+     people are being told four different things — the manager is being
+     asked to confirm something they should know, L&D is being told a
+     decision has reached them, and the learner is being told the outcome.
+     §10.18's rule: one shared sentence would be wrong for three of them. */
+  external_cert_submitted: {
+    label: 'External certification to review',
+    group: 'recognition',
+    icon: 'Award',
+    audience: ['learner', 'admin'],
+  },
+  external_cert_ready: {
+    label: 'External certification awaiting final approval',
+    group: 'recognition',
+    icon: 'Award',
+    audience: ['admin'],
+  },
+  external_cert_approved: {
+    label: 'External certification approved',
+    group: 'recognition',
+    icon: 'Award',
+    audience: ['learner'],
+  },
+  external_cert_rejected: {
+    label: 'External certification not approved',
+    group: 'recognition',
+    icon: 'Award',
+    audience: ['learner'],
+  },
+
   /* ── A manager and their reports ── */
   manager_nudge: {
     label: 'Your manager nudged you',

@@ -10,6 +10,18 @@ export interface MinutesRow {
   all_time: number;
   this_month: number;
   last_month: number;
+  /**
+   * The CURRENT week, quarter and year.
+   *
+   * Added beside the month rather than queried separately because every
+   * caller of this method already pays for the scan — the admin dashboard
+   * wanted "hours this quarter" next to "hours this month", and a second
+   * query for it would be a second definition of an hour (§10.4) for the
+   * sake of three more `SUM(CASE …)` branches on a row already being read.
+   */
+  this_week: number;
+  this_quarter: number;
+  this_year: number;
   w1: number;
   w2: number;
   w3: number;
@@ -59,6 +71,22 @@ export interface DepartmentMinutesRow {
   department: string;
   minutes: number;
   learners: number;
+}
+
+/** Minutes in one calendar bucket, for one KIND of learning, one learner. */
+export interface PeriodTypeMinutesRow {
+  period: string;
+  learning_type: string;
+  minutes: number;
+}
+
+/** SCORM residual for one learner, attributed to a kind and a timestamp. */
+export interface TypeScormTimeRow {
+  learning_type: string;
+  total_time: string | null;
+  declared_minutes: number | null;
+  credited_by_lesson: boolean;
+  updated_at: string;
 }
 
 /** SCORM time for one learner on one course, still unparsed. */
@@ -185,6 +213,17 @@ export class LearningHoursRepository {
     thisMonth: string,
     lastMonth: string,
     weeks: readonly Week[],
+    /**
+     * Inclusive start dates for the CURRENT week / quarter / year. Passed in
+     * rather than computed with `now()` in SQL, because
+     * `REPORTING_REFERENCE_DATE` can pin "today" for a demo and a query that
+     * ignored it would disagree with every other figure on the page.
+     */
+    current: { week: string; quarter: string; year: string } = {
+      week: '9999-12-31',
+      quarter: '9999-12-31',
+      year: '9999-12-31',
+    },
   ): Promise<MinutesRow[]> {
     const [w1, w2, w3, w4] = weeks;
     return this.db.all<MinutesRow>(sql`
@@ -195,6 +234,12 @@ export class LearningHoursRepository {
                      THEN s.minutes ELSE 0 END), 0) AS this_month,
         COALESCE(SUM(CASE WHEN to_char(s.at, 'YYYY-MM') = ${lastMonth}
                      THEN s.minutes ELSE 0 END), 0) AS last_month,
+        COALESCE(SUM(CASE WHEN s.at::date >= ${current.week}::date
+                     THEN s.minutes ELSE 0 END), 0) AS this_week,
+        COALESCE(SUM(CASE WHEN s.at::date >= ${current.quarter}::date
+                     THEN s.minutes ELSE 0 END), 0) AS this_quarter,
+        COALESCE(SUM(CASE WHEN s.at::date >= ${current.year}::date
+                     THEN s.minutes ELSE 0 END), 0) AS this_year,
         COALESCE(SUM(CASE WHEN s.at::date BETWEEN ${w1.start} AND ${w1.end}
                      THEN s.minutes ELSE 0 END), 0) AS w1,
         COALESCE(SUM(CASE WHEN s.at::date BETWEEN ${w2.start} AND ${w2.end}
@@ -379,6 +424,108 @@ export class LearningHoursRepository {
     `);
   }
 
+  /**
+   * WHAT KIND of learning an hour came from, for ONE learner.
+   *
+   * Three kinds, and they are a PARTITION — every minute lands in exactly one,
+   * so the three sum to the learner's total and the stacked chart cannot
+   * disagree with the headline above it. The precedence is what guarantees
+   * that, and it is stated once here rather than at each call site:
+   *
+   *   session -> the course is a session's companion training (§10.7)
+   *   path    -> the learner's assignment row was written by a journey
+   *              (`source_journey_id`, §10.11)
+   *   course  -> everything else, including a course an admin assigned
+   *              directly and an approved external certification (§10.26)
+   *
+   * Note the middle one reads the ASSIGNMENT, not the course: a course is not
+   * intrinsically "path learning", it is path learning for the learner a
+   * journey put it in front of. The same course assigned directly to somebody
+   * else is a course for them, which is the honest answer.
+   *
+   * There is deliberately no `webinar` branch. `sessions.session_type` accepts
+   * ILT and Virtual only, so a webinar bucket would be zero by construction —
+   * the empty-column failure §10.12 records. The colour is reserved in the
+   * palette; the branch goes in the day the enum does.
+   */
+  private learningTypeExpr() {
+    return sql`
+      CASE
+        WHEN co.session_id IS NOT NULL THEN 'session'
+        WHEN uca.source_journey_id IS NOT NULL THEN 'path'
+        ELSE 'course'
+      END`;
+  }
+
+  /**
+   * The learner's lesson-side minutes, bucketed by period AND kind.
+   *
+   * Fourth consumer of `lessonSource`, for the reason the second and third
+   * exist: a hand-written per-learner sum would be a second definition of an
+   * hour, which is the entire failure §10.4 records. The scope predicate is
+   * inside the fragment; `user_id` narrows it to the one learner here.
+   */
+  async learnerMinutesByPeriodAndType(
+    scope: OrgScope,
+    userId: number,
+    unit: TruncUnit,
+  ): Promise<PeriodTypeMinutesRow[]> {
+    const trunc = assertTruncUnit(unit);
+    return this.db.all<PeriodTypeMinutesRow>(sql`
+      WITH source AS (${this.lessonSource(scope)})
+      SELECT date_trunc(${trunc}, s.at)::date AS period,
+             ${this.learningTypeExpr()} AS learning_type,
+             COALESCE(SUM(s.minutes), 0) AS minutes
+      FROM source s
+      LEFT JOIN courses co ON co.id = s.course_id
+      LEFT JOIN user_course_assignments uca
+        ON uca.course_id = s.course_id AND uca.user_id = s.user_id
+      WHERE s.user_id = ${userId}
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+    `);
+  }
+
+  /**
+   * The SCORM residual for one learner, carrying its kind and its timestamp.
+   *
+   * This exists so the per-kind split ADDS UP to the figure the rest of the
+   * product shows. `minutesByUser` is lesson minutes PLUS the reported time of
+   * packages no lesson completion has paid for yet; a breakdown built from the
+   * lesson half alone would be quietly short of the headline beside it, which
+   * is the two-numbers-disagreeing failure §10.12 treats as an alarm.
+   *
+   * Same three predicates as `scormTimesByCourse` — `credited_by_lesson` is
+   * still the important one, and is still applied in the service, because
+   * `total_time` is a string in one of two formats that Postgres cannot sum.
+   */
+  async learnerScormByType(
+    scope: OrgScope,
+    userId: number,
+  ): Promise<TypeScormTimeRow[]> {
+    return this.db.all<TypeScormTimeRow>(sql`
+      SELECT ${this.learningTypeExpr()} AS learning_type,
+             MAX(st.total_time) AS total_time,
+             MAX(COALESCE(l.duration_minutes, sp.duration_minutes)) AS declared_minutes,
+             BOOL_OR(ulc.user_id IS NOT NULL) AS credited_by_lesson,
+             MAX(st.updated_at) AS updated_at
+      FROM scorm_tracking st
+      LEFT JOIN lessons l
+        ON l.scorm_package_id = st.package_id AND l.is_active = 1
+      LEFT JOIN course_modules cm ON cm.id = l.module_id
+      LEFT JOIN courses co ON co.id = cm.course_id
+      LEFT JOIN user_course_assignments uca
+        ON uca.course_id = cm.course_id AND uca.user_id = st.user_id
+      LEFT JOIN scorm_packages sp ON sp.id = st.package_id
+      LEFT JOIN user_lesson_completions ulc
+        ON ulc.lesson_id = l.id AND ulc.user_id = st.user_id
+      WHERE st.total_time IS NOT NULL
+        AND st.user_id = ${userId}
+        AND ${orgScope('st', scope)}
+      GROUP BY st.package_id, 1
+    `);
+  }
+
   /** The same minutes, per department. Powers "Engagement by department". */
   async minutesByDepartment(scope: OrgScope): Promise<DepartmentMinutesRow[]> {
     return this.db.all<DepartmentMinutesRow>(sql`
@@ -395,10 +542,16 @@ export class LearningHoursRepository {
   }
 }
 
-/** Calendar buckets `date_trunc` accepts here. Nothing else is permitted. */
-export type TruncUnit = 'month' | 'quarter' | 'year';
+/**
+ * Calendar buckets `date_trunc` accepts here. Nothing else is permitted.
+ *
+ * `week` was added for the learner's own trend, which offers Weekly beside
+ * Monthly / Quarterly / Yearly. Postgres weeks are ISO — Monday-first — which
+ * matches how the calendars in this product already read a week.
+ */
+export type TruncUnit = 'week' | 'month' | 'quarter' | 'year';
 
-const TRUNC_UNITS: readonly TruncUnit[] = ['month', 'quarter', 'year'];
+const TRUNC_UNITS: readonly TruncUnit[] = ['week', 'month', 'quarter', 'year'];
 
 function assertTruncUnit(unit: string): TruncUnit {
   if (!(TRUNC_UNITS as readonly string[]).includes(unit)) {

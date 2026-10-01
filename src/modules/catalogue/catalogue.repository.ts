@@ -73,7 +73,8 @@ export class CatalogueRepository {
   /**
    * Published, non-archived, self-enrol courses this learner can see.
    *
-   * `c.session_id IS NULL` excludes a session's companion training: it is
+   * `c.session_id IS NULL
+         AND c.external_certification_id IS NULL` excludes a session's companion training: it is
    * reached by booking the session, and offering it here would enrol somebody
    * in a training with no sitting behind it (§10.7). The sessions half of the
    * catalogue is the right way in.
@@ -110,6 +111,7 @@ export class CatalogueRepository {
          AND c.is_active = 1
          AND c.archived_at IS NULL
          AND c.session_id IS NULL
+         AND c.external_certification_id IS NULL
          AND c.organization_id IN (${scope.organizationId}, ${scope.platformOrganizationId})
        ORDER BY c.name
     `);

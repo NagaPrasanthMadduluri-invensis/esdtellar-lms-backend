@@ -126,6 +126,18 @@ export class AnalyticsService {
 
     const totalMinutes = [...minutesByUser.values()].reduce((a, m) => a + m.all, 0);
     const monthMinutes = [...minutesByUser.values()].reduce((a, m) => a + m.thisMonth, 0);
+    /* The same figure at four granularities, from the SAME per-learner sum
+       the month already came from — so switching the tile cannot switch
+       which definition of an hour is in play (§10.4). No extra query: these
+       buckets ride on a scan the dashboard was already paying for. */
+    const sum = (pick: (m: (typeof minutesByUser) extends Map<number, infer V> ? V : never) => number) =>
+      round1([...minutesByUser.values()].reduce((a, m) => a + pick(m), 0) / 60);
+    const hoursByPeriod = {
+      weekly: sum((m) => m.thisWeek),
+      monthly: sum((m) => m.thisMonth),
+      quarterly: sum((m) => m.thisQuarter),
+      yearly: sum((m) => m.thisYear),
+    };
     const passRate = scores.length
       ? Math.round((scores.filter((s) => s >= 60).length / scores.length) * 100)
       : 0;
@@ -160,6 +172,7 @@ export class AnalyticsService {
         totalHours: round1(totalMinutes / 60),
         avgHoursPerLearner: total ? round1(totalMinutes / 60 / total) : 0,
         hoursThisMonth: round1(monthMinutes / 60),
+        hoursByPeriod,
         certificatesIssued: certificates,
         activeCourses,
       },
@@ -197,19 +210,26 @@ export class AnalyticsService {
     hours: number;
     deptCompletion: { dept: string; pct: number; hours_learning: number }[];
   }) {
-    const out: { icon: string; text: string }[] = [];
+    const out: { icon: string; text: string; tone: InsightTone }[] = [];
     out.push({
       icon: 'check',
+      tone: rateTone(d.compRate),
       text: `Overall completion is ${d.compRate}% across ${d.total} learner${d.total === 1 ? '' : 's'}.`,
     });
     if (d.scored > 0) {
       out.push({
         icon: 'edit',
+        // Scored on the PASS RATE rather than the average: an average of 70
+        // with everybody passing is a fine place to be, and the same average
+        // with a third failing is not.
+        tone: rateTone(d.passRate),
         text: `Average assessment score is ${d.avgScore}% across ${d.scored} scored learner${d.scored === 1 ? '' : 's'}, with a ${d.passRate}% pass rate.`,
       });
     }
     out.push({
       icon: 'clock',
+      // A raw hours total has no target, so it makes no claim.
+      tone: 'neutral',
       text: `${d.hours}h of learning recorded organisation-wide.`,
     });
     if (d.deptCompletion.length >= 2) {
@@ -218,6 +238,9 @@ export class AnalyticsService {
       const bottom = sorted[sorted.length - 1];
       out.push({
         icon: 'trophy',
+        // The sentence names somebody who is behind, so it is scored on
+        // THEM — the leader is context, the laggard is the reason to read it.
+        tone: rateTone(bottom.pct),
         text: `${top.dept} leads on completion at ${top.pct}%; ${bottom.dept} is furthest behind at ${bottom.pct}% and may need a nudge.`,
       });
     }
@@ -745,4 +768,23 @@ export class AnalyticsService {
     if (score >= 60) return 'C';
     return 'F';
   }
+}
+
+/**
+ * How an insight READS — good news, a warning, or something that needs
+ * doing. Sent with the sentence because the tone depends on what the
+ * sentence says, which only the place that wrote it knows: "hours fell 40%"
+ * and "hours grew 40%" are the same shape and opposite news.
+ *
+ * `neutral` is the default and the commonest. A panel where every card is
+ * coloured is a panel with no emphasis at all — the point is that the one
+ * needing attention stands out from the four that do not.
+ */
+export type InsightTone = 'good' | 'warn' | 'bad' | 'neutral';
+
+/** Higher is better: the shared 75 / 50 bands, matching `metricTone` in the browser. */
+function rateTone(pct: number): InsightTone {
+  if (pct >= 75) return 'good';
+  if (pct >= 50) return 'warn';
+  return 'bad';
 }

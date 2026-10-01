@@ -11,6 +11,7 @@
  */
 
 export const GRANULARITIES = [
+  'weekly',
   'monthly',
   'quarterly',
   'half-yearly',
@@ -25,8 +26,20 @@ export interface Period {
   key: string;
   /** What the axis prints, e.g. `Q2 2026`. */
   label: string;
-  /** Inclusive month keys (`YYYY-MM`) this bucket folds. */
+  /** Inclusive month keys (`YYYY-MM`) this bucket folds. Empty for weeks. */
   months: string[];
+  /**
+   * The SOURCE ROW KEYS this bucket folds — month keys (`YYYY-MM`) for every
+   * granularity that folds months, and week-start dates (`YYYY-MM-DD`) for
+   * `weekly`.
+   *
+   * It exists because WEEKS CANNOT BE FOLDED FROM MONTHS: a week straddles
+   * two of them, so the one trick the rest of this file rests on does not
+   * work one granularity down. Weekly is therefore the only axis whose rows
+   * are queried at its own `date_trunc` unit, and `keys` is what lets
+   * `foldByPeriod` stay one function across both shapes.
+   */
+  keys: string[];
 }
 
 const MONTH_NAMES = [
@@ -43,6 +56,7 @@ const MONTH_NAMES = [
  * padded with zeroes reads as a collapse in activity that never happened.
  */
 const MAX_BUCKETS: Record<Granularity, number> = {
+  weekly: 12,
   monthly: 18,
   quarterly: 8,
   'half-yearly': 6,
@@ -75,10 +89,64 @@ function monthRange(from: string, to: string): string[] {
   return out;
 }
 
+/**
+ * An ISO-week axis: Monday starts, one bucket per week, trimmed to the
+ * learner-facing extent and then capped like every other granularity.
+ *
+ * Monday-first because `date_trunc('week')` is, and the rows being folded
+ * come from exactly that — a Sunday-first axis here would put a row in the
+ * bucket before its own.
+ */
+function buildWeekPeriods(
+  firstActivity: string | null,
+  lastActivity: string | null,
+  today: Date,
+): Period[] {
+  const todayIso = isoDay(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()));
+  const startOf = (iso: string) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() - ((dt.getUTCDay() + 6) % 7));
+    return dt.toISOString().slice(0, 10);
+  };
+
+  const from = startOf(firstActivity ? firstActivity.slice(0, 10) : todayIso);
+  const rawTo = startOf(lastActivity ? lastActivity.slice(0, 10) : todayIso);
+  const to = rawTo > startOf(todayIso) ? startOf(todayIso) : rawTo;
+
+  const out: Period[] = [];
+  let cursor = from;
+  // Bounded: 600 weeks is eleven years, and the step always advances.
+  for (let i = 0; i < 600 && cursor <= to; i += 1) {
+    out.push({ key: cursor, label: weekLabel(cursor), months: [], keys: [cursor] });
+    const [y, m, d] = cursor.split('-').map(Number);
+    const next = new Date(Date.UTC(y, m - 1, d));
+    next.setUTCDate(next.getUTCDate() + 7);
+    cursor = next.toISOString().slice(0, 10);
+  }
+  if (out.length === 0) {
+    const only = startOf(todayIso);
+    out.push({ key: only, label: weekLabel(only), months: [], keys: [only] });
+  }
+  return out.slice(-MAX_BUCKETS.weekly);
+}
+
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** `6 Apr` — the day leads, so a week can never read as a month. */
+function weekLabel(iso: string): string {
+  const [, m, d] = iso.split('-').map(Number);
+  return `${d} ${MONTH_NAMES[m - 1]}`;
+}
+
 function bucketFor(granularity: Granularity, month: string): { key: string; label: string } {
   const [y, m] = month.split('-').map(Number);
   const q = Math.floor((m - 1) / 3) + 1;
   switch (granularity) {
+    // `weekly` never reaches here — `buildPeriods` diverts it above.
+    case 'weekly':
     case 'monthly':
       return { key: month, label: `${MONTH_NAMES[m - 1]} ${y}` };
     case 'quarterly':
@@ -110,6 +178,10 @@ export function buildPeriods(
   lastActivity: string | null,
   today = new Date(),
 ): Period[] {
+  // Weeks are their own axis — see `Period.keys` for why they cannot fold.
+  if (granularity === 'weekly') {
+    return buildWeekPeriods(firstActivity, lastActivity, today);
+  }
   const nowKey = monthKey(today.getFullYear(), today.getMonth());
   const from = firstActivity ? firstActivity.slice(0, 7) : nowKey;
   // The axis never runs past today, even if a row is dated in the future.
@@ -121,8 +193,8 @@ export function buildPeriods(
   for (const month of months) {
     const { key, label } = bucketFor(granularity, month);
     const existing = byKey.get(key);
-    if (existing) existing.months.push(month);
-    else byKey.set(key, { key, label, months: [month] });
+    if (existing) { existing.months.push(month); existing.keys.push(month); }
+    else byKey.set(key, { key, label, months: [month], keys: [month] });
   }
 
   const ordered = [...byKey.values()].sort((a, b) => (a.key < b.key ? -1 : 1));
@@ -140,12 +212,17 @@ export function foldByPeriod(
   periods: Period[],
   rows: Iterable<{ period: string; value: number }>,
 ): Map<string, number> {
-  const monthToBucket = new Map<string, string>();
-  for (const p of periods) for (const m of p.months) monthToBucket.set(m, p.key);
+  const sourceToBucket = new Map<string, string>();
+  for (const p of periods) for (const k of p.keys) sourceToBucket.set(k, p.key);
+
+  // A week axis is keyed by a full date, everything else by `YYYY-MM`. The
+  // slice length comes from the axis rather than being assumed, so one
+  // function serves both shapes.
+  const width = periods[0]?.keys[0]?.length ?? 7;
 
   const out = new Map<string, number>(periods.map((p) => [p.key, 0]));
   for (const row of rows) {
-    const bucket = monthToBucket.get(row.period.slice(0, 7));
+    const bucket = sourceToBucket.get(row.period.slice(0, width));
     if (bucket === undefined) continue;
     out.set(bucket, (out.get(bucket) ?? 0) + row.value);
   }

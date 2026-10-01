@@ -37,6 +37,17 @@ export interface JourneyStep {
    */
   sourceJourneyId: number | null;
   hasAssignment: boolean;
+  /** What the learner's step card reports beyond complete / not complete. */
+  durationMinutes: number;
+  lessonsTotal: number;
+  lessonsDone: number;
+  bestScore: number | null;
+  hasPassed: boolean | null;
+  dueDate: string | null;
+  /** Comma-joined `lessons.content_type` for this course, or null. */
+  contentTypes: string | null;
+  /** Comma-joined `courses.tags` for this course, or null. */
+  courseTags: string | null;
 }
 
 /** Either the caller-supplied learner ids, or an active department's learners. */
@@ -362,6 +373,34 @@ export class JourneysRepository {
   }
 
   /**
+   * Which of these courses cannot be a STEP, and why.
+   *
+   * A session's companion training (§10.7) and an approved external
+   * certification (§10.26) are real courses with real hours, and neither can
+   * be delivered by putting it in a path. Both are already absent from the
+   * admin Course Library the picker reads, so the UI never offers one — but
+   * the API accepted them, which is the same screen-that-lies gap read from
+   * the other side, and a path in the live database has one.
+   */
+  async undeliverableCourses(
+    scope: OrgScope,
+    courseIds: number[],
+  ): Promise<{ id: number; name: string; reason: string }[]> {
+    if (courseIds.length === 0) return [];
+    return this.db.all<{ id: number; name: string; reason: string }>(sql`
+      SELECT id, name,
+             CASE WHEN session_id IS NOT NULL
+                  THEN 'it is a live session, which learners join through its roster'
+                  ELSE 'it is an externally completed certification' END AS reason
+      FROM courses
+      WHERE id IN ${idList(courseIds)}
+        AND ${contentScope('courses', scope)}
+        AND (session_id IS NOT NULL OR external_certification_id IS NOT NULL)
+      ORDER BY name
+    `);
+  }
+
+  /**
    * Replaces the journey's whole course list in one transaction: delete then
    * bulk insert, rather than diffing — the admin form always resends the
    * complete ordered list, so a diff would just be a slower way to reach the
@@ -392,7 +431,14 @@ export class JourneysRepository {
   /** One row per journey the learner is enrolled on; `assertCourseUnlocked` still checks per-course. */
   async findEnrollment(scope: OrgScope, userId: number, journeyId: number) {
     const rows = await this.db
-      .select({ id: journeyEnrollments.id, completedAt: journeyEnrollments.completedAt })
+      .select({
+        id: journeyEnrollments.id,
+        completedAt: journeyEnrollments.completedAt,
+        // The learner's own dates, which the detail view reports beside the
+        // path's. Drizzle `.select()` so these are camelCase (§10.10).
+        assignedAt: journeyEnrollments.assignedAt,
+        dueDate: journeyEnrollments.dueDate,
+      })
       .from(journeyEnrollments)
       .where(
         and(
@@ -427,6 +473,36 @@ export class JourneysRepository {
         AND NOT ${this.courseCompleteExpr(sql`jc2.course_id`, sql`je.user_id`)}
       ORDER BY jc2.sort_order ASC LIMIT 1)`;
 
+    // The list card reports three counts and a total length. They are
+    // computed HERE rather than per card, because a learner with six paths
+    // would otherwise cost 24 extra round trips to draw one page (§7.1).
+    //
+    // Note these count EVERY course in the path, not only the required ones
+    // that `total_required` above measures progress against. A card saying
+    // "5 courses" and then listing six chips would be the two-numbers
+    // failure; progress is a separate question and keeps its own predicate.
+    const courseCount = sql`(SELECT COUNT(*) FROM journey_courses jc
+      WHERE jc.journey_id = j.id)`;
+    const completedCount = sql`(SELECT COUNT(*) FROM journey_courses jc
+      WHERE jc.journey_id = j.id
+        AND ${this.courseCompleteExpr(sql`jc.course_id`, sql`je.user_id`)})`;
+    // Started but not finished: at least one lesson done, and not complete.
+    const inProgressCount = sql`(SELECT COUNT(*) FROM journey_courses jc
+      WHERE jc.journey_id = j.id
+        AND NOT ${this.courseCompleteExpr(sql`jc.course_id`, sql`je.user_id`)}
+        AND EXISTS (
+          SELECT 1 FROM user_lesson_completions ulc
+          JOIN lessons l ON l.id = ulc.lesson_id
+          JOIN course_modules cm ON cm.id = l.module_id
+          WHERE cm.course_id = jc.course_id AND ulc.user_id = je.user_id
+            AND l.is_active = 1 AND cm.is_active = 1
+        ))`;
+    const totalMinutes = sql`(SELECT COALESCE(SUM(l.duration_minutes), 0)
+      FROM journey_courses jc
+      JOIN course_modules cm ON cm.course_id = jc.course_id AND cm.is_active = 1
+      JOIN lessons l ON l.module_id = cm.id AND l.is_active = 1
+      WHERE jc.journey_id = j.id)`;
+
     return this.db.all<{
       enrollment_id: number;
       journey_id: number;
@@ -444,13 +520,21 @@ export class JourneysRepository {
       total_required: number;
       completed_required: number;
       next_course_name: string | null;
+      course_count: number;
+      completed_count: number;
+      in_progress_count: number;
+      total_minutes: number;
     }>(sql`
       SELECT je.id AS enrollment_id, j.id AS journey_id, j.title, j.description,
              j.tag, j.skills, j.thumbnail_url, j.badge_label, j.badge_icon,
              j.points_bonus, je.assigned_at, je.due_date, je.completed_at,
              (${totalRequired}) AS total_required,
              (${completedRequired}) AS completed_required,
-             (${nextCourseName}) AS next_course_name
+             (${nextCourseName}) AS next_course_name,
+             (${courseCount}) AS course_count,
+             (${completedCount}) AS completed_count,
+             (${inProgressCount}) AS in_progress_count,
+             (${totalMinutes}) AS total_minutes
       FROM journey_enrollments je
       JOIN journeys j ON j.id = je.journey_id
       WHERE je.user_id = ${userId} AND ${orgScope('je', scope)}
@@ -479,11 +563,56 @@ export class JourneysRepository {
       is_complete: boolean;
       source_journey_id: number | null;
       has_assignment: boolean;
+      duration_minutes: number;
+      lessons_total: number;
+      lessons_done: number;
+      best_score: number | null;
+      has_passed: number | null;
+      due_date: string | null;
+      content_types: string | null;
+      course_tags: string | null;
     }>(sql`
       SELECT jc.id AS journey_course_id, jc.course_id, c.name AS course_name,
              c.thumbnail_url, jc.sort_order, jc.is_required,
              ${this.courseCompleteExpr(sql`jc.course_id`, sql`${userId}::int`)} AS is_complete,
-             uca.source_journey_id, (uca.id IS NOT NULL) AS has_assignment
+             uca.source_journey_id, (uca.id IS NOT NULL) AS has_assignment,
+             -- What a STEP CARD has to say beyond complete/not: how long it
+             -- is, how far in they are, and how they did. Correlated
+             -- subqueries in the one statement rather than a query per step
+             -- (§7.1) — a twelve-course path would otherwise cost 48 round
+             -- trips to draw one screen.
+             (SELECT COALESCE(SUM(l.duration_minutes), 0) FROM lessons l
+               JOIN course_modules cm ON cm.id = l.module_id
+               WHERE cm.course_id = jc.course_id AND l.is_active = 1
+                 AND cm.is_active = 1) AS duration_minutes,
+             (SELECT COUNT(*) FROM lessons l
+               JOIN course_modules cm ON cm.id = l.module_id
+               WHERE cm.course_id = jc.course_id AND l.is_active = 1
+                 AND cm.is_active = 1) AS lessons_total,
+             (SELECT COUNT(*) FROM user_lesson_completions ulc
+               JOIN lessons l ON l.id = ulc.lesson_id
+               JOIN course_modules cm ON cm.id = l.module_id
+               WHERE cm.course_id = jc.course_id AND ulc.user_id = ${userId}
+                 AND l.is_active = 1 AND cm.is_active = 1) AS lessons_done,
+             (SELECT MAX(t.percentage) FROM user_assessment_attempts t
+               JOIN assessments a ON a.id = t.assessment_id
+               WHERE a.course_id = jc.course_id AND t.user_id = ${userId}) AS best_score,
+             (SELECT MAX(t.is_passed) FROM user_assessment_attempts t
+               JOIN assessments a ON a.id = t.assessment_id
+               WHERE a.course_id = jc.course_id AND t.user_id = ${userId}) AS has_passed,
+             -- What the step is MADE OF, so the card can show a content-type
+             -- icon. A course has no content_type of its own — that column
+             -- is on lessons — so this is the same string_agg the learner
+             -- course cards use (learner.repository courseContentTypes),
+             -- and the SERVICE reduces it to one dominant type. One course
+             -- holding video and a PDF is a video course with a reading, not
+             -- two courses.
+             (SELECT string_agg(DISTINCT l.content_type, ',') FROM lessons l
+               JOIN course_modules cm ON cm.id = l.module_id
+               WHERE cm.course_id = jc.course_id AND l.is_active = 1
+                 AND cm.is_active = 1) AS content_types,
+             c.tags AS course_tags,
+             uca.due_date
       FROM journey_courses jc
       JOIN journeys j ON j.id = jc.journey_id
       JOIN courses c ON c.id = jc.course_id
@@ -504,7 +633,76 @@ export class JourneysRepository {
       isComplete: Boolean(row.is_complete),
       sourceJourneyId: row.source_journey_id === null ? null : Number(row.source_journey_id),
       hasAssignment: Boolean(row.has_assignment),
+      durationMinutes: Number(row.duration_minutes ?? 0),
+      lessonsTotal: Number(row.lessons_total ?? 0),
+      lessonsDone: Number(row.lessons_done ?? 0),
+      bestScore: row.best_score === null ? null : Number(row.best_score),
+      hasPassed: row.has_passed === null ? null : Number(row.has_passed) === 1,
+      dueDate: row.due_date ?? null,
+      contentTypes: row.content_types ?? null,
+      courseTags: row.course_tags ?? null,
     }));
+  }
+
+  /**
+   * The ordered course list for SEVERAL paths at once, compact.
+   *
+   * What the list card's chip sequence needs — the order, the name, and
+   * enough to colour each chip — for every path on the page in ONE query.
+   * `getJourneySteps` answers the same question in far more detail for one
+   * path; calling it per card would be six round trips to draw six cards,
+   * which is the N+1 §7.1 exists to forbid.
+   *
+   * Returns nothing for an empty id list rather than emitting `IN ()`, which
+   * Postgres rejects.
+   */
+  async compactStepsForJourneys(
+    scope: OrgScope,
+    userId: number,
+    journeyIds: number[],
+  ) {
+    if (journeyIds.length === 0) return [];
+    return this.db.all<{
+      journey_id: number;
+      course_id: number;
+      course_name: string;
+      sort_order: number;
+      is_required: number;
+      is_complete: boolean;
+      lessons_done: number;
+      has_passed: number | null;
+      content_types: string | null;
+      course_tags: string | null;
+    }>(sql`
+      SELECT jc.journey_id, jc.course_id, c.name AS course_name,
+             jc.sort_order, jc.is_required,
+             ${this.courseCompleteExpr(sql`jc.course_id`, sql`${userId}::int`)} AS is_complete,
+             (SELECT COUNT(*) FROM user_lesson_completions ulc
+               JOIN lessons l ON l.id = ulc.lesson_id
+               JOIN course_modules cm ON cm.id = l.module_id
+               WHERE cm.course_id = jc.course_id AND ulc.user_id = ${userId}
+                 AND l.is_active = 1 AND cm.is_active = 1) AS lessons_done,
+             (SELECT MAX(t.is_passed) FROM user_assessment_attempts t
+               JOIN assessments a ON a.id = t.assessment_id
+                WHERE a.course_id = jc.course_id AND t.user_id = ${userId}) AS has_passed,
+              -- Same two columns getJourneySteps reads, for the same two
+              -- reasons: the chip's content-type icon, and the tags of the
+              -- COMPLETED steps, which are the skills the learner has
+              -- actually earned on this path. Still one statement for every
+              -- card on the page (§7.1) — these are correlated subqueries,
+              -- not a second round trip per chip.
+              (SELECT string_agg(DISTINCT l.content_type, ',') FROM lessons l
+                JOIN course_modules cm ON cm.id = l.module_id
+                WHERE cm.course_id = jc.course_id AND l.is_active = 1
+                  AND cm.is_active = 1) AS content_types,
+              c.tags AS course_tags
+      FROM journey_courses jc
+      JOIN journeys j ON j.id = jc.journey_id
+      JOIN courses c ON c.id = jc.course_id
+      WHERE jc.journey_id IN (${sql.join(journeyIds.map((id) => sql`${id}`), sql`, `)})
+        AND ${contentScope('j', scope)}
+      ORDER BY jc.journey_id ASC, jc.sort_order ASC, jc.id ASC
+    `);
   }
 
   /** The gating source for one learner's one course assignment — §4.3. */

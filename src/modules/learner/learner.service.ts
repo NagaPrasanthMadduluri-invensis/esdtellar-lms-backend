@@ -7,6 +7,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 
+import { isMandatory } from '@/common/course-taxonomy';
 import { BADGE_CATALOGUE, BADGES, type BadgeDescriptor } from '@/common/badges';
 import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
 import type { OrgScope } from '@/database/org-scope';
@@ -16,8 +17,17 @@ import { CertificatesService } from '@/modules/certificates/certificates.service
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
 // The points model itself, not the ranking: the card promises what the board
 // pays, so both read one file (see `courseReward`).
-import { courseReward, type CourseReward } from '@/modules/leaderboard/points';
-import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
+import {
+  courseReward,
+  POINTS_NOTES,
+  POINT_RULES,
+  type CourseReward,
+} from '@/modules/leaderboard/points';
+import {
+  LearningHoursService,
+  type LabelledPeriod,
+} from '@/modules/learning-hours/learning-hours.service';
+import { referenceNow } from '@/modules/learning-hours/periods';
 // A pure derivation, not a service: "in progress" has to mean the same thing on
 // the course card as it does in the calendar, so both read the one function.
 import { displayStatus } from '@/modules/sessions/session-status.util';
@@ -37,6 +47,242 @@ import { SpreadsheetService } from '@/modules/reports/spreadsheet.service';
  * somebody asks for a different number, not before.
  */
 const MONTHLY_HOURS_GOAL = 10;
+
+/**
+ * THE four bands, and the only place they are decided.
+ *
+ * Everything that colours a figure by how close it is to its goal reads this
+ * — the learner's own meter, every bucket of the period table, and every peer
+ * row. They used to be three different vocabularies: the summary said
+ * "Almost There", a peer said "Close" at a different threshold, and nothing
+ * said what either meant. Three scales on one page is how a learner concludes
+ * the page is guessing.
+ *
+ * The bands are also what the palette hangs off (TASTE §10.1.1): green once
+ * the goal is in reach, ochre while it is plausible, red when it is not. The
+ * browser maps a LABEL to a colour and never re-derives the band, so there is
+ * no second copy free to drift.
+ */
+export type GoalBand = 'Goal Reached!' | 'Almost There' | 'On Track' | 'Behind';
+
+function goalBand(pct: number): GoalBand {
+  if (pct >= 100) return 'Goal Reached!';
+  if (pct >= 80) return 'Almost There';
+  if (pct >= 50) return 'On Track';
+  return 'Behind';
+}
+
+/**
+ * Where a learner stands against a goal.
+ *
+ * ONE definition, read by My Progress, the Learning Hours summary, every
+ * period bucket and every peer row. They each had their own before, and the
+ * moment a threshold moved in one the screens would disagree about whether
+ * somebody was "Almost There" — the §10.4 failure in miniature, one number
+ * instead of hours.
+ *
+ * `goal` is a parameter because the period it measures is not always a month:
+ * a quarter is worth three of them and a week a fraction of one. What does
+ * NOT change per period is the banding, which is the whole point of passing
+ * the goal in rather than writing a second function.
+ *
+ * `goalPct` is CAPPED at 100. A learner who did fifteen hours against a ten
+ * hour goal has met it; a bar drawn at 150% just overflows its track.
+ */
+function goalStatus(
+  hours: number,
+  goal: number = MONTHLY_GOAL_HOURS,
+): {
+  goal: number;
+  goalPct: number;
+  remaining: number;
+  statusLabel: GoalBand;
+} {
+  const goalPct = goal > 0 ? Math.min(Math.round((hours / goal) * 100), 100) : 0;
+  return {
+    goal: round1(goal),
+    goalPct,
+    remaining: Math.max(0, round1(goal - hours)),
+    statusLabel: goalBand(goalPct),
+  };
+}
+
+/**
+ * What one bucket of each granularity is worth against the monthly goal.
+ *
+ * The goal is DEFINED monthly (`MONTHLY_GOAL_HOURS`), so every other period
+ * is derived from it rather than given its own constant — one number to
+ * change, and a quarter is always exactly three months of it. The week is the
+ * one that cannot be a whole number of months: 12 months over 52 weeks, which
+ * is the honest conversion and lands at 2.3h.
+ */
+const PERIOD_MONTHS: Record<string, number> = {
+  weekly: 12 / 52,
+  monthly: 1,
+  quarterly: 3,
+  yearly: 12,
+};
+
+/**
+ * Attaches the goal, the percentage and the band to every bucket on an axis.
+ *
+ * THE CURRENT BUCKET'S GOAL IS PRO-RATED to the part of it that has actually
+ * happened. A quarter that is nine days old measured against a full quarter's
+ * target reads "10% — Behind" on every screen in early January, which is a
+ * verdict on the calendar rather than on the learner. Past buckets are
+ * measured against the whole thing, because they had the whole thing.
+ */
+function withGoals(
+  rows: { period: string; label: string; total: number }[],
+  granularity: keyof typeof PERIOD_MONTHS,
+  now: Date,
+) {
+  const months = PERIOD_MONTHS[granularity] ?? 1;
+  const fullGoal = MONTHLY_GOAL_HOURS * months;
+  const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  return rows.map((row) => {
+    /* A bucket is CURRENT only when today falls inside it. The axis is
+       trimmed to the learner's last activity, so it very often ends in the
+       past — treating the last bucket as current would pro-rate a finished
+       week down to a few days and excuse a figure that is simply final.
+       Measured the wrong way first: a learner whose last activity was in
+       June had their June week scored against two days' worth of goal. */
+    const isCurrent = todayIso >= row.period && todayIso < periodEnd(row.period, granularity);
+
+    // Never zero: on the first day of a period the goal would be 0 and the
+    // percentage undefined. A thirtieth of a period is the floor.
+    const elapsed = isCurrent
+      ? Math.max(elapsedFraction(row.period, granularity, now), 1 / 30)
+      : 1;
+    const goal = fullGoal * (isCurrent ? elapsed : 1);
+    return { ...row, is_current: isCurrent, ...goalStatus(row.total, goal) };
+  });
+}
+
+/** The day AFTER the bucket starting at `startIso` ends, as `YYYY-MM-DD`. */
+function periodEnd(startIso: string, granularity: keyof typeof PERIOD_MONTHS): string {
+  const [y, m, d] = startIso.split('-').map(Number);
+  const end = new Date(Date.UTC(y, m - 1, d));
+  if (granularity === 'weekly') end.setUTCDate(end.getUTCDate() + 7);
+  else if (granularity === 'monthly') end.setUTCMonth(end.getUTCMonth() + 1);
+  else if (granularity === 'quarterly') end.setUTCMonth(end.getUTCMonth() + 3);
+  else end.setUTCFullYear(end.getUTCFullYear() + 1);
+  return end.toISOString().slice(0, 10);
+}
+
+/** How much of the bucket starting at `startIso` has already gone by. */
+function elapsedFraction(
+  startIso: string,
+  granularity: keyof typeof PERIOD_MONTHS,
+  now: Date,
+): number {
+  const [y, m, d] = startIso.split('-').map(Number);
+  const start = Date.UTC(y, m - 1, d);
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const DAY = 86_400_000;
+  const lengthDays =
+    granularity === 'weekly'
+      ? 7
+      : granularity === 'monthly'
+        ? new Date(Date.UTC(y, m, 0)).getUTCDate()
+        : granularity === 'quarterly'
+          ? 91
+          : 365;
+  const gone = (today - start) / DAY + 1;
+  return Math.min(1, Math.max(0, gone / lengthDays));
+}
+
+/**
+ * Minutes to hours, one decimal, across a whole axis — and the parts ADD UP
+ * to the total on screen.
+ *
+ * A reader can add the three columns of the yearly table and check the total,
+ * so the row has to be right in front of them. Rounding four numbers
+ * independently breaks that about a third of the time (0.25 + 0.25 + 0.25
+ * shows as 0.3 + 0.3 + 0.3 = 0.9 beside a total of 0.8), which looks like a
+ * bug in a way a tenth of an hour never is.
+ *
+ * So `total` is the correctly-rounded true total, and the three parts are
+ * apportioned to it by LARGEST REMAINDER: round everything down, then hand
+ * the leftover tenths to whichever parts were closest to rounding up. That
+ * is the standard fix, it moves at most one part by 0.1, and it keeps each
+ * year's total honest rather than drifting with the parts.
+ *
+ * What it cannot fix: two correctly-rounded years can still sum to 0.1 away
+ * from the correctly-rounded all-time figure in the tile above. There is no
+ * rounding that makes every subtotal in a table agree with every other; this
+ * one picks the arithmetic the reader can actually see.
+ */
+function periodHours(rows: LabelledPeriod[]) {
+  return rows.map((row) => {
+    const total = round1(row.total / 60);
+    const exact = {
+      course: row.course / 60,
+      path: row.path / 60,
+      session: row.session / 60,
+    };
+
+    const floors = {
+      course: Math.floor(exact.course * 10) / 10,
+      path: Math.floor(exact.path * 10) / 10,
+      session: Math.floor(exact.session * 10) / 10,
+    };
+    const parts = { ...floors };
+
+    // Tenths still to hand out, and who has the strongest claim to one.
+    let leftover = Math.round((total - (floors.course + floors.path + floors.session)) * 10);
+    const byRemainder = (['course', 'path', 'session'] as const)
+      .map((key) => ({ key, rem: exact[key] - floors[key] }))
+      .sort((a, b) => b.rem - a.rem);
+
+    for (const { key } of byRemainder) {
+      if (leftover <= 0) break;
+      parts[key] = round1(parts[key] + 0.1);
+      leftover -= 1;
+    }
+
+    return {
+      period: row.period,
+      label: row.label,
+      course: round1(parts.course),
+      path: round1(parts.path),
+      session: round1(parts.session),
+      total,
+    };
+  });
+}
+
+/**
+ * The yearly table: each year's hours by kind, against that year's goal.
+ *
+ * THE CURRENT YEAR'S GOAL IS PRO-RATED to the months that have actually
+ * happened. A full-year target compared against three months of activity
+ * would print "25% of goal" every January and read as a failure rather than
+ * as a year that has barely started — the reference mock sidesteps this by
+ * comparing the current year against a MONTH goal, which makes the column
+ * mean two different things in two rows of one table. Saying "of the year so
+ * far" keeps one meaning and stays honest.
+ */
+function yearlyHours(rows: LabelledPeriod[]) {
+  const now = referenceNow();
+  const thisYear = now.getFullYear();
+  const monthsSoFar = now.getMonth() + 1;
+
+  return periodHours(rows).map((row) => {
+    const year = Number(row.period.slice(0, 4));
+    const isCurrent = year === thisYear;
+    const months = isCurrent ? monthsSoFar : 12;
+    const goal = round1(MONTHLY_GOAL_HOURS * months);
+    return {
+      ...row,
+      year,
+      isCurrent,
+      goal,
+      goalPct: goal > 0 ? Math.round((row.total / goal) * 100) : 0,
+    };
+  });
+}
 
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import {
@@ -241,10 +487,25 @@ export class LearnerService {
       const types = typesByCourse.get(Number(row.course_id)) ?? [];
       const meta = {
         contentType: contentTypeOf(types),
-        // Neither of these has a column to come from. They were invented per
-        // course id; reporting null is honest, where a guess was not.
-        category: null as string | null,
-        isMandatory: false,
+        /*
+         * Both of these were hardcoded `null` / `false` under a comment
+         * saying neither had a column to come from. That was true when it was
+         * written and stopped being true at `0019_course_library.sql`, which
+         * added `courses.category` and `courses.is_mandatory` — so the
+         * learner card's category caption rendered nothing for every course
+         * and its MANDATORY ribbon could never appear, while the admin
+         * library showed both. A stale comment is why nobody looked again.
+         *
+         * `isMandatory` is the DERIVED value, not the stored flag: a
+         * Compliance course is mandatory whether or not the box was ticked
+         * (§10.12), and the learner has no form that round-trips the column,
+         * so the only meaning that reaches them is the derived one.
+         */
+        category: row.category ?? null,
+        isMandatory: isMandatory({
+          isMandatory: Number(row.is_mandatory ?? 0),
+          category: row.category ?? null,
+        }),
       };
 
       const bestScore = row.best_score !== null ? Number(row.best_score) : null;
@@ -272,6 +533,7 @@ export class LearnerService {
         contentType: meta.contentType,
         category: meta.category,
         isMandatory: meta.isMandatory,
+        modulesCount: Number(row.modules_count ?? 0),
         totalMinutes: Number(row.total_minutes),
         // What finishing this course is worth, so the card can say so before
         // the learner starts rather than only crediting them afterwards.
@@ -332,9 +594,12 @@ export class LearnerService {
             }
           : null,
       },
-      journeyPct: courses.length
-        ? Math.round((completed / courses.length) * 100)
-        : 0,
+      /* `journeyPct` is GONE with the view that read it. It was the share of
+         assigned courses completed, dressed up as a journey percentage on a
+         "Learning Journey" tab that numbered an arbitrary list 1..N. A real
+         path is an order an admin chose, and it lives in `journeys` with its
+         own progress (§10.11). Two things called a journey, one of them not
+         one, is how a learner stops believing either. */
       courses,
     };
   }
@@ -905,6 +1170,25 @@ export class LearnerService {
         score,
         timeSpent: minutesSpent < 1 ? null : h > 0 ? `${h}h ${m}m` : `${m}m`,
         hasPassed,
+        /* WHAT KIND of learning this is, so the caller can split the list
+           without re-deriving the rule. `kind` is a partition and the
+           precedence matches LearningHoursRepository.learningTypeExpr —
+           session first, then path, then course — so the Learning History
+           tabs and the hours breakdown agree about which bucket a row is
+           in. They would drift the first time one of them was edited
+           alone. */
+        kind:
+          course.session_id !== null
+            ? 'session'
+            : course.source_journey_id !== null
+              ? 'path'
+              : 'course',
+        completedExternally: course.external_certification_id !== null,
+        sessionType: course.session_type ?? null,
+        sessionDate: course.session_date ?? null,
+        sessionStatus: course.session_status ?? null,
+        trainer: course.trainer ?? null,
+        venue: course.venue_url ?? null,
       };
     });
 
@@ -933,13 +1217,24 @@ export class LearnerService {
       }
     }
 
-    const [lessonEvents, assessEvents, assignEvents, scormEvents] =
-      await Promise.all([
-        this.repository.lessonEvents(scope, userId, 5),
-        this.repository.assessmentEvents(scope, userId, 5),
-        this.repository.assignmentEvents(scope, userId, 100),
-        this.repository.scormEvents(scope, userId, 5),
-      ]);
+    const [
+      lessonEvents,
+      assessEvents,
+      assignEvents,
+      scormEvents,
+      paths,
+      hoursByPeriod,
+    ] = await Promise.all([
+      this.repository.lessonEvents(scope, userId, 5),
+      this.repository.assessmentEvents(scope, userId, 5),
+      this.repository.assignmentEvents(scope, userId, 100),
+      this.repository.scormEvents(scope, userId, 5),
+      /* The paths tab reads the SERVICE that owns learning paths, never a
+         second query of its own (§3.2) — so what My Progress says about a
+         path cannot disagree with the Learning Paths page itself. */
+      this.journeys.listForLearner(scope, userId, { limit: 100 }),
+      this.hours.learnerHoursTrend(scope, userId),
+    ]);
 
     const timeline = [
       ...lessonEvents.map((e) => ({
@@ -1007,13 +1302,31 @@ export class LearnerService {
         thisMonth,
         lastMonth,
         allTime: allTimeHours,
-        goal: MONTHLY_GOAL_HOURS,
-        goalPct: Math.min(
-          Math.round((thisMonth / MONTHLY_GOAL_HOURS) * 100),
-          100,
-        ),
         diff: round1(thisMonth - lastMonth),
+        ...goalStatus(thisMonth),
       },
+      /* The same rows the Courses tab shows, split by kind. Sessions and
+         learning paths are NOT courses in this list for the reason
+         TASTE §10.3.1.17 gives: a session's only honest progress is "wait
+         for the day", and a path is a wrapper whose progress is its own
+         steps. One list of all three would have to pick one vocabulary and
+         be wrong for two of them. */
+      learningHistory: {
+        courses: courseHistory.filter((c) => c.kind === 'course'),
+        paths: paths.journeys,
+        sessions: courseHistory.filter((c) => c.kind === 'session'),
+      },
+      /* Hours, not minutes, and converted HERE rather than in the browser:
+         every other figure this endpoint sends is already hours, and one
+         payload carrying both units is how a chart ends up sixty times too
+         tall. */
+      hoursByPeriod: {
+        weekly: periodHours(hoursByPeriod.weekly),
+        monthly: periodHours(hoursByPeriod.monthly),
+        quarterly: periodHours(hoursByPeriod.quarterly),
+        yearly: periodHours(hoursByPeriod.yearly),
+      },
+      hoursByYear: yearlyHours(hoursByPeriod.yearly),
       skills: skillTags(completed.map((c) => c.name)),
       timeline,
     };
@@ -1122,6 +1435,11 @@ export class LearnerService {
       card ? { ...card, isYou: card.id === userId } : null;
 
     return {
+      /* The rules, from the same constants the board pays out with
+         (`modules/leaderboard/points.ts`). Sent rather than mirrored in the
+         browser so the explanation cannot drift from the arithmetic. */
+      pointRules: POINT_RULES,
+      pointNotes: POINTS_NOTES,
       me: allLearners.find((l) => l.isYou) ?? null,
       recognition: {
         learnerOfMonth: withYou(recognition.learnerOfMonth),
@@ -1176,10 +1494,20 @@ export class LearnerService {
     const thisMonth = hours(userId, (r) => r.this_month, (b) => b.thisMonth);
     const lastMonth = hours(userId, (r) => r.last_month, (b) => b.lastMonth);
     const allTime = hours(userId, (r) => r.all_time, (b) => b.all);
-    const goalPct = Math.min(
-      Math.round((thisMonth / MONTHLY_GOAL_HOURS) * 100),
-      100,
-    );
+    const goal = goalStatus(thisMonth);
+    const goalPct = goal.goalPct;
+
+    /* The same four granularities My Progress draws, from the same service
+       method (§10.27) — so a learner who checks one page against the other
+       cannot find two different answers for the same week. */
+    const trend = await this.hours.learnerHoursTrend(scope, userId);
+    const now = referenceNow();
+    const hoursByPeriod = {
+      weekly: withGoals(periodHours(trend.weekly), 'weekly', now),
+      monthly: withGoals(periodHours(trend.monthly), 'monthly', now),
+      quarterly: withGoals(periodHours(trend.quarterly), 'quarterly', now),
+      yearly: withGoals(periodHours(trend.yearly), 'yearly', now),
+    };
 
     const peers = profiles
       .filter((p) => (p.department || 'Unknown') === myDept)
@@ -1194,7 +1522,10 @@ export class LearnerService {
           lastMonth: hours(Number(p.id), (r) => r.last_month, (b) => b.lastMonth),
           allTime: hours(Number(p.id), (r) => r.all_time, (b) => b.all),
           goalPct: gp,
-          status: gp >= 100 ? 'On Track' : gp >= 60 ? 'Close' : 'Behind',
+          // The SAME four bands as the learner's own meter. A peer row used
+          // to say "Close" at 60% while the summary said "On Track" at 50%,
+          // so two figures on one page were scored on different scales.
+          status: goalBand(gp),
           isYou: Number(p.id) === userId,
         };
       })
@@ -1266,22 +1597,20 @@ export class LearnerService {
     const totalModeHours =
       Object.values(modeMap).reduce((s, v) => s + v, 0) || 1;
 
-    let statusLabel: string;
-    if (goalPct >= 100) statusLabel = 'Goal Reached!';
-    else if (goalPct >= 80) statusLabel = 'Almost There';
-    else if (goalPct >= 50) statusLabel = 'On Track';
-    else statusLabel = 'Behind';
-
     return {
       summary: {
-        thisMonth, lastMonth, allTime, goalPct, goal: MONTHLY_GOAL_HOURS,
-        remaining: Math.max(0, round1(MONTHLY_GOAL_HOURS - thisMonth)),
+        thisMonth, lastMonth, allTime,
+        // goalPct / goal / remaining / statusLabel all come from the one
+        // definition (`goalStatus`), which My Progress reads too — the two
+        // screens sit one click apart and must not disagree about whether
+        // somebody has met their goal.
+        ...goal,
         diff: round1(thisMonth - lastMonth),
         deptRank: myRank, deptTotal: peers.length, dept: myDept,
         gapToFirst:
           myRank === 1 ? 0 : Math.max(0, round1((peers[0]?.thisMonth ?? 0) - thisMonth)),
-        statusLabel,
       },
+      hoursByPeriod,
       weeklyTrend,
       depts,
       // Order by hours, not a fixed list — the modes are derived now, so a

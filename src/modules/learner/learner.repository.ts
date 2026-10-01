@@ -269,6 +269,9 @@ export class LearnerRepository {
       name: string;
       description: string | null;
       thumbnail_url: string | null;
+      category: string | null;
+      is_mandatory: number;
+      modules_count: number;
       total_lessons: number;
       completed_lessons: number;
       completed_minutes: number;
@@ -289,10 +292,27 @@ export class LearnerRepository {
       session_start_time: string | null;
       session_end_time: string | null;
       session_status: string | null;
+      external_certification_id: number | null;
+      source_journey_id: number | null;
     }>(sql`
       SELECT uca.id AS enrollment_id, uca.assigned_at,
         c.id AS course_id, c.name, c.description, c.thumbnail_url,
+        c.category, c.is_mandatory,
         c.session_id,
+        -- WHAT KIND of learning this row is, for the caller that splits them.
+        -- A session's companion training (§10.7) and an approved external
+        -- certification (§10.26) are both real courses with real hours, and
+        -- both are the wrong thing to list under "Courses" — one belongs to a
+        -- sitting the learner attended, the other to training this platform
+        -- never delivered. source_journey_id says a LEARNING PATH put the
+        -- row there (§10.11), which is a fact about the assignment rather
+        -- than about the course.
+        c.external_certification_id,
+        uca.source_journey_id,
+        -- Modules, not lessons: the learner card reports the same three facts
+        -- the admin library card does, and a module is the unit both count.
+        (SELECT COUNT(*)::int FROM course_modules cm
+          WHERE cm.course_id = c.id AND cm.is_active = 1) AS modules_count,
         s.session_type, s.trainer, s.venue_url, s.department AS session_department,
         s.date AS session_date, s.start_time AS session_start_time,
         s.end_time AS session_end_time, s.status AS session_status,

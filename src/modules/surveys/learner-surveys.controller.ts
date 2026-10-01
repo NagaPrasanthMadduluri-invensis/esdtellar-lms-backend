@@ -16,6 +16,41 @@ import { SubmitCourseFeedbackDto } from './dto/survey.dto';
 import { SurveysService } from './surveys.service';
 
 /**
+ * "Which of my courses still want an opinion?" — one read, for the learner
+ * dashboard's prompt.
+ *
+ * A second controller rather than a route on the one below, because that one
+ * is mounted under `learner/courses/:courseId/feedback` and this question is
+ * not about a course id. Same audience, same service.
+ */
+@Controller('learner/surveys')
+@Roles('learner')
+export class LearnerSurveyListController {
+  constructor(private readonly surveys: SurveysService) {}
+
+  /** Finished courses this learner has not rated. Empty is a real answer. */
+  /**
+   * The learner's whole course-feedback inbox — owed and already sent.
+   * `pending` beside it is the same data narrowed, for the dashboard panel.
+   */
+  @Get()
+  async mine(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.surveys.listForLearner(scope, user.userId);
+  }
+
+  @Get('pending')
+  async pending(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.surveys.pendingForLearner(scope, user.userId);
+  }
+}
+
+/**
  * The learner's side: say what you thought of a course.
  *
  * `@Roles('learner')` and no `@Permissions()`, the same reasoning the session

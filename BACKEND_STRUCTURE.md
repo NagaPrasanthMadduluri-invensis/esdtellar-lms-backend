@@ -595,6 +595,348 @@ Update this table with every module you move.
 | session feedback (learner writes, trainer reads anonymised) | 3 | `server/src/modules/feedback` |
 | course feedback — editable templates + learner answers | 8 | `server/src/modules/surveys` |
 | course catalogue — self-enrolment in courses and sessions | 4 | `server/src/modules/catalogue` |
+| external certifications (learner claim, manager + admin approval) | 6 | `server/src/modules/external-certifications` |
+
+### 10.27 What KIND of learning an hour came from
+
+My Progress splits a learner's hours three ways — courses, learning paths,
+sessions — and the split is **a partition of the number §10.4 already
+defines**, never a second count beside it.
+
+**Three kinds, and the precedence is the whole design.**
+`LearningHoursRepository.learningTypeExpr` states it once:
+
+```
+session -> the course is a session's companion training (§10.7)
+path    -> the LEARNER'S ASSIGNMENT ROW was written by a journey
+           (user_course_assignments.source_journey_id, §10.11)
+course  -> everything else, including an approved external
+           certification (§10.26)
+```
+
+Exclusive and exhaustive, so the three sum to the learner's total and the
+stacked chart cannot disagree with the tile above it. Verified across six
+learners: every yearly row adds up, and the by-year totals reconcile with
+`summary.allTimeHours`.
+
+**The middle branch reads the ASSIGNMENT, not the course.** A course is not
+intrinsically "path learning" — it is path learning for the learner a journey
+put it in front of, and the same course assigned directly to somebody else is
+a plain course for them. Keying off the course would have made one learner's
+history rewrite another's.
+
+**There is deliberately NO webinar branch.** `sessions.session_type` accepts
+`ILT` and `Virtual` only, so a webinar bucket would be zero on every row for
+every learner in every tenant — the empty-column failure §10.12 records. The
+reference design shows four series; three are built. The colour is reserved in
+`globals.css` and `lib/brand.js` so the day the enum gains Webinar the branch
+is one line and the hue is already decided.
+
+**Learning paths currently total zero everywhere, and that is DATA, not a
+gap.** `journeys` holds no rows in any environment yet, so the tab and the
+column are honestly empty and the empty state says an admin builds these from
+existing courses. That is the difference worth keeping straight: the webinar
+column *cannot* be non-zero, the paths column *is not yet*.
+
+**The SCORM residual is folded in, not left out.** `minutesByUser` is lesson
+minutes PLUS reported time for packages no lesson completion has paid for, so
+a breakdown built from the lesson half alone would sit quietly short of the
+headline beside it. `learnerScormByType` carries the same three predicates as
+`scormTimesByCourse`, and `credited_by_lesson` is still applied in the service
+because `total_time` is a string in one of two formats Postgres cannot sum.
+Its bucket is derived in JS from `updated_at`, and `truncateIso` is ISO
+(Monday-first) to match `date_trunc('week')` — a Sunday-first week would put
+the two halves of one sitting in different bars.
+
+**Four granularities, TWO units queried.** Quarters and years are folded from
+the monthly rows, never re-truncated in SQL — §10.12 records why for the admin
+axis and the reason is unchanged: four `date_trunc` variants are four chances
+for a quarter to disagree with the sum of its own months. Weeks straddle
+months and so are genuinely their own unit. The axis is continuous and
+zero-filled between first and last activity, then capped, because a series
+shorter than its axis shifts every remaining point one place left.
+
+**Rounding: the row adds up, and the reason is who can check it.** Hours are
+shown to one decimal, and rounding four numbers independently breaks the
+visible arithmetic about a third of the time. `periodHours` therefore rounds
+the TOTAL correctly and apportions the three parts to it by largest
+remainder. What that cannot fix — and nothing can — is that two
+correctly-rounded years may sum 0.1 away from the correctly-rounded all-time
+figure. The arithmetic a reader can actually see wins.
+
+**One definition of the monthly goal.** `goalStatus()` in `learner.service.ts`
+returns `goal`, `goalPct`, `remaining` and `statusLabel`, and both My Progress
+and the Learning Hours page read it. They each had their own before; the two
+screens sit one click apart and would have disagreed about whether somebody
+was "Almost There" the moment a threshold moved.
+
+**No new endpoint and no new permission.** `GET /api/learner/progress` grew
+`learningHistory`, `hoursByPeriod` and `hoursByYear`. The paths tab reads
+`JourneysService.listForLearner` — the module, never its repository (§3.2) —
+so what My Progress says about a path cannot disagree with the Learning Paths
+page itself.
+
+### 10.28 The learner's learning paths got a screen
+
+Eleven journey handlers have existed since §10.11 and the learner had no page
+for any of them — `GET /learner/journeys` and `GET /learner/journeys/:id` were
+reachable and unreached, which is §5.2.1's screen-that-lies seen from the
+other side. `/learning-paths` is that screen. **No new endpoint, no new
+permission, no migration** — both reads were widened instead.
+
+**`listForLearner` also carries the ORDERED COURSES of every path**, so the
+card can draw its sequence. `compactStepsForJourneys` fetches them for all
+the paths on the page in ONE query keyed by the id list — calling
+`getJourneySteps` per card would be six round trips to draw six cards, the
+N+1 §7.1 forbids. It returns only what a chip needs, and derives its state
+through the same `stepProgressStatus` the detail uses, so a chip and the step
+card it links to cannot disagree.
+
+**A STEP MUST BE COMPLETABLE BY WALKING THE PATH**, and `setCourses` now
+refuses the two kinds of course that are not. A session's companion training
+is completed by attendance (§10.7), which needs a `session_roster` row that
+only `addToRoster` writes — but `assignJourneyCourses` inserts the assignment
+directly, so a learner put on such a path who is not separately booked onto
+the session has a step they can never finish and a path that can never
+complete. An external certification is already finished the moment it is
+approved (§10.26).
+
+Neither has ever been offered by the admin Course Library the picker reads
+(§10.3.1.17, §10.26), so this closes a gap between what the UI shows and what
+the API accepted — §10.3.1.9 states the same rule for Assign Learning, and
+this is that rule arriving late. Found because a real path in the live
+database contained one. The 422 NAMES the courses and says to remove them,
+because an existing path holding one cannot be saved again until it does.
+
+**`journeyPct` was removed from `GET /learner/courses`.** It was the share of
+assigned courses completed, rendered as a "Learning Journey" percentage on a
+My Courses tab that numbered an arbitrary list 1..N — a bundle presented as a
+sequence, with no relation to `journeys` at all. Two things called a journey,
+one of them not one, is how a learner stops trusting either. Nothing else
+read the field.
+
+**`getJourneySteps` gained what a step CARD has to say**: duration, lessons
+done over total, best score, pass flag and the learner's due date, as
+correlated subqueries in the one statement (§7.1). A twelve-course path would
+otherwise cost 48 round trips to draw one screen.
+
+**`progress_status` is a SECOND field beside `status`, not a replacement.**
+`status` is the gate — locked / open / complete — and is what enforcement
+reads. It deliberately cannot tell "untouched" from "half finished", because
+the gate does not care. A card does. Keeping them apart matters more than the
+duplication saves: merged, the next caller would gate on a progress figure,
+and the gate is the thing that must not be re-derived.
+
+`stepProgressStatus` will not call a course FAILED for an outstanding quiz.
+Only an actual unsuccessful attempt earns it — the completion definition
+already requires the pass (§10.11), and calling a not-yet-attempted assessment
+a failure accuses somebody of something they have not done.
+
+**`listForLearner` gained the card's three counts and its total length**, again
+as correlated subqueries rather than a query per card. They count EVERY course
+in the path, while `total_required` / `completed_required` beside them keep
+counting only the required ones — two different questions, and a card that
+said "5 courses" above six chips would be the two-numbers failure.
+
+"In progress" is expressed as *not complete AND at least one lesson done*,
+which is the same shape `LearnerService.progress` uses for a course. One
+definition of "started", read in two places.
+
+**The detail response carries the ENROLMENT's dates**, not the journey's —
+when THIS learner was put on it and when THEY have to finish. The list card
+already showed both and a detail view that dropped them read as though the
+dates had been withdrawn.
+
+**Verified end to end against a real path** created through the admin API
+(4 courses, 2 learners) rather than written into the tables: the counts summed,
+the gate produced a genuinely locked step for the learner who had not been
+assigned the earlier courses directly, and a learner who HAD one of them
+directly saw it open out of order — which is §10.11's rule working, not a bug.
+The fixture was removed afterwards and `journeys`, `journey_courses` and
+`journey_enrollments` are back to zero rows.
+
+### 10.29 One scale for "how close to the goal", and a goal per period
+
+The Learning Hours page is period-driven — weekly, monthly, quarterly,
+yearly — and every figure on it is scored on **one** set of bands.
+
+**Three vocabularies became one.** The summary said "Almost There" at 80%, a
+peer row said "Close" at 60%, and a third place said nothing at all. Three
+scales on one page is how a learner concludes the page is guessing.
+`goalBand()` in `learner.service.ts` is now the only place the thresholds
+exist — 100 / 80 / 50 — and `goalStatus(hours, goal)` takes the goal as a
+parameter, because the period it measures is not always a month.
+
+**The goal is defined MONTHLY and every other period derives from it.**
+`PERIOD_MONTHS`: a quarter is three of it, a year twelve, and a week is
+`12/52` of it — the one conversion that is not a whole number of months, and
+the honest one. Adding a second constant per period would be four numbers to
+keep in step instead of `MONTHLY_GOAL_HOURS` alone.
+
+**The CURRENT period's goal is pro-rated to the part of it that has
+happened.** A quarter nine days old measured against a full quarter's target
+reads "10% — Behind" on every screen in early January, which is a verdict on
+the calendar rather than on the learner. Past periods are measured whole,
+because they had the whole thing. Floor of 1/30 of a period, so the first day
+of a month is not a division by zero.
+
+**A period is CURRENT only when today falls inside it.** The first version
+used "is it the last bucket", which was wrong for the reason the next section
+fixes: the axis often ends in the past, and a finished week was being scored
+against two days of goal.
+
+**The browser maps a LABEL to a colour and never re-derives a band.**
+`GOAL_TONES` in `lib/brand.js` is a lookup keyed by the four labels the API
+sends — green once the goal is in reach, ochre while it is plausible, red
+when it is not. A copy of the thresholds in JavaScript would be free to drift
+from the one the API scored the number with.
+
+#### The axis now runs through to today
+
+`axis()` in `learning-hours.service.ts` took `first activity → last activity`.
+A learner whose last lesson was in July therefore saw a page headed "July"
+through September, and a goal page whose most prominent figure is two months
+stale is worse than one showing an honest zero. It now runs
+`first activity → max(last activity, current period)`.
+
+The START is unchanged, and the distinction matters: §10.12's rule against
+padding an axis is about LEADING emptiness — months before somebody joined,
+which read as a collapse that never happened. A trailing gap is the learner's
+own recent silence, which is information and the whole point of a goal page.
+
+Both pages read the same `learnerHoursTrend`, so My Progress gained the same
+fix in the same change.
+
+#### Two labels that could read as each other
+
+`Jun 26` was "June 2026" on the monthly axis and "26 June" on the weekly one,
+with nothing on either chart saying which. The month now carries an
+apostrophe (`Jun '26`) and the week leads with the day (`26 Jun`).
+
+### 10.26 External certifications
+
+`0036_external_certifications.sql`. A learner says "I did this elsewhere";
+their manager confirms they did; L&D decides whether it counts. Read the
+migration header first — the summary:
+
+**NOTHING EXISTS UNTIL THE FINAL APPROVAL.** A submission writes one row and
+one file and touches nothing else: no course, no assignment, no completion,
+no hours, no learning path. That is the requirement expressed as an
+implementation rather than as a flag somewhere — a learner cannot move their
+own numbers by filling in a form, and a claim in a queue is visible to its
+two approvers and to nobody else's figures.
+
+**An approval writes a COMPANION COURSE, which is §10.7's pattern reused.**
+One course, one module, one lesson of `content_type = 'external'`, the
+learner's assignment and their completion — all in ONE statement. My
+Courses, learning hours, the completed count and the analytics mode split
+then pick it up through definitions that already work.
+
+The alternative — a standalone table that each of those learns about — was
+rejected for a specific reason beyond the four new code paths: §10.4
+promises the per-COURSE minutes sum to the per-LEARNER total, and hours
+belonging to no course cannot. Making it a course keeps that true.
+
+`courses.external_certification_id` is the marker, mirroring
+`courses.session_id`, and it is excluded at **seven** SQL sites across three
+repositories — the Course Library list and its archived count, the two bulk
+predicates, the catalogue's course read, and the pending-surveys read. Plus
+`CoursesService.assertNotExternalCertification`, so the course editor
+refuses it the way it already refuses a session training.
+
+**It never auto-issues a certificate.** `getCompletionSnapshot` now returns
+`externalCertificationId` beside `sessionId`, and `autoIssue` returns null
+for both. The learner already holds a certificate — the awarding body's —
+and minting a second in this product's name would claim credit for training
+it did not deliver. Without the guard, every approval would mint one,
+because the companion lesson is complete the moment it is created.
+
+**Hours are stored in MINUTES though the form asks for hours.** Every
+duration in this database is `duration_minutes`, the companion lesson needs
+minutes anyway, and a second unit on one table is how a number gets
+multiplied by sixty twice. The DTO converts once, at the boundary.
+
+**No manager means ONE approval, and the learner is told so on submit.**
+`sent_to` comes back naming either the manager or L&D, because a learner
+told "sent to your manager" who has no manager is watching a queue that will
+never move. The manager is resolved at submission and STORED: a reporting
+line that changes mid-flight must not move somebody else's decision to a new
+desk.
+
+**An admin cannot skip the manager.** `decideAsAdmin` refuses a
+`pending_manager` row with a 422 naming who has it. A two-step approval an
+admin can short-circuit is a one-step approval with extra words.
+
+**A refusal requires a reason**, enforced in the service rather than the DTO
+because the rule depends on `approve` and a DTO cannot see across its own
+fields. Telling somebody their evidence was not accepted without saying why
+leaves them nothing to do next.
+
+#### The file
+
+**Local disk, and the reasoning is the INVERSE of §10.10's.** A thumbnail is
+public and needs a stable anonymous URL; a certificate must never have one.
+What makes disk right here instead is that the R2 variables are optional
+(§9.1) — an R2-only certificate would be a dead Submit button in any
+deployment that has not configured them, including a developer's.
+
+So the bytes live under `UPLOAD_STORAGE_PATH/external-certifications/`,
+which is deliberately OUTSIDE the directory `useStaticAssets` publishes.
+The only way to read one is `GET /api/external-certifications/:id/file`,
+which has **no `@Roles()`**: the three people entitled are not three roles
+but a relationship to the row — its owner, the manager it was sent to, and
+an admin of that learner's org. That is decided in the service (§5.3), so
+there is one definition rather than three copies. Verified: owner 200,
+that manager 200, an admin 200, an unrelated learner 403, another tenant
+404.
+
+Multipart on the submit route rather than a presign: the file is a scanned
+certificate, and a presign would let a learner upload bytes no row ever
+claims — the debris §10.9 had to write a sweeper for. Three checks, and the
+third is the one that matters: the BYTES are sniffed, because a multipart
+Content-Type is written by the client. If the row then fails to insert, the
+file is discarded.
+
+#### Two things that cost time, worth not repeating
+
+**A partial unique index needs its predicate repeated in `ON CONFLICT`.**
+`courses_external_certification_unique` is partial (`WHERE
+external_certification_id IS NOT NULL`, because every other course has NULL
+there and they must not collide). `ON CONFLICT (external_certification_id)`
+alone fails with *"no unique or exclusion constraint matching the ON CONFLICT
+specification"*. `courses.session_id` gets away with a bare clause because
+ITS index is not partial.
+
+**A backtick inside a SQL comment inside a `sql` template literal ends the
+literal.** A comment mentioning a column in backticks produced six TS1005
+parse errors, `nest start --watch` then failed every rebuild, and the OLD
+process kept serving — so a fix that was definitely on disk appeared to
+change nothing. Symptom to recognise: the running pid predates the edit.
+Use plain words in SQL comments inside these templates.
+
+Routes:
+
+```
+GET    /api/learner/external-certifications            my claims
+POST   /api/learner/external-certifications            file one (multipart)
+GET    /api/learner/team/external-certifications       my reports' claims  (view_team_learning)
+PATCH  /api/learner/team/external-certifications/:id   confirm / decline   (view_team_learning)
+GET    /api/admin/external-certifications              the queue + counts  (manage_certificates)
+PATCH  /api/admin/external-certifications/:id          approve / decline   (manage_certificates)
+GET    /api/external-certifications/:id/file           the document, entitlement in the service
+```
+
+**`manage_certificates` rather than a new permission.** Approving one puts a
+completed course and its hours on somebody's record, which is the same
+weight as issuing a certificate. A new catalogue entry would need its own
+grant migration and every one of those signs every user in every
+organization out once (§10.17).
+
+**Known consequence, accepted by the owner:** an approved certification
+counts as a COMPLETED COURSE, so it moves completion rates in the admin
+analytics and reports. A learner can therefore show a completion figure that
+includes training this platform never delivered. Two people approved it,
+which is the control; the number itself does not distinguish them.
 
 ### 10.25 Self-enrolment, and the Course Catalogue
 
@@ -867,6 +1209,35 @@ GET    /api/admin/surveys/courses/:courseId        what THIS course resolves to
 GET    /api/learner/courses/:courseId/feedback     the form + my own answer
 POST   /api/learner/courses/:courseId/feedback     submit or revise (200)
 ```
+
+### 10.24.1 The learner's feedback inbox
+
+`GET /api/learner/surveys` returns `{ pending, submitted }` — every course
+this learner has FINISHED that asks for feedback, split on whether they have
+answered.
+
+**ONE query for both halves.** `pendingCoursesForLearner` became
+`feedbackCoursesForLearner`: the `NOT EXISTS (course_feedback)` filter came
+out of the SQL and `answered_at` went in, so the service splits one result
+instead of a second near-identical query existing that could disagree with
+the first about what "finished" means. `pendingForLearner` — which the
+dashboard panel reads — is now a view over this, so the panel and the
+Surveys page cannot report different numbers. Verified: submitting one form
+moved the page 3 pending to 2 and the dashboard panel with it.
+
+**`created_at`, not a submitted stamp.** `course_feedback` keeps one
+timestamp because the answer is an upsert (§10.24); it is when they first
+answered, and the column named `submitted_at` does not exist. Worth knowing
+before reaching for one.
+
+**Session feedback is NOT folded in.** It is a different table with
+different questions and a different reader (§10.20), served by
+`FeedbackService`. The page reads both endpoints and shows them side by side
+rather than one service pretending to own both — the same reason §10.24
+gives for not sharing a table.
+
+**No organisation-survey feature exists**, and the learner page deliberately
+does not render a section for one. See TASTE §10.3.1.25.
 
 ### 10.23 A platform course could never issue a certificate
 
@@ -1944,6 +2315,43 @@ lesson is, except for `session`, where the delivery mode belongs to the session
 CASE reaches through the training course for that one type and takes the
 lesson's word for every other.
 
+#### Weekly joined the analytics axis
+
+`GRANULARITIES` gains `weekly`, and it is **the one axis queried at its own
+`date_trunc` unit**. Every coarser granularity folds monthly rows, which is
+what stops a quarter disagreeing with the sum of its own months — but a week
+straddles two months, so that trick does not work one level down.
+
+`Period` therefore gained `keys`: the SOURCE ROW KEYS a bucket folds. Month
+keys (`YYYY-MM`) for everything else, week-start dates (`YYYY-MM-DD`) for
+weekly. `foldByPeriod` reads `keys` and takes its slice width from the axis
+rather than assuming seven characters, so one function serves both shapes.
+
+`buildWeekPeriods` is Monday-first, because `date_trunc('week')` is — a
+Sunday-first axis would file a row in the bucket before its own. Labels lead
+with the day (`28 Sep`) so a week can never be read as a month (`Sep 2026`).
+
+Every series query already took a `TruncUnit`; only the whitelist and the
+axis needed widening. Verified: Q1+Q2+Q3 2026 hours = the 2026 yearly figure
+exactly, and the weekly buckets sum into their months.
+
+#### The dashboard's hours tile takes a period
+
+`engagement.hoursByPeriod` carries the same figure at four granularities.
+**No extra query:** `MinutesRow` gained `this_week`, `this_quarter` and
+`this_year` beside `this_month`, as three more `SUM(CASE …)` branches on a
+scan the dashboard was already paying for — and the SCORM residual is
+bucketed the same three ways in `scormMinutes`, or the quarter would be
+lesson-only while the month included it.
+
+The current-period starts come from `currentPeriodStarts()` in `periods.ts`,
+built on `referenceNow()` — not `now()` in SQL — so pinning
+`REPORTING_REFERENCE_DATE` moves these with every other figure instead of
+leaving three tiles describing the real today.
+
+Verified the two pages agree: dashboard `{6.9, 13, 33.5, 191.7}` matches the
+last bucket of the analytics series at each granularity.
+
 #### The reports builder
 
 Three scopes behind three routes, all `@Permissions('view_reports')`:
@@ -2621,6 +3029,29 @@ kept competing, while the dashboard's own user count already excluded them).
 The admin board shows hours and completion as columns but does NOT rank on them
 — it used to rank on a 60/40 blend, so the two boards could disagree about who
 was first. Do not add a second points calculation.
+
+### 10.5.1 The points model is now readable, from the same file
+
+`GET /learner/leaderboard` returns `pointRules` and `pointNotes`, and the
+learner portal renders them as a "How Points Work" tab. The catalogue lives
+in `modules/leaderboard/points.ts` **beside the constants the board pays out
+with** — the values in it are `POINTS_PER_LESSON` and
+`POINTS_PER_PASSED_ASSESSMENT`, never re-typed numbers, so changing a
+constant moves the explanation and the payment together.
+
+That is the whole reason it is served rather than mirrored in the browser. A
+hardcoded table beside a live formula is §5.2.1's screen that lies, and this
+is the worst place for it: a learner who reads a value they never receive
+stops trusting the board.
+
+**Three rules, because there are three.** Lessons, distinct assessment
+passes, and a completed path's own `points_bonus`. The reference design
+lists eleven — top score, perfect score, finished early, session attended,
+four community actions — and this product awards none of them. They are
+omitted rather than listed at zero.
+
+`points: null` with a `pointsLabel` covers the path bonus, which varies per
+path; naming a number there would be wrong for every path but one.
 
 ### 10.4 Learning hours
 

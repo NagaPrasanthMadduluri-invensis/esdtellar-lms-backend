@@ -85,7 +85,9 @@ export interface Window {
   to: string;
 }
 
-const TRUNC_UNITS = ['month', 'quarter', 'year'] as const;
+// `week` joins the list for the analytics weekly axis. Postgres weeks are
+// ISO — Monday-first — which is what `buildWeekPeriods` matches.
+const TRUNC_UNITS = ['week', 'month', 'quarter', 'year'] as const;
 export type TruncUnit = (typeof TRUNC_UNITS)[number];
 
 /**

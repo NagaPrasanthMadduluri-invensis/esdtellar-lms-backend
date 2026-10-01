@@ -83,3 +83,34 @@ export function weeks(): Week[] {
     end: dayKey(new Date(year, month, to)),
   }));
 }
+
+/**
+ * Inclusive start dates of the CURRENT week, quarter and year.
+ *
+ * Built from `referenceNow()` like every other figure here, so pinning
+ * `REPORTING_REFERENCE_DATE` for a demo moves these with the rest rather
+ * than leaving three tiles describing the real today.
+ *
+ * The week is ISO — Monday-first — matching `date_trunc('week')`, which is
+ * what every other weekly bucket in this codebase is keyed by.
+ */
+export function currentPeriodStarts(): {
+  week: string;
+  quarter: string;
+  year: string;
+} {
+  const now = referenceNow();
+  const iso = (y: number, m: number, d: number) =>
+    `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+  const monday = new Date(
+    Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()),
+  );
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+
+  return {
+    week: monday.toISOString().slice(0, 10),
+    quarter: iso(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3 + 1, 1),
+    year: iso(now.getFullYear(), 1, 1),
+  };
+}

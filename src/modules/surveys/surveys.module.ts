@@ -3,7 +3,10 @@ import { Module } from '@nestjs/common';
 import { NotificationsModule } from '@/modules/notifications/notifications.module';
 
 import { AdminSurveysController } from './admin-surveys.controller';
-import { LearnerSurveysController } from './learner-surveys.controller';
+import {
+  LearnerSurveyListController,
+  LearnerSurveysController,
+} from './learner-surveys.controller';
 import { SurveysRepository } from './surveys.repository';
 import { SurveysService } from './surveys.service';
 
@@ -21,7 +24,11 @@ import { SurveysService } from './surveys.service';
  */
 @Module({
   imports: [NotificationsModule],
-  controllers: [AdminSurveysController, LearnerSurveysController],
+  controllers: [
+    AdminSurveysController,
+    LearnerSurveysController,
+    LearnerSurveyListController,
+  ],
   providers: [SurveysService, SurveysRepository],
   exports: [SurveysService],
 })

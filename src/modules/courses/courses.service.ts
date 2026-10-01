@@ -261,6 +261,26 @@ export class CoursesService {
     }
   }
 
+  /**
+   * The same refusal for an approved EXTERNAL certification's companion
+   * course (0036).
+   *
+   * It is not a library entry — it is one learner's record of training done
+   * elsewhere, and renaming it, publishing it or deleting its single lesson
+   * would leave a completion pointing at something that no longer describes
+   * what they did. The certification itself is the thing to act on.
+   */
+  private assertNotExternalCertification(
+    externalCertificationId: number | null | undefined,
+  ): void {
+    if (externalCertificationId) {
+      throw new UnprocessableEntityException(
+        'This is an external certification a learner submitted, not a ' +
+          'course in your library. Manage it from Certificates.',
+      );
+    }
+  }
+
   /* ── Courses ── */
 
   /**
@@ -615,6 +635,7 @@ export class CoursesService {
     if (!existing) throw new NotFoundException('Course not found');
     this.assertNotGlobalContent(scope, existing.organizationId, 'course');
     this.assertNotSessionTraining(existing.sessionId);
+    this.assertNotExternalCertification(existing.externalCertificationId);
 
     /**
      * Omitted means "leave it alone" — for the picture as much as for the

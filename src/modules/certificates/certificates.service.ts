@@ -145,6 +145,13 @@ export class CertificatesService {
       // for sessions are the admin's own call, through issueManually().
       if (snapshot.sessionId !== null) return null;
 
+      // Nor does an approved EXTERNAL certification (0036). The learner
+      // already holds a certificate for it — the awarding body's — and
+      // issuing one here would put this product's name on training it did
+      // not deliver. Its companion lesson is completed the moment an admin
+      // approves, so without this every approval would mint one.
+      if (snapshot.externalCertificationId !== null) return null;
+
       const verdict = this.evaluate(snapshot);
       if (!verdict.complete) return null;
 

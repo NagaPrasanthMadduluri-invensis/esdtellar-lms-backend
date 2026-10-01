@@ -47,6 +47,22 @@ export const ACTIVITY_TYPES = {
 
   certificate_issued: { label: 'Certificate issued', group: 'recognition' },
   certificate_revoked: { label: 'Certificate revoked', group: 'recognition' },
+  // External certifications (0036). The SUBMISSION is logged as well as the
+  // two decisions, because a claim that was refused is part of the story an
+  // admin reading this panel is trying to follow — only recording approvals
+  // would make the feed say a certification appeared from nowhere.
+  external_certification_submitted: {
+    label: 'External certification submitted',
+    group: 'recognition',
+  },
+  external_certification_approved: {
+    label: 'External certification approved',
+    group: 'recognition',
+  },
+  external_certification_rejected: {
+    label: 'External certification declined',
+    group: 'recognition',
+  },
 
   service_requested: { label: 'Edstellar service requested', group: 'services' },
 } as const;

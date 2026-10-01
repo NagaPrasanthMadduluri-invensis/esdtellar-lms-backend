@@ -28,6 +28,8 @@ export interface CompletionSnapshot {
    * hand, so auto-issue steps aside — see CertificatesService.autoIssue.
    */
   sessionId: number | null;
+  /** Set when the course IS an approved external certification (0036). */
+  externalCertificationId: number | null;
   /**
    * For the completion notification's wording. Selected here rather than
    * fetched separately because this method already anchors on `courses` six
@@ -176,6 +178,21 @@ export class CertificatesRepository {
         and(eq(courses.id, courseId), courseIsVisible),
       );
 
+    /**
+     * Is this course one learner's approved EXTERNAL certification (0036)?
+     *
+     * Read for the same reason `sessionId` is: neither kind auto-issues. An
+     * external certification already HAS a certificate — the one the
+     * awarding body gave them — and minting a second in this product's name
+     * would be claiming credit for training it did not deliver.
+     */
+    const externalCertificationId = this.db
+      .select({ value: courses.externalCertificationId })
+      .from(courses)
+      .where(
+        and(eq(courses.id, courseId), courseIsVisible),
+      );
+
     const courseName = this.db
       .select({ value: courses.name })
       .from(courses)
@@ -190,6 +207,7 @@ export class CertificatesRepository {
       best_score: number | null;
       passed_count: number;
       session_id: number | null;
+      external_certification_id: number | null;
       course_name: string | null;
     }>(sql`
       SELECT
@@ -199,6 +217,7 @@ export class CertificatesRepository {
         (${bestScore})         AS best_score,
         (${passedAttempts})    AS passed_count,
         (${sessionId})         AS session_id,
+        (${externalCertificationId}) AS external_certification_id,
         (${courseName})        AS course_name
     `);
     const row = rows[0];
@@ -210,6 +229,10 @@ export class CertificatesRepository {
       hasPassed: Number(row.passed_count) > 0,
       bestScore: row.best_score === null ? null : Number(row.best_score),
       sessionId: row.session_id === null ? null : Number(row.session_id),
+      externalCertificationId:
+        row.external_certification_id === null
+          ? null
+          : Number(row.external_certification_id),
       courseName: row.course_name ?? null,
     };
   }

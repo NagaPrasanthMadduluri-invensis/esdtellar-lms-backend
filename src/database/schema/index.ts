@@ -37,3 +37,6 @@ export * from './feedback.schema';
 
 /** Editable course-feedback templates and the answers learners gave (0034). */
 export * from './course-feedback.schema';
+
+/** External certifications and their two-step approval trail (0036). */
+export * from './external-certifications.schema';

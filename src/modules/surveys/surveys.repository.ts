@@ -312,6 +312,103 @@ export class SurveysRepository {
     return (rows[0]?.n ?? 0) > 0;
   }
 
+  /**
+   * Courses this learner has COMPLETED, that ask for feedback, and that they
+   * have not answered yet.
+   *
+   * "Completed" is the same definition the rest of the product uses (§10.11):
+   * at least one active lesson, and no active lesson left uncompleted. It is
+   * written as EXISTS / NOT EXISTS so the whole thing stays one statement
+   * rather than a count compared in JavaScript.
+   *
+   * Scopes, and they are not the same one (§10.12): the COURSE is content, so
+   * org-or-platform; the learner's completion and their existing answer are
+   * ACTIVITY, so each carries `organization_id` of its own. Without the
+   * second, a shared course finished by somebody in another tenant would
+   * satisfy the completion test for this learner.
+   *
+   * A session's companion training is excluded — it is rated through the
+   * session (§10.7), and prompting for a course survey on it would offer the
+   * wrong form for the wrong thing.
+   */
+  /**
+   * Every course this learner has FINISHED that asks for feedback, answered
+   * or not — `answered_at` is the difference.
+   *
+   * It used to exclude answered rows in SQL, which was right while the only
+   * caller was the dashboard's "you still owe these". The Surveys module
+   * shows both halves, and splitting one result is better than a second
+   * near-identical query that could disagree with this one about what
+   * "finished" means.
+   */
+  async feedbackCoursesForLearner(
+    scope: OrgScope,
+    userId: number,
+  ): Promise<
+    {
+      id: number;
+      name: string;
+      category: string | null;
+      thumbnail_url: string | null;
+      feedback_enabled: number;
+      feedback_template_id: number | null;
+      session_id: number | null;
+      completed_at: string | null;
+      /** When this learner answered. NULL means the form is still owed. */
+      answered_at: string | null;
+    }[]
+  > {
+    return this.db.all(sql`
+      SELECT c.id,
+             c.name,
+             c.category,
+             c.thumbnail_url,
+             c.feedback_enabled,
+             c.feedback_template_id,
+             c.session_id,
+             (SELECT MAX(ulc.completed_at)
+                FROM user_lesson_completions ulc
+                JOIN lessons l ON l.id = ulc.lesson_id
+                JOIN course_modules cm ON cm.id = l.module_id
+               WHERE cm.course_id = c.id
+                 AND ulc.user_id = ${userId}
+                 AND ${orgScope('ulc', scope)}) AS completed_at,
+             -- created_at, because the answer is an upsert (§10.24) and this
+             -- table keeps no second stamp: it is when they first answered.
+             (SELECT cf.created_at FROM course_feedback cf
+               WHERE cf.course_id = c.id AND cf.user_id = ${userId}
+                 AND ${orgScope('cf', scope)}
+               LIMIT 1) AS answered_at
+        FROM user_course_assignments uca
+        JOIN courses c ON c.id = uca.course_id
+       WHERE uca.user_id = ${userId}
+         AND ${orgScope('uca', scope)}
+         AND c.is_active = 1
+         AND c.archived_at IS NULL
+         AND c.session_id IS NULL
+         AND c.external_certification_id IS NULL
+         AND c.feedback_enabled = 1
+         AND c.organization_id IN (${scope.organizationId}, ${scope.platformOrganizationId})
+         -- Finished: has lessons, and none of them outstanding.
+         AND EXISTS (
+           SELECT 1 FROM lessons l
+             JOIN course_modules cm ON cm.id = l.module_id
+            WHERE cm.course_id = c.id AND l.is_active = 1 AND cm.is_active = 1
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM lessons l
+             JOIN course_modules cm ON cm.id = l.module_id
+            WHERE cm.course_id = c.id AND l.is_active = 1 AND cm.is_active = 1
+              AND NOT EXISTS (
+                SELECT 1 FROM user_lesson_completions ulc
+                 WHERE ulc.lesson_id = l.id AND ulc.user_id = ${userId}
+                   AND ${orgScope('ulc', scope)}
+              )
+         )
+       ORDER BY completed_at DESC NULLS LAST, c.name
+    `);
+  }
+
   /* ──────────────────────────── Responses ────────────────────────────── */
 
   /**

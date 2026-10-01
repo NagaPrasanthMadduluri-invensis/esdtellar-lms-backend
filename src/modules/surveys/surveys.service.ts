@@ -409,6 +409,107 @@ export class SurveysService {
   }
 
   /**
+   * The SAME rule as `resolveTemplate`, applied against a template list that
+   * is already in hand.
+   *
+   * It exists so a LIST of courses can be resolved without a query per row
+   * (§7.1). `resolveTemplate` above reads one course's templates from the
+   * database; this reads them from a map the caller loaded once. Both must
+   * agree, which is why the branches below are the same three in the same
+   * order — if one changes, change both, or the dashboard will offer a form
+   * the course page does not.
+   */
+  private pickTemplate(
+    templates: TemplateRow[],
+    course: {
+      feedback_enabled: number;
+      session_id: number | null;
+      feedback_template_id: number | null;
+      category: string | null;
+    },
+  ): TemplateRow | null {
+    if (course.feedback_enabled !== 1) return null;
+    if (course.session_id !== null) return null;
+
+    if (course.feedback_template_id) {
+      const explicit = templates.find(
+        (t) => t.id === course.feedback_template_id,
+      );
+      if (explicit && explicit.is_active === 1) return explicit;
+    }
+
+    const key = templateKeyForCategory(course.category);
+    const byCategory = templates.find((t) => t.key === key);
+    return byCategory && byCategory.is_active === 1 ? byCategory : null;
+  }
+
+  /**
+   * Courses this learner has FINISHED and not yet rated — the dashboard's
+   * "your feedback is wanted" prompt.
+   *
+   * Completed only, deliberately. A learner may rate a course at any point
+   * from its own page, but prompting somebody for an opinion on training
+   * they are 20% through is asking a question they cannot answer, and a
+   * dashboard panel full of those is one people stop reading.
+   *
+   * Two queries whatever the size of the list: the candidates, and the org's
+   * templates. The resolution then happens in memory through `pickTemplate`,
+   * so a learner with twelve finished courses still costs two round trips.
+   */
+  async pendingForLearner(scope: OrgScope, userId: number) {
+    const { pending } = await this.listForLearner(scope, userId);
+    return { surveys: pending };
+  }
+
+  /**
+   * Everything this learner has been asked to say about a COURSE, split into
+   * what is still owed and what they have already sent.
+   *
+   * ONE query for both halves, then one split. The dashboard panel reads the
+   * pending side through `pendingForLearner` above, which is now a view over
+   * this rather than its own query — so the panel and the Surveys module can
+   * never disagree about whether a form is outstanding.
+   *
+   * Session feedback is NOT here. It is a different table with different
+   * questions and a different audience (§10.24), and it is served by
+   * `FeedbackService`; the Surveys page reads both and shows them side by
+   * side rather than this method pretending to own both.
+   */
+  async listForLearner(scope: OrgScope, userId: number) {
+    const [candidates, templates] = await Promise.all([
+      this.repository.feedbackCoursesForLearner(scope, userId),
+      this.repository.listTemplates(scope),
+    ]);
+
+    const shaped = candidates
+      .map((row) => ({ row, template: this.pickTemplate(templates, row) }))
+      .filter(
+        (x): x is { row: (typeof candidates)[number]; template: TemplateRow } =>
+          x.template !== null,
+      )
+      .map(({ row, template }) => ({
+        course_id: row.id,
+        course_name: row.name,
+        category: row.category,
+        thumbnail_url: row.thumbnail_url,
+        completed_at: toIso(row.completed_at),
+        answered_at: toIso(row.answered_at),
+        template_id: template.id,
+        template_name: template.name,
+        question_count: template.question_count,
+      }));
+
+    return {
+      pending: shaped.filter((r) => r.answered_at === null),
+      // Newest answer first: the thing somebody scrolls to check is what
+      // they said most recently.
+      submitted: shaped
+        .filter((r) => r.answered_at !== null)
+        .sort((a, b) => String(b.answered_at).localeCompare(String(a.answered_at))),
+    };
+  }
+
+  /**
    * The template a course would use, for the admin's course form. Returns the
    * category default and the override separately, because the form shows
    * "Technical courses use the Technical template" beside a dropdown that can

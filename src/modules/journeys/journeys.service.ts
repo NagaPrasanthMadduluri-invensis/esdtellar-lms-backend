@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 
 import { MediaService } from '@/modules/media/media.service';
+import { contentTypeOf } from '@/modules/learner/learner.constants';
 import type { OrgScope } from '@/database/org-scope';
 import { journeyBadgeKey } from '@/common/badges';
 import { BadgesService } from '@/modules/badges/badges.service';
@@ -22,6 +23,102 @@ import type {
 } from './dto/journey.dto';
 import { JourneyGateService } from './journey-gate.service';
 import { JourneysRepository, type JourneyStep, type LearnerMatch } from './journeys.repository';
+
+/**
+ * What a STEP is doing, as distinct from whether the learner may open it.
+ *
+ * `stepStatus` answers the gate — locked, open, complete — and that is what
+ * enforcement reads. It deliberately cannot tell "not touched" from "half
+ * finished", because the gate does not care. A card does: offering Start to
+ * somebody 60% of the way through a course is the screen that lies, in
+ * miniature.
+ *
+ * `failed` is only claimed when an assessment was actually attempted and not
+ * passed. A course whose lessons are all done but whose quiz is still
+ * outstanding is IN PROGRESS, not failed — the completion definition
+ * (§10.11) already requires the pass, and calling that a failure would
+ * accuse somebody of something they have not done yet.
+ */
+function stepProgressStatus(step: {
+  isComplete: boolean;
+  lessonsDone: number;
+  hasPassed: boolean | null;
+}): 'complete' | 'failed' | 'in_progress' | 'not_started' {
+  if (step.isComplete) return 'complete';
+  if (step.hasPassed === false) return 'failed';
+  return step.lessonsDone > 0 ? 'in_progress' : 'not_started';
+}
+
+/** Split a comma-joined free-text column into clean, non-empty parts. */
+function csv(value: string | null): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The skills a learner has EARNED on a path — the tags of the courses they
+ * have actually completed, de-duplicated in first-seen order.
+ *
+ * Distinct from `journeys.skills`, which is what the path is ABOUT and is
+ * true from the first second. This is what the learner has picked up SO FAR,
+ * and it is the only one of the two that moves: a row of ticks on a path
+ * card that never changes until the path is finished is furniture, and a
+ * learner comparing two paths in progress is choosing between the one where
+ * more of this list is ticked. Empty until something is completed, which is
+ * the honest answer rather than a fallback to the path's own tag list.
+ */
+function earnedSkills(
+  steps: { isComplete: boolean; courseTags: string | null }[],
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const step of steps) {
+    if (!step.isComplete) continue;
+    for (const tag of csv(step.courseTags)) {
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(tag);
+    }
+  }
+  return out;
+}
+
+/** The compact shape a list card's chip needs — nothing more. */
+function shapeStep(row: {
+  course_id: number;
+  course_name: string;
+  sort_order: number;
+  is_required: number;
+  is_complete: boolean;
+  lessons_done: number;
+  has_passed: number | null;
+  content_types: string | null;
+  course_tags: string | null;
+}) {
+  return {
+    course_id: Number(row.course_id),
+    course_name: row.course_name,
+    sort_order: Number(row.sort_order),
+    is_required: Number(row.is_required) === 1,
+    // The SAME derivation the detail view uses, so a chip and the step card
+    // it links to can never disagree about whether something was started.
+    progress_status: stepProgressStatus({
+      isComplete: Boolean(row.is_complete),
+      lessonsDone: Number(row.lessons_done ?? 0),
+      hasPassed: row.has_passed === null ? null : Number(row.has_passed) === 1,
+    }),
+    /* What the step is made of, and what it is tagged with. Both are the
+       course's, read once here so the chip and the step row do not each
+       derive them. `contentTypeOf` is the reducer the learner course cards
+       already use, so a path step and a course card cannot disagree about
+       what kind of content a course is. */
+    content_type: contentTypeOf(csv(row.content_types)),
+    tags: csv(row.course_tags),
+  };
+}
 
 @Injectable()
 export class JourneysService {
@@ -260,6 +357,29 @@ export class JourneysService {
       throw new NotFoundException('One or more courses were not found');
     }
 
+    /* A STEP HAS TO BE COMPLETABLE BY WALKING THE PATH, and two kinds of
+       course are not. A session's companion training is completed by
+       attendance (§10.7), which needs a `session_roster` row that only
+       `addToRoster` writes — a journey inserts the assignment directly, so
+       a learner put on this path who is not separately booked onto the
+       session has a step they can never finish, and therefore a path that
+       can never complete. An external certification is already finished the
+       moment it is approved (§10.26); there is nothing to do.
+       Neither is offered by the admin Course Library the picker reads, so
+       this refusal only closes the gap between what the UI shows and what
+       the API accepted — §10.3.1.9 states the same rule for Assign
+       Learning. The message names them, because the way out is to drop
+       those steps. */
+    const undeliverable = await this.repository.undeliverableCourses(scope, courseIds);
+    if (undeliverable.length > 0) {
+      const named = undeliverable
+        .map((c) => `"${c.name}" (${c.reason})`)
+        .join('; ');
+      throw new UnprocessableEntityException(
+        `A learning path cannot contain ${named}. Remove ${undeliverable.length === 1 ? 'it' : 'them'} and save again.`,
+      );
+    }
+
     await this.repository.replaceCourses(
       scope,
       journeyId,
@@ -402,6 +522,39 @@ export class JourneysService {
       limit: Math.min(Math.max(pagination.limit ?? 50, 1), 100),
       offset: Math.max(pagination.offset ?? 0, 0),
     });
+
+    /* The chip sequence every card shows, for every card, in ONE query —
+       the ordered courses are what makes a path a path rather than a
+       bundle, so they belong on the card and not only behind a click.
+       Grouped here rather than fetched per card (§7.1). */
+    const steps = await this.repository.compactStepsForJourneys(
+      scope,
+      userId,
+      rows.map((r) => Number(r.journey_id)),
+    );
+    const stepsByJourney = new Map<number, ReturnType<typeof shapeStep>[]>();
+    /* Raw rows per journey, kept so `earnedSkills` is computed over the
+       WHOLE sequence in one call — deriving it per row would keep only the
+       last step's tags. */
+    const rawByJourney = new Map<
+      number,
+      { isComplete: boolean; courseTags: string | null }[]
+    >();
+    for (const row of steps) {
+      const key = Number(row.journey_id);
+      const list = stepsByJourney.get(key);
+      if (list) list.push(shapeStep(row));
+      else stepsByJourney.set(key, [shapeStep(row)]);
+      const raw = rawByJourney.get(key);
+      const entry = { isComplete: Boolean(row.is_complete), courseTags: row.course_tags };
+      if (raw) raw.push(entry);
+      else rawByJourney.set(key, [entry]);
+    }
+    const earnedByJourney = new Map<number, string[]>();
+    for (const [key, list] of rawByJourney) {
+      earnedByJourney.set(key, earnedSkills(list));
+    }
+
     return {
       journeys: rows.map((row) => {
         const { percent, status } = this.deriveProgress(
@@ -415,6 +568,10 @@ export class JourneysService {
           description: row.description,
           tag: row.tag,
           skills: row.skills,
+          /* What the learner has EARNED so far, as opposed to `skills`
+             above, which is what the path is about. Different questions, and
+             only this one moves while the path is in progress. */
+          earned_skills: earnedByJourney.get(Number(row.journey_id)) ?? [],
           thumbnail_url: row.thumbnail_url,
           badge_label: row.badge_label,
           badge_icon: row.badge_icon,
@@ -425,6 +582,26 @@ export class JourneysService {
           percent,
           status,
           current_step: row.next_course_name,
+          /* The card's three counts and its total length. Every course in
+             the path, not only the required ones progress is measured
+             against — a card saying "5 courses" over six chips would be
+             two numbers disagreeing on one card. */
+          course_count: Number(row.course_count ?? 0),
+          completed_count: Number(row.completed_count ?? 0),
+          in_progress_count: Number(row.in_progress_count ?? 0),
+          not_started_count: Math.max(
+            0,
+            Number(row.course_count ?? 0) -
+              Number(row.completed_count ?? 0) -
+              Number(row.in_progress_count ?? 0),
+          ),
+          total_minutes: Number(row.total_minutes ?? 0),
+          courses: stepsByJourney.get(Number(row.journey_id)) ?? [],
+          /* "All required" is only worth saying when it is TRUE — a pill on
+             every card claiming something that varies is noise. */
+          all_required: (stepsByJourney.get(Number(row.journey_id)) ?? []).every(
+            (c) => c.is_required,
+          ),
         };
       }),
     };
@@ -471,13 +648,62 @@ export class JourneysService {
         ...this.shape(journey),
         percent,
         status,
+        /* From the ENROLMENT, not the journey: when THIS learner was put on
+           it and when THEY have to finish. The list card already showed
+           both, and a detail view that drops them reads as though the dates
+           had been withdrawn. */
+        assigned_at: enrollment.assignedAt,
+        due_date: enrollment.dueDate,
+        completed_at: enrollment.completedAt,
+        course_count: steps.length,
+        completed_count: steps.filter((s) => s.isComplete).length,
+        in_progress_count: steps.filter(
+          (s) => !s.isComplete && s.lessonsDone > 0,
+        ).length,
+        not_started_count: steps.filter(
+          (s) => !s.isComplete && s.lessonsDone === 0,
+        ).length,
+        total_minutes: steps.reduce((sum, s) => sum + s.durationMinutes, 0),
+        /* The detail view's tick row, derived from the same step objects the
+           sequence below is built from — so the skills ticked here and the
+           steps ticked below cannot disagree. */
+        earned_skills: earnedSkills(
+          steps.map((s) => ({ isComplete: s.isComplete, courseTags: s.courseTags })),
+        ),
         courses: steps.map((step, index) => ({
           course_id: step.courseId,
           course_name: step.courseName,
           thumbnail_url: step.thumbnailUrl,
+          /* What the course is MADE OF, for the step row's icon. Reduced
+             here from the course's lessons by the same `contentTypeOf` the
+             learner course cards use. */
+          content_type: contentTypeOf(csv(step.contentTypes)),
           sort_order: step.sortOrder,
           is_required: step.isRequired,
+          /* The GATE — locked / open / complete. Unchanged, and still what
+             decides whether the learner may open this step. */
           status: this.stepStatus(steps, index, journeyId),
+          /* What the step is DOING, which the gate does not say: `open`
+             covers both "not touched" and "half finished", and a card that
+             cannot tell them apart offers Start to somebody who is 60% of
+             the way through. Kept as a second field rather than folded into
+             the first, because the gate is enforcement and this is only
+             description — merging them would invite a caller to gate on a
+             progress figure. */
+          progress_status: stepProgressStatus(step),
+          duration_minutes: step.durationMinutes,
+          lessons_total: step.lessonsTotal,
+          lessons_done: step.lessonsDone,
+          percent:
+            step.lessonsTotal > 0
+              ? Math.min(
+                  100,
+                  Math.round((step.lessonsDone / step.lessonsTotal) * 100),
+                )
+              : 0,
+          score: step.bestScore,
+          has_passed: step.hasPassed,
+          due_date: step.dueDate,
         })),
       },
     };

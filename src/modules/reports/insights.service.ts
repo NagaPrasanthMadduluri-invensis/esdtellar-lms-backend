@@ -8,7 +8,9 @@ import {
   InsightsRepository,
   type AudienceFilter,
   type CompletionFilterRow,
+  type TruncUnit,
 } from './insights.repository';
+import type { InsightTone } from './analytics.service';
 import {
   buildPeriods,
   foldByPeriod,
@@ -127,6 +129,13 @@ export class InsightsService {
   async analytics(scope: OrgScope, granularity: Granularity) {
     const extent = await this.repository.activityExtent(scope);
     const periods = buildPeriods(granularity, extent.first, extent.last);
+    /* WEEKS ARE QUERIED AT THEIR OWN UNIT. Every coarser granularity folds
+       monthly rows — one query shape, and a quarter that cannot disagree
+       with the sum of its own months (§10.12). A week straddles two months,
+       so it is the one axis that has to be bucketed in SQL at its own
+       `date_trunc`. Everything downstream is unchanged: `foldByPeriod` keys
+       off `Period.keys`, which is week starts here and month keys there. */
+    const unit: TruncUnit = granularity === 'weekly' ? 'week' : 'month';
 
     const [
       minutesRows,
@@ -139,13 +148,13 @@ export class InsightsService {
       learners,
       learnerMinutes,
     ] = await Promise.all([
-      this.hours.minutesByPeriod(scope, 'month'),
-      this.hours.minutesByPeriodAndMode(scope, 'month'),
+      this.hours.minutesByPeriod(scope, unit),
+      this.hours.minutesByPeriodAndMode(scope, unit),
       this.hours.minutesByDepartment(scope),
-      this.repository.enrollmentsByPeriod(scope, 'month'),
-      this.repository.courseCompletionsByPeriod(scope, 'month'),
-      this.repository.learnerFlowByPeriod(scope, 'month'),
-      this.repository.certificatesByPeriod(scope, 'month'),
+      this.repository.enrollmentsByPeriod(scope, unit),
+      this.repository.courseCompletionsByPeriod(scope, unit),
+      this.repository.learnerFlowByPeriod(scope, unit),
+      this.repository.certificatesByPeriod(scope, unit),
       this.repository.learnerEngagement(scope),
       this.hours.minutesByUser(scope),
     ]);
@@ -263,7 +272,7 @@ export class InsightsService {
     deptMinutes: { department: string; minutes: number; learners: number }[],
     modes: { mode: string; data: number[] }[],
   ) {
-    const out: { icon: string; text: string }[] = [];
+    const out: { icon: string; text: string; tone: InsightTone }[] = [];
     if (periods.length === 0) return out;
 
     const last = periods[periods.length - 1];
@@ -276,6 +285,11 @@ export class InsightsService {
         const delta = Math.round(((b - a) / a) * 100);
         out.push({
           icon: 'clock',
+          /* The same sentence shape carries opposite news, which is exactly
+             why the tone is decided here and not in the browser. A fall of
+             more than a quarter is worth somebody's attention; a smaller
+             one is period-to-period noise. */
+          tone: delta >= 0 ? 'good' : delta <= -25 ? 'bad' : 'warn',
           text: `Learning hours ${delta >= 0 ? 'grew' : 'fell'} ${Math.abs(delta)}% from ${prev.label} to ${last.label} (${round1(b)}h).`,
         });
       }
@@ -283,6 +297,7 @@ export class InsightsService {
       const cb = completions.get(last.key) ?? 0;
       out.push({
         icon: 'check',
+        tone: cb > ca ? 'good' : cb === ca ? 'neutral' : cb === 0 ? 'bad' : 'warn',
         text: `${cb} course completion${cb === 1 ? '' : 's'} in ${last.label}, against ${ca} in ${prev.label}.`,
       });
     }
@@ -292,6 +307,9 @@ export class InsightsService {
       const bottom = deptMinutes[deptMinutes.length - 1];
       out.push({
         icon: 'trophy',
+        // Names somebody who is behind and says they may need a nudge —
+        // that is a prompt, not a celebration.
+        tone: 'warn',
         text: `${top.department} leads on engagement at ${round1(Number(top.minutes) / 60)}h; ${bottom.department} is furthest behind and may need a nudge.`,
       });
     }
@@ -310,6 +328,7 @@ export class InsightsService {
       if (best && best.growth > 0) {
         out.push({
           icon: 'trend',
+          tone: 'good',
           text: `${best.mode} is the fastest-growing mode of learning across the period (+${best.growth}%).`,
         });
       }
@@ -319,6 +338,7 @@ export class InsightsService {
     if (totalJoined > 0) {
       out.push({
         icon: 'user',
+        tone: 'neutral',
         text: `${totalJoined} learner${totalJoined === 1 ? '' : 's'} onboarded over this period.`,
       });
     }
