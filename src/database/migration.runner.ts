@@ -16,7 +16,27 @@ const MIGRATIONS_DIR = join(__dirname, 'migrations');
  * no-op.
  *
  * Use `npm run db:push` only against a scratch database.
+ *
+ * ## Why the advisory lock
+ *
+ * This used to run unguarded, which was fine while exactly one process ever
+ * booted. It is not fine now: the email worker (`WORKER=1`) boots the same
+ * `DatabaseModule`, so pm2 restarting both at once runs this concurrently.
+ *
+ * "Idempotent" does not mean "concurrency-safe". Two sessions running the
+ * same `CREATE TABLE IF NOT EXISTS` can still collide on a duplicate key in
+ * `pg_type`, and two `CREATE INDEX IF NOT EXISTS` against one relation can
+ * deadlock — both check for existence and then try to create, and the gap
+ * between those is the bug.
+ *
+ * So the whole run is serialised on one advisory lock. The second process
+ * blocks until the first finishes, then walks the same files and finds every
+ * statement already satisfied. Note this is the SESSION-level lock taken on a
+ * dedicated client, not `pg_advisory_xact_lock` — there is no surrounding
+ * transaction here, and each statement commits on its own.
  */
+const MIGRATION_LOCK_ID = 4_872_301_559;
+
 export async function runMigrations(
   pool: Pool,
   logger: Logger,
@@ -31,6 +51,25 @@ export async function runMigrations(
     return;
   }
 
+  const lock = await pool.connect();
+  try {
+    await lock.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+    await applyMigrations(pool, logger, files);
+  } finally {
+    // Released explicitly rather than left to the session ending, because the
+    // client goes back to the pool and keeps its session alive.
+    await lock
+      .query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID])
+      .catch(() => undefined);
+    lock.release();
+  }
+}
+
+async function applyMigrations(
+  pool: Pool,
+  logger: Logger,
+  files: string[],
+): Promise<void> {
   for (const file of files) {
     const sql = await readFile(join(MIGRATIONS_DIR, file), 'utf8');
     // Comments are stripped AND statements are split in the same character

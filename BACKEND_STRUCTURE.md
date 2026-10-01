@@ -206,7 +206,7 @@ bypass your business rules.
 HTTP request
   │
   ▼
-CORS (main.ts)                  exact CLIENT_ORIGIN + credentials:true
+CORS (main.ts)                  exact CLIENT_ORIGIN(s) + credentials:true
   ▼
 cookie-parser                   populates request.cookies
   ▼
@@ -521,7 +521,7 @@ paragraphs. That is courtesy; this is enforcement.
 | `DATABASE_SSL` | no (`false`) | Set `true` if the Postgres server requires/terminates TLS |
 | `JWT_SECRET` | yes | HMAC key, ≥32 chars; must match `client/.env.local` during migration |
 | `PORT` | no (3001) | HTTP port |
-| `CLIENT_ORIGIN` | no | Exact frontend origin for CORS — no wildcard |
+| `CLIENT_ORIGIN` | no | Exact frontend origin(s) for CORS — comma-separated, no wildcard. The FIRST is canonical and is what email links are built from |
 | `COOKIE_DOMAIN` | no | Omitted for localhost; set to the shared parent domain in production |
 | `AUTH_TOKEN_DAYS` | no (7) | Token + cookie lifetime |
 | `SCORM_STORAGE_DRIVER` | no (`local`) | `local` (single-instance) or `s3` (R2, multi-instance) — see §10.9. `s3` reuses the `R2_*` variables |
@@ -596,6 +596,9 @@ Update this table with every module you move.
 | course feedback — editable templates + learner answers | 8 | `server/src/modules/surveys` |
 | course catalogue — self-enrolment in courses and sessions | 4 | `server/src/modules/catalogue` |
 | external certifications (learner claim, manager + admin approval) | 6 | `server/src/modules/external-certifications` |
+| email (outbox, preferences, unsubscribe, SES events, platform read) | 7 | `server/src/modules/email` |
+| forgot password (request, check, reset) | 3 | `server/src/modules/auth` |
+| scheduled reminders (`course_due_soon`) — cron, no HTTP | 0 | `server/src/modules/reminders` |
 
 ### 10.27 What KIND of learning an hour came from
 
@@ -754,6 +757,171 @@ assigned the earlier courses directly, and a learner who HAD one of them
 directly saw it open out of order — which is §10.11's rule working, not a bug.
 The fixture was removed afterwards and `journeys`, `journey_courses` and
 `journey_enrollments` are back to zero rows.
+
+### 10.30 Email, a worker, and the first scheduler
+
+`0037_email_outbox.sql` gives the product transactional email. Read the
+migration header first; the summary:
+
+**THE OUTBOX IS THE MESSAGE STORE AND pg-boss IS THE CLOCK.** That inversion
+is the central decision and it is the one somebody will try to "fix".
+Enqueuing a pg-boss job per email would be a dual write — the notification
+transaction can commit with the job lost, or roll back with the job queued —
+and neither is detectable afterwards. A row in the same database cannot have
+that problem. What pg-boss buys is cron, a `singletonKey` so a second worker
+cannot drain concurrently, and retry for the tick itself.
+
+**Postgres rather than the Redis already on the box.** That Redis is
+configured as a cache — `appendonly no`, no save points — so every queued job
+is lost on restart, and fixing it means changing the durability profile of
+infrastructure the Rails and Laravel apps share. Postgres is already durable
+and already here. Verified before building: the DB role has `CREATE`, so
+pg-boss can make its own schema.
+
+**`notify()` gained a second channel and NOT ONE of the 25 call sites
+changed.** `NotificationsService.notify` writes the bell rows, then calls
+`EmailOutboxService.enqueue`. The two have SEPARATE try/catches, which is the
+point rather than tidiness: folding the email into the existing handler made
+an email failure log "Notification not sent", which is false and sends
+whoever reads it to the wrong file. And if the bell insert fails the email is
+still attempted — they are independent channels.
+
+**Whether a type emails lives in the catalogue**, as
+`email: 'transactional' | 'announcement' | 'none'` on all 25 entries.
+`NOTIFICATION_TYPES` is `as const satisfies Record<...>`, so a 26th type is a
+COMPILE ERROR until somebody decides. A parallel `email-policy.ts` would be
+free to drift and would throw that check away. It is not a boolean because
+"does it email" and "may the recipient refuse it" have different answers and
+different legal consequences.
+
+**Five types are `announcement`** — the two self-enrolment openings, badges,
+leaderboard rank and manager nudge. Those additionally require
+`organizations.email_announcements`, which **defaults to 0**. That default is
+the single thing between the first deploy and 500 unsolicited emails:
+announcements go to a tenant's whole active learner population, which is
+defensible under PECR as B2B mail and is still the message most likely to
+draw a spam complaint — and a complaint degrades deliverability for the other
+24 types.
+
+**Preferences are three levers, not a 100-cell matrix.** `all_off` honoured
+for everything (partial honouring makes the checkbox a lie, and §10.18's
+guarantee that nothing here is the only way somebody learns something is what
+makes that affordable); `groups_off` keyed by the catalogue's GROUP so a 26th
+type needs no UI change; and a global suppression list that outranks both.
+The one exception is `password_reset`, which ignores `all_off` — there is no
+screen to check when you cannot sign in, so honouring it would turn a
+preference into a lockout.
+
+**`to_email` and `org_name` are frozen at enqueue**, the same reasoning that
+denormalises `actor_name`. Joining to `users.email` at send time retargets
+queued mail when somebody corrects their address, and leaves the delivery log
+unable to say where the message actually went.
+
+**One layout, not 26 templates.** The title and body were already composed at
+write time by the service holding the course and the actor. A template per
+type would re-derive that wording minutes later in a different process, from
+data that may since have been renamed — exactly what the denormalised columns
+exist to prevent. The layout is tables and inline hexes because Gmail strips
+`<style>` and Outlook renders through Word; `email-brand.ts` is a THIRD copy
+of the palette for that reason, and moves with `globals.css` like
+`lib/brand.js` does.
+
+**Three mailer drivers** — `log` (default), `file` (writes `.eml`), `ses` —
+mirroring `SCORM_STORAGE_DRIVER`, so the whole feature is exercisable with no
+AWS account. SESv2 over HTTPS rather than SMTP: the box is EC2, so it can use
+an instance role and hold no credential on disk, `SendEmail` returns the
+`MessageId` that SNS events correlate on, and the typed exceptions are what
+make the retry classification possible.
+
+**Throttling is not a message failure.** A `ThrottlingException` returns the
+row to `pending` WITHOUT consuming an attempt; counting it would burn a good
+row's five tries on our own pacing. `attempts` increments at CLAIM, not at
+failure, so a row that repeatedly kills the worker eventually gives up.
+Delivery is at-least-once — a crash between SES accepting and the status
+UPDATE yields one duplicate, and exactly-once email does not exist.
+
+**`CLIENT_ORIGIN` defaults to localhost, and the worker refuses to send under
+it** when the driver is `ses`. Every `link` is relative; a wrong origin means
+a fan-out whose every link is dead, and an email cannot be recalled. Sending
+nothing is recoverable.
+
+#### The worker, and the first scheduler this codebase has had
+
+`WORKER=1` makes `main.ts` fork into `worker.ts` before any HTTP setup runs.
+It uses `createApplicationContext`, so **no Express instance is ever
+created** — that is the real answer to "no HTTP listener". `WorkerModule`
+imports config, database, email and reminders, deliberately NOT `AppModule`,
+which would drag in 28 feature modules and four global guards it can never
+reach. `PgBossService` is provided only there, so the API cannot start a
+consumer — structural, not a convention.
+
+**`runMigrations` gained an advisory lock in the same change, and it is an
+independent bug fix.** Two processes now boot the same `DatabaseModule`, and
+"idempotent" is not "concurrency-safe": concurrent `CREATE TABLE IF NOT
+EXISTS` can collide on `pg_type` and two `CREATE INDEX IF NOT EXISTS` on one
+relation can deadlock.
+
+**`course_due_soon` fires at last.** It has been in the catalogue since 0030
+with zero call sites, because firing it needed a clock — the gap §10.12 and
+six other places record. `RemindersService` sweeps daily at 09:00 UTC at
+three discrete windows (7, 3, 1 days), not every day inside a week, which
+would be five emails about one course. "Not finished" means what it means
+everywhere else — every assigned active lesson complete — so the sweep cannot
+nag somebody who has finished, and a course with no lessons is excluded
+because there is nothing they could do. Dedupe reads the `notifications` rows
+the last run wrote rather than keeping its own flag.
+
+Measured: a learner with an unfinished course due in 3 days got exactly one
+reminder; the immediately-following run reported `{sent: 0, skipped: 1}`.
+
+#### Forgot password
+
+Three `@Public()` routes, and the product's first account recovery that does
+not involve an admin reading a password out loud (§10.3.1.11 records why that
+field is unmasked).
+
+**The request route never says whether the address exists** — one sentence,
+always 200, including when the rate limit is hit and when the send fails.
+§5.3 states the rule for login and this is the same oracle with a friendlier
+label; "no account with that email" is exactly what a well-meaning form shows
+and is a free membership check.
+
+**The database stores a SHA-256 of the token, never the token.** SHA-256 and
+not scrypt deliberately: the token is 32 random bytes, so slowness buys
+nothing, and the lookup has to be a single indexed query. Issuing a new token
+invalidates every outstanding one for that user. A successful reset bumps
+`perm_version`, ending every session — somebody resetting a password they
+believe was compromised, and finding the attacker still signed in, has gained
+nothing.
+
+**Three refusals, three sentences** — not found, already used, expired —
+because the useful next step differs. The page checks the link BEFORE
+offering the form, so an expired link is not discovered after typing a
+password twice.
+
+```
+POST /api/auth/forgot-password        always 200, always the same sentence
+GET  /api/auth/reset-password/check   so the page can refuse before the form
+POST /api/auth/reset-password         sets it, ends every session
+
+GET/PATCH /api/auth/email-preferences    the caller's own, no id parameter
+GET/POST  /api/email/unsubscribe         @Public, HMAC token, RFC 8058
+POST      /api/email/ses-events          @Public, SNS signature VERIFIED
+GET       /api/platform/email/outbox     @PlatformAdmin, read-only
+```
+
+**The SNS endpoint verifies Amazon's signature before reading the body.** It
+is public and it writes to the suppression list, so unverified it is a
+denial-of-service primitive — anyone finding the URL could suppress every
+admin's address. The certificate URL is attacker-controlled input and is
+checked against `sns.<region>.amazonaws.com` over https before it is
+fetched. Subscription confirmations are logged and NOT auto-confirmed: the
+signature proves Amazon sent it, not that we created the topic.
+
+**No new permission.** The preference routes carry neither `@Roles()` nor
+`@Permissions()` — all four audiences get email, so gating to one would give
+three of them a control that 403s, and your own settings are not a capability
+an organization grants. No route takes a user id.
 
 ### 10.29 One scale for "how close to the goal", and a goal per period
 
@@ -2673,7 +2841,7 @@ GET  /api/admin/scorm/:packageId/datamodel/:userId    admin reads one learner's
 to record deltas and flushes them on Commit, Terminate, a 20s timer and
 `pagehide`. Delivery is `fetch(..., { keepalive: true })`, **not**
 `navigator.sendBeacon`: a beacon is `no-cors` and so cannot carry JSON to
-another origin, and `lms.edstellar.com -> lms-api.edstellar.com` is another
+another origin, and `spectralms.edstellar.com -> lms-api.edstellar.com` is another
 origin. The cost is fetch's 64 KB keepalive body cap, which is why the recorder
 flushes on a timer rather than saving everything for the end. Consecutive
 identical writes to one element are dropped — packages re-set `total_time` on

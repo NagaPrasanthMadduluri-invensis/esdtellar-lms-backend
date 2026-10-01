@@ -29,7 +29,33 @@ export interface NotificationTypeDef {
   icon: string;
   /** Who this type is ever sent to. */
   audience: NotificationAudience[];
+  /**
+   * How this type reaches an INBOX, on top of the bell.
+   *
+   *   transactional — a decision or an obligation addressed to one named
+   *                   person. Suppressed only by the master switch.
+   *   announcement  — news broadcast to an audience. Opt-outable per group,
+   *                   carries List-Unsubscribe, and additionally requires
+   *                   the organization to have turned announcements on.
+   *   none          — bell only, never emailed.
+   *
+   * This belongs in the catalogue rather than a parallel `email-policy.ts`
+   * for the reason the header gives: it is a STABLE, structural fact decided
+   * once per type, exactly like `audience`. A parallel map would be free to
+   * drift, and — because the object below is `satisfies Record<string,
+   * NotificationTypeDef>` — putting it here makes a 26th type a COMPILE
+   * ERROR until somebody decides how it reaches an inbox. That error is the
+   * whole value.
+   *
+   * It is deliberately not a boolean. "Does it email" and "may the recipient
+   * refuse it" are different questions with different legal consequences,
+   * and a boolean collapses them.
+   */
+  email: EmailPolicy;
 }
+
+/** @see NotificationTypeDef.email */
+export type EmailPolicy = 'transactional' | 'announcement' | 'none';
 
 export const NOTIFICATION_TYPES = {
   /* ── The learner's own learning ── */
@@ -38,24 +64,28 @@ export const NOTIFICATION_TYPES = {
     group: 'learning',
     icon: 'BookOpen',
     audience: ['learner'],
+    email: 'transactional',
   },
   journey_assigned: {
     label: 'New learning path assigned',
     group: 'learning',
     icon: 'Map',
     audience: ['learner'],
+    email: 'transactional',
   },
   course_completed: {
     label: 'Course completed',
     group: 'learning',
     icon: 'CheckCircle2',
     audience: ['learner'],
+    email: 'transactional',
   },
   course_due_soon: {
     label: 'Course due soon',
     group: 'learning',
     icon: 'CalendarClock',
     audience: ['learner'],
+    email: 'transactional',
   },
 
   /* Self-enrolment opened (0035). TWO types rather than one "something is
@@ -69,12 +99,14 @@ export const NOTIFICATION_TYPES = {
     group: 'learning',
     icon: 'BookOpen',
     audience: ['learner'],
+    email: 'announcement',
   },
   session_open_enrolment: {
     label: 'A session is open for booking',
     group: 'sessions',
     icon: 'CalendarPlus',
     audience: ['learner'],
+    email: 'announcement',
   },
 
   /* ── Recognition ── */
@@ -83,18 +115,21 @@ export const NOTIFICATION_TYPES = {
     group: 'recognition',
     icon: 'Award',
     audience: ['learner'],
+    email: 'announcement',
   },
   certificate_issued: {
     label: 'Certificate issued',
     group: 'recognition',
     icon: 'Award',
     audience: ['learner'],
+    email: 'transactional',
   },
   leaderboard_rank: {
     label: 'Leaderboard movement',
     group: 'recognition',
     icon: 'Trophy',
     audience: ['learner'],
+    email: 'announcement',
   },
 
   /* ── Sessions ──
@@ -107,24 +142,28 @@ export const NOTIFICATION_TYPES = {
     group: 'sessions',
     icon: 'CalendarCheck',
     audience: ['trainer'],
+    email: 'transactional',
   },
   session_trainer_set: {
     label: 'Trainer assigned to a session',
     group: 'sessions',
     icon: 'UserCheck',
     audience: ['admin', 'learner'],
+    email: 'transactional',
   },
   session_enrolled: {
     label: 'You are booked on a session',
     group: 'sessions',
     icon: 'CalendarCheck',
     audience: ['learner'],
+    email: 'transactional',
   },
   session_cancelled: {
     label: 'Session cancelled',
     group: 'sessions',
     icon: 'CalendarX',
     audience: ['learner', 'trainer'],
+    email: 'transactional',
   },
   /* The one notification in this catalogue that must carry NO actor. Every
      other type names who caused it; naming the author here would undo the
@@ -134,6 +173,7 @@ export const NOTIFICATION_TYPES = {
     group: 'sessions',
     icon: 'MessageSquare',
     audience: ['trainer'],
+    email: 'transactional',
   },
 
   /* Course feedback (0034). The learner IS named, unlike
@@ -146,6 +186,7 @@ export const NOTIFICATION_TYPES = {
     group: 'learning',
     icon: 'MessageSquare',
     audience: ['admin'],
+    email: 'transactional',
   },
 
   /* External certifications (0036). Four types because four different
@@ -158,24 +199,28 @@ export const NOTIFICATION_TYPES = {
     group: 'recognition',
     icon: 'Award',
     audience: ['learner', 'admin'],
+    email: 'transactional',
   },
   external_cert_ready: {
     label: 'External certification awaiting final approval',
     group: 'recognition',
     icon: 'Award',
     audience: ['admin'],
+    email: 'transactional',
   },
   external_cert_approved: {
     label: 'External certification approved',
     group: 'recognition',
     icon: 'Award',
     audience: ['learner'],
+    email: 'transactional',
   },
   external_cert_rejected: {
     label: 'External certification not approved',
     group: 'recognition',
     icon: 'Award',
     audience: ['learner'],
+    email: 'transactional',
   },
 
   /* ── A manager and their reports ── */
@@ -184,6 +229,7 @@ export const NOTIFICATION_TYPES = {
     group: 'learning',
     icon: 'Bell',
     audience: ['learner'],
+    email: 'announcement',
   },
 
   /* ── The admin's org ── */
@@ -192,6 +238,7 @@ export const NOTIFICATION_TYPES = {
     group: 'people',
     icon: 'UserPlus',
     audience: ['admin'],
+    email: 'transactional',
   },
 
   /* ── Commercial, both directions ── */
@@ -200,24 +247,28 @@ export const NOTIFICATION_TYPES = {
     group: 'commercial',
     icon: 'Sparkles',
     audience: ['admin', 'platform'],
+    email: 'transactional',
   },
   service_request_answered: {
     label: 'Edstellar replied to your service request',
     group: 'commercial',
     icon: 'Sparkles',
     audience: ['admin'],
+    email: 'transactional',
   },
   seat_requested: {
     label: 'Seat request raised',
     group: 'commercial',
     icon: 'Users',
     audience: ['admin', 'platform'],
+    email: 'transactional',
   },
   seat_request_answered: {
     label: 'Edstellar answered your seat request',
     group: 'commercial',
     icon: 'Users',
     audience: ['admin'],
+    email: 'transactional',
   },
 } as const satisfies Record<string, NotificationTypeDef>;
 

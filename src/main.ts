@@ -13,8 +13,25 @@ import { ScormContentHandler } from './modules/scorm/scorm-content.handler';
 import { ScormContentMiddleware } from './modules/scorm/scorm-content.middleware';
 import { ImageStorageService } from './modules/media/storage/image-storage.service';
 import { ScormStorageService } from './modules/scorm/storage/scorm-storage.service';
+import { bootstrapWorker } from './worker';
 
 async function bootstrap(): Promise<void> {
+  /**
+   * The same build boots two ways. `WORKER=1` starts the background worker
+   * — email delivery and the scheduled jobs — and returns before any of the
+   * HTTP setup below runs.
+   *
+   * It forks HERE, at the top, rather than threading conditionals through
+   * the rest of this function: the SCORM middleware ordering below is
+   * subtle enough (and commented at length enough) that adding "unless we
+   * are the worker" to each step would be the change most likely to break
+   * it by accident.
+   */
+  if (process.env.WORKER === '1') {
+    await bootstrapWorker();
+    return;
+  }
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
@@ -37,14 +54,28 @@ async function bootstrap(): Promise<void> {
 
   app.use(cookieParser());
 
+  /**
+   * CORS. `CLIENT_ORIGIN` may name SEVERAL origins, comma-separated, which
+   * exists for domain renames: during one the old host still resolves and
+   * is still bookmarked, and a single allowed origin means every request
+   * from it fails CORS — including the login POST, so the old URL is not
+   * degraded, it is dead with no error a user can act on.
+   *
+   * Exact strings, never a wildcard or a suffix: `credentials: true` makes
+   * a wildcard illegal (it is what lets the browser attach the HttpOnly
+   * auth cookie at all), and a suffix match would accept
+   * `evil-edstellar.com`.
+   */
+  const allowedOrigins = config.getOrThrow<string[]>('clientOrigins');
   app.enableCors({
-    origin: config.getOrThrow<string>('clientOrigin'),
-    // Required for the browser to send the HttpOnly auth cookie cross-origin.
-    // A wildcard origin is not permitted alongside credentials, which is why
-    // CLIENT_ORIGIN must name the exact frontend origin.
+    origin: allowedOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
+  logger.log(
+    `CORS allows ${allowedOrigins.join(', ')}. Links in email are built ` +
+      `from ${config.getOrThrow<string>('clientOrigin')}.`,
+  );
 
   /**
    * Authenticates every request under /scorm BEFORE useStaticAssets ever

@@ -7,6 +7,8 @@ import {
   type NotificationType,
 } from '@/common/notifications';
 
+import { EmailOutboxService } from '@/modules/email/email-outbox.service';
+
 import {
   NotificationsRepository,
   type NewNotification,
@@ -32,13 +34,25 @@ export interface NotifyInput {
    * own actions is one people learn to ignore.
    */
   exceptUserId?: number | null;
+  /**
+   * `never` writes the bell row and skips the inbox entirely.
+   *
+   * Nothing passes it yet, and the hook exists rather than being added
+   * later because retrofitting an opt-out means touching every call site
+   * that turns out to need one. A per-call override belongs beside the
+   * per-type policy in the catalogue, not instead of it.
+   */
+  email?: 'auto' | 'never';
 }
 
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
-  constructor(private readonly repository: NotificationsRepository) {}
+  constructor(
+    private readonly repository: NotificationsRepository,
+    private readonly email: EmailOutboxService,
+  ) {}
 
   /**
    * Send a notification to one or many people. **Never throws** (§8.4).
@@ -56,25 +70,63 @@ export class NotificationsService {
    * regardless, and the bell is a prompt to look.
    */
   async notify(input: NotifyInput): Promise<void> {
+    /**
+     * The OUTER catch is what keeps "never throws" absolute.
+     *
+     * The inner one below names the bell write specifically, and that
+     * distinction is the point — but on its own it would have left the
+     * recipient computation unguarded, so a caller passing something
+     * non-iterable would throw out of a method every call site `void`s.
+     * Nothing does that today; the contract is what the 25 callers rely
+     * on, not the current behaviour of their arguments.
+     */
     try {
-      const recipients = [...new Set(input.userIds)].filter(
-        (id) => Number.isInteger(id) && id > 0 && id !== input.exceptUserId,
+      await this.deliver(input);
+    } catch (error) {
+      this.logger.warn(
+        `Notification not sent (${input?.type}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
-      if (recipients.length === 0) return;
+    }
+  }
 
-      const entries: NewNotification[] = recipients.map((userId) => ({
-        organizationId: input.organizationId,
-        userId,
-        type: input.type,
-        title: input.title ?? notificationLabel(input.type),
-        body: input.body ?? null,
-        link: input.link ?? null,
-        subjectType: input.subjectType ?? null,
-        subjectId: input.subjectId ?? null,
-        actorName: input.actorName ?? null,
-      }));
+  private async deliver(input: NotifyInput): Promise<void> {
+    const recipients = [...new Set(input.userIds)].filter(
+      (id) => Number.isInteger(id) && id > 0 && id !== input.exceptUserId,
+    );
+    if (recipients.length === 0) return;
 
-      await this.repository.insert(entries);
+    const title = input.title ?? notificationLabel(input.type);
+    const entries: NewNotification[] = recipients.map((userId) => ({
+      organizationId: input.organizationId,
+      userId,
+      type: input.type,
+      title,
+      body: input.body ?? null,
+      link: input.link ?? null,
+      subjectType: input.subjectType ?? null,
+      subjectId: input.subjectId ?? null,
+      actorName: input.actorName ?? null,
+    }));
+
+    /**
+     * TWO CHANNELS, TWO FAILURE DOMAINS.
+     *
+     * The bell write and the email write are caught separately, and that is
+     * not tidiness. Before email existed, one `try` wrapped the whole
+     * method; folding the email enqueue inside it would have meant an email
+     * failure logging "Notification not sent" — false, since the bell row
+     * went in fine, and it would send whoever read it to the wrong file.
+     *
+     * The other half of the split matters more: if the BELL insert fails,
+     * the email is still attempted. They are independent channels and email
+     * is the one more likely to be read today. Nothing is gained by
+     * withholding it because a row did not write.
+     */
+    let notificationIds: number[] = [];
+    try {
+      notificationIds = await this.repository.insert(entries);
     } catch (error) {
       this.logger.warn(
         `Notification not sent (${input.type}): ${
@@ -82,6 +134,29 @@ export class NotificationsService {
         }`,
       );
     }
+
+    /**
+     * Awaited rather than voided, and never throws (it carries the same
+     * contract, with its own logger). Awaiting means the six call sites
+     * that already `await notify()` get a guarantee the row is ENQUEUED
+     * before their request returns — which costs one INSERT, not a send.
+     */
+    await this.email.enqueue({
+      organizationId: input.organizationId,
+      type: input.type,
+      userIds: recipients,
+      subject: title,
+      body: input.body ?? null,
+      link: input.link ?? null,
+      actorName: input.actorName ?? null,
+      subjectType: input.subjectType ?? null,
+      subjectId: input.subjectId ?? null,
+      notificationIds:
+        notificationIds.length === recipients.length
+          ? notificationIds
+          : undefined,
+      skipEmail: input.email === 'never',
+    });
   }
 
   /**

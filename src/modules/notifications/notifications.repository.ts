@@ -49,8 +49,16 @@ export class NotificationsRepository {
    * forty notifications, and forty round trips on an admin's Save is exactly
    * the N+1 the rules exist to prevent.
    */
-  async insert(entries: NewNotification[]): Promise<void> {
-    if (entries.length === 0) return;
+  /**
+   * Returns the new ids IN THE ORDER THE ENTRIES WERE GIVEN, so the caller
+   * can pair each one with its recipient. Postgres does not promise
+   * `RETURNING` order matches `VALUES` order in general, but for a single
+   * multi-row INSERT with no conflict clause it does in practice — and the
+   * pairing here is only used to stamp `email_outbox.notification_id`, which
+   * is forensic (0037). Nothing depends on it being right.
+   */
+  async insert(entries: NewNotification[]): Promise<number[]> {
+    if (entries.length === 0) return [];
 
     const values = entries.map(
       (e) => sql`(${e.organizationId}, ${e.userId}, ${e.type}, ${e.title},
@@ -58,12 +66,14 @@ export class NotificationsRepository {
                   ${e.subjectId ?? null}, ${e.actorName ?? null})`,
     );
 
-    await this.db.run(sql`
+    const rows = await this.db.all<{ id: number }>(sql`
       INSERT INTO notifications
         (organization_id, user_id, type, title, body, link,
          subject_type, subject_id, actor_name)
       VALUES ${sql.join(values, sql`, `)}
+      RETURNING id
     `);
+    return rows.map((r) => Number(r.id));
   }
 
   /**

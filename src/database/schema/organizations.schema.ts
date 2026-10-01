@@ -62,6 +62,15 @@ export const organizations = pgTable(
      * only displayed is worse than none.
      */
     seatLimit: integer('seat_limit'),
+    /**
+     * Whether this tenant's learners may be emailed ANNOUNCEMENTS — a course
+     * opening for self-enrolment, a session opening for booking (0037).
+     *
+     * Defaults 0, and that default is the thing standing between a deploy and
+     * 500 unsolicited emails. Announcements go to a tenant's whole active
+     * learner population; transactional mail is unaffected by this column.
+     */
+    emailAnnouncements: integer('email_announcements').notNull().default(0),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -7,6 +7,8 @@ import {
   HttpStatus,
   Patch,
   Post,
+  Query,
+  Req,
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -21,7 +23,12 @@ import { ChangePasswordDto } from '@/modules/learner/dto/change-password.dto';
 import { ImpersonateDto } from './dto/impersonate.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/profile.dto';
+import {
+  RequestPasswordResetDto,
+  ResetPasswordDto,
+} from './dto/password-reset.dto';
 import { RegisterDto } from './dto/register.dto';
+import { PasswordResetService } from './password-reset.service';
 import { TokenService } from './token.service';
 
 @Controller('auth')
@@ -33,6 +40,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly tokenService: TokenService,
+    private readonly passwordReset: PasswordResetService,
     config: ConfigService,
   ) {
     this.cookieName = config.getOrThrow<string>('auth.cookieName');
@@ -220,5 +228,58 @@ export class AuthController {
         isProduction: this.isProduction,
       }),
     );
+  }
+
+  /* ── Forgot password ─────────────────────────────────────────────────── */
+
+  /**
+   * `@Public()` by necessity — the whole point is that the caller cannot
+   * sign in.
+   *
+   * ALWAYS 200, ALWAYS THE SAME SENTENCE, whether or not the address has an
+   * account. §5.3 states the rule for login ("or the form becomes an
+   * account-enumeration oracle") and this is the same oracle wearing a more
+   * helpful-looking label: "no account with that email" is exactly the
+   * message a well-meaning form would show, and it hands an attacker a
+   * free membership check against any address they like.
+   */
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(
+    @Body() dto: RequestPasswordResetDto,
+    @Req() request: { ip?: string },
+  ) {
+    return this.passwordReset.request(dto.email, request.ip ?? null);
+  }
+
+  /**
+   * Lets the page say "this link has expired" BEFORE asking for a new
+   * password, rather than after the learner has typed it twice.
+   *
+   * Safe to leave public and unauthenticated: it answers only about a token
+   * the caller already holds, and reveals nothing about any account.
+   */
+  @Public()
+  @Get('reset-password/check')
+  async checkResetToken(@Query('token') token: string) {
+    if (!token) return { valid: false, reason: 'not_found' };
+    return this.passwordReset.check(token);
+  }
+
+  /**
+   * Sets the new password and ends every existing session.
+   *
+   * No cookie is issued here on purpose. Signing somebody straight in off a
+   * link that arrived by email would make the link itself a credential, and
+   * a forwarded or logged URL would become an account. They sign in with
+   * the password they just chose, which is also the fastest way to find out
+   * it works.
+   */
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.passwordReset.reset(dto.token, dto.newPassword);
   }
 }

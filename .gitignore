@@ -59,3 +59,10 @@ deploy.sh
 # storage/scorm/ above.
 storage/uploads/*
 !storage/uploads/.gitkeep
+
+# ── Email outbox (0037) ──
+# The `file` mailer driver writes real .eml messages here. They contain
+# recipients' addresses and, for a password reset, a LIVE TOKEN — committing
+# one would put an account-takeover primitive in git history where it cannot
+# be removed. Same reasoning as storage/scorm above, with higher stakes.
+storage/outbox/

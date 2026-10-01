@@ -1,0 +1,209 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+
+import { NOTIFICATION_TYPES } from '@/common/notifications';
+
+import { DIRECT_EMAIL_TYPES, isDirectEmailType } from './email-types';
+import { MAIL_BRAND as C, FONT_STACK } from './email-brand';
+import { escapeHtml, renderLayout } from './templates/layout';
+import { createUnsubscribeToken } from './unsubscribe-token';
+import type { OutboxRow } from './email-outbox.repository';
+import type { OutgoingMail } from './mailer/mailer.interface';
+
+/** Thrown when a row must not be sent as rendered. Not retryable. */
+export class RenderRefusedError extends Error {}
+
+@Injectable()
+export class EmailRenderService {
+  private readonly logger = new Logger(EmailRenderService.name);
+
+  constructor(private readonly config: ConfigService) {}
+
+  private get origin(): string {
+    return (
+      this.config.get<string>('clientOrigin') ?? 'http://localhost:3000'
+    ).replace(/\/+$/, '');
+  }
+
+  private get secret(): string {
+    return this.config.get<string>('auth.jwtSecret') ?? '';
+  }
+
+  /**
+   * Turns a relative `link` into something a mail client can open.
+   *
+   * THE MOST CONSEQUENTIAL FUNCTION IN THIS MODULE. `clientOrigin` defaults
+   * to `http://localhost:3000`, every `link` on a notification row is
+   * relative, and an email is the one artefact in this product that cannot
+   * be recalled, patched or re-rendered. A misconfigured origin discovered
+   * after a 500-recipient fan-out is 500 dead links in 500 inboxes.
+   *
+   * So `assertSendable()` below refuses to send at all under a localhost
+   * origin. Sending nothing is recoverable; sending garbage is not.
+   */
+  absoluteUrl(link: string | null | undefined): string {
+    const origin = this.origin;
+    if (!link) return origin;
+
+    // A protocol-relative `//evil.test` would otherwise inherit our scheme
+    // and resolve off-origin. The column is free text; today nothing writes
+    // an absolute value, and "today" is not a guarantee.
+    if (link.startsWith('//')) return origin;
+
+    if (/^https?:\/\//i.test(link)) {
+      return link.startsWith(origin) ? link : origin;
+    }
+
+    try {
+      return new URL(link, `${origin}/`).toString();
+    } catch {
+      return origin;
+    }
+  }
+
+  /**
+   * Why this driver must not send right now, or null.
+   *
+   * Checked once per drain tick rather than per row — the answer cannot
+   * change mid-batch, and a per-row check would log the same sentence 500
+   * times.
+   */
+  assertSendable(driverKind: string): string | null {
+    if (driverKind !== 'ses') return null;
+    const origin = this.origin;
+    if (/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(origin)) {
+      return (
+        `CLIENT_ORIGIN is ${origin}, which is not a public address. Every ` +
+        'link in a sent email would be dead and could not be recalled. ' +
+        'Set CLIENT_ORIGIN to the public UI origin and restart.'
+      );
+    }
+    return null;
+  }
+
+  render(row: OutboxRow): OutgoingMail {
+    const group = this.groupOf(row.type);
+    const cta = this.ctaFor(row);
+
+    const paragraphs: string[] = [];
+    if (row.body) paragraphs.push(row.body);
+    if (row.actorName) paragraphs.push(`Actioned by ${row.actorName}.`);
+    if (paragraphs.length === 0) {
+      // A notification with a title and no body is legal. Rather than ship
+      // an empty email, say the one useful thing: go and look.
+      paragraphs.push('There is an update waiting for you in Spectra LMS.');
+    }
+
+    const { footerExtraHtml, headers } = this.footerAndHeaders(row);
+
+    const { html, text } = renderLayout({
+      group,
+      title: row.subject,
+      paragraphs,
+      cta,
+      orgName: row.orgName,
+      footerExtraHtml,
+      preheader: row.body ?? undefined,
+    });
+
+    return {
+      to: row.toEmail,
+      toName: row.toName,
+      // Verbatim, with no `[Spectra LMS]` prefix: a prefix burns the width
+      // an inbox gives the subject line and reads as bulk mail.
+      subject: row.subject,
+      html,
+      text,
+      headers,
+    };
+  }
+
+  private groupOf(type: string): string {
+    if (isDirectEmailType(type)) return DIRECT_EMAIL_TYPES[type].group;
+    const def = (
+      NOTIFICATION_TYPES as Record<string, { group: string } | undefined>
+    )[type];
+    return def?.group ?? 'learning';
+  }
+
+  /**
+   * The button label is chosen from the group rather than written per type,
+   * for the same reason there is one layout: the wording that identifies the
+   * thing is already in the subject and body.
+   */
+  private ctaFor(row: OutboxRow): { label: string; url: string } | undefined {
+    if (isDirectEmailType(row.type)) {
+      if (row.type === 'password_changed') return undefined;
+      return {
+        label: row.type === 'password_reset' ? 'Reset my password' : 'Sign in',
+        url: this.absoluteUrl(row.link),
+      };
+    }
+    if (!row.link) return undefined;
+    const labels: Record<string, string> = {
+      learning: 'Open in Spectra LMS',
+      sessions: 'View the session',
+      recognition: 'View it',
+      people: 'Open Manage Users',
+      commercial: 'Open the request',
+    };
+    return {
+      label: labels[this.groupOf(row.type)] ?? 'Open in Spectra LMS',
+      url: this.absoluteUrl(row.link),
+    };
+  }
+
+  /**
+   * The footer's manage/unsubscribe lines, and the `List-Unsubscribe`
+   * headers that go with them.
+   *
+   * An `announcement` gets both the header pair and a visible unsubscribe
+   * link; a `transactional` message gets neither, and offers "manage your
+   * email settings" instead. That asymmetry is deliberate and is the whole
+   * reason `policy` is a stored column rather than a boolean: telling
+   * somebody they can unsubscribe from a password reset would be a control
+   * that lies, and NOT telling an announcement's recipient is what gets a
+   * sending domain reported.
+   */
+  private footerAndHeaders(row: OutboxRow): {
+    footerExtraHtml: string;
+    headers: Record<string, string>;
+  } {
+    const headers: Record<string, string> = {};
+    const settingsUrl = `${this.origin}/settings/notifications`;
+    const small = `font-family:${FONT_STACK};font-size:11px;line-height:1.55;color:${C.text3};`;
+
+    if (isDirectEmailType(row.type)) {
+      return {
+        footerExtraHtml: `<p style="margin:0;${small}">This is a security message about your account, so it is always sent.</p>`,
+        headers,
+      };
+    }
+
+    const manage = `<a href="${escapeHtml(settingsUrl)}" style="color:${C.accent};text-decoration:underline;">Manage your email settings</a>`;
+
+    if (row.policy !== 'announcement') {
+      return {
+        footerExtraHtml: `<p style="margin:0;${small}">${manage}</p>`,
+        headers,
+      };
+    }
+
+    const group = this.groupOf(row.type);
+    const token = createUnsubscribeToken(this.secret, row.userId, group);
+    const unsubUrl = `${this.origin}/api/email/unsubscribe?t=${encodeURIComponent(token)}`;
+
+    // RFC 8058. The POST variant is what makes Gmail and Yahoo render their
+    // own one-click control, which is the thing that keeps a reader from
+    // reaching for the spam button instead.
+    headers['List-Unsubscribe'] = `<${unsubUrl}>`;
+    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+
+    return {
+      footerExtraHtml:
+        `<p style="margin:0;${small}">${manage} &nbsp;·&nbsp; ` +
+        `<a href="${escapeHtml(unsubUrl)}" style="color:${C.accent};text-decoration:underline;">Unsubscribe from these emails</a></p>`,
+      headers,
+    };
+  }
+}
