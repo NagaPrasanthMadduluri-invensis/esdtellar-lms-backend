@@ -95,34 +95,36 @@ async function bootstrap(): Promise<void> {
   app.use('/scorm', app.get(ScormContentMiddleware).handler);
 
   /**
-   * Extracted SCORM packages, served at /scorm/<uuid>/<entry>.
+   * Extracted SCORM packages, served at /scorm/<uuid>/<entry> — streamed out
+   * of R2, never from disk.
    *
-   * setGlobalPrefix does not apply to static assets, so this sits outside /api.
-   * The client proxies this path (see client/next.config.mjs) rather than
-   * pointing the player's iframe here directly: SCORM content calls
-   * `window.parent.API`, and a cross-origin iframe cannot reach the parent's
-   * JavaScript. Proxying keeps the content same-origin with the player while
-   * the files stay owned by the server.
+   * setGlobalPrefix does not apply here, so this sits outside /api. The
+   * client proxies the path (`client/next.config.mjs`) rather than pointing
+   * the player's iframe at object storage directly, and that indirection is
+   * not optional: SCORM content calls `window.parent.API.LMSSetValue(...)`,
+   * and a frame served from `*.r2.cloudflarestorage.com` is cross-origin to
+   * the player page, so every one of those calls throws on property access
+   * and the package records nothing — silently. It does not error; it just
+   * never tracks.
+   *
+   * So the bytes live in Cloudflare and the URL stays same-origin.
+   *
+   * There is no `useStaticAssets` branch any more. The local-disk driver was
+   * removed once every package lived in R2 (§10.31): it pinned the API to one
+   * instance, because a second process could not see what the first had
+   * extracted.
    */
+  app.use('/scorm', app.get(ScormContentHandler).handler);
   const scormStorage = app.get(ScormStorageService);
-  if (scormStorage.driverKind === 's3') {
-    /**
-     * Object storage has no directory for `useStaticAssets` to mount, so the
-     * bytes are streamed out of R2 by hand. Mounted at the same `/scorm`
-     * prefix and right after the middleware above, so the URL the browser
-     * sees is unchanged — which is the whole point: SCORM content calls
-     * `window.parent.API`, and a presigned R2 URL would make the frame
-     * cross-origin and break that silently (§10.1).
-     */
-    app.use('/scorm', app.get(ScormContentHandler).handler);
-    logger.log('SCORM content served from object storage (driver=s3).');
+  if (scormStorage.isReady) {
+    logger.log('SCORM content streamed from object storage (R2).');
   } else {
-    app.useStaticAssets(scormStorage.rootPath, { prefix: '/scorm' });
-    logger.warn(
-      `SCORM content served from local disk at ${scormStorage.rootPath} ` +
-        '(driver=local). This is single-instance only — a second API process ' +
-        'cannot see packages this one extracted. Set SCORM_STORAGE_DRIVER=s3 ' +
-        'before running more than one instance.',
+    // Not a fallback, because there is nothing to fall back to. Said loudly
+    // because SCORM is entirely unavailable in this state, not degraded.
+    logger.error(
+      'SCORM storage is NOT configured — missing ' +
+        `${scormStorage.missingConfig.join(', ')}. Upload and playback will ` +
+        'return 503 until these are set and the process is RESTARTED.',
     );
   }
 

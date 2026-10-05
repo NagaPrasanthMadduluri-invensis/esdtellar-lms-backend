@@ -38,7 +38,7 @@ export interface PackageLocation {
 }
 
 /**
- * The storage contract behind `SCORM_STORAGE_DRIVER` (BACKEND_STRUCTURE.md
+ * The storage contract for SCORM package files (BACKEND_STRUCTURE.md
  * §10.3). Two implementations: `local` (disk, the historical behaviour) and
  * `s3` (Cloudflare R2 through its S3 API).
  *
@@ -51,7 +51,14 @@ export interface PackageLocation {
  * security argument lives next to the storage model instead of assuming disk.
  */
 export interface ScormStorageDriver {
-  readonly kind: 'local' | 's3';
+  /**
+   * Only one value now. The `local` driver was removed once every package
+   * lived in R2 — see BACKEND_STRUCTURE §10.31. Kept as a one-member union
+   * rather than deleted so the log line and the content handler keep saying
+   * WHICH backing store they are using, and so adding a second driver later
+   * is a widened type rather than a reintroduced concept.
+   */
+  readonly kind: 's3';
 
   /**
    * True when the driver can actually reach its backing store. The `s3` driver

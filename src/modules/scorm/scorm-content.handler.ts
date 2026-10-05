@@ -8,7 +8,7 @@ import { ScormStorageService } from './storage/scorm-storage.service';
  * Streams SCORM package assets out of object storage at `/scorm/<dir>/<file>`.
  *
  * Mounted by hand in `main.ts` INSTEAD OF `useStaticAssets` when
- * `SCORM_STORAGE_DRIVER=s3`, immediately after `ScormContentMiddleware` — so
+ * every deployment, immediately after `ScormContentMiddleware` — so
  * authentication, the entitlement check and the traversal guard have all
  * already run by the time this sees a request. It performs no authorization of
  * its own and must never be mounted without that middleware in front of it.
