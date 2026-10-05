@@ -518,8 +518,26 @@ export class ScormService {
           ? 'failed'
           : 'unknown');
 
-    const scoreRaw = cmi?.core?.score?.raw ?? cmi?.score?.raw ?? null;
-    const scoreMax = cmi?.core?.score?.max ?? cmi?.score?.max ?? null;
+    /**
+     * An EMPTY score is not a score of zero.
+     *
+     * SCORM 1.2 initialises `cmi.core.score.raw` to `""`, and `Number("")` is
+     * 0 — so a package that never scored anything was stored as having scored
+     * zero. Seen in production: a learner who completed a package with no
+     * quiz in it was recorded `score_raw: 0, score_max: 100`, which reads as
+     * a total failure rather than as "not graded". The same distinction this
+     * codebase draws everywhere else between an em dash and a 0.
+     */
+    const numberOrNull = (v: unknown): number | null => {
+      if (v === null || v === undefined) return null;
+      const text = String(v).trim();
+      if (text === '') return null;
+      const n = Number(text);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const scoreRaw = numberOrNull(cmi?.core?.score?.raw ?? cmi?.score?.raw);
+    const scoreMax = numberOrNull(cmi?.core?.score?.max ?? cmi?.score?.max);
 
     await this.repository.upsertTracking(scope, {
       userId,
@@ -527,20 +545,53 @@ export class ScormService {
       lessonStatus,
       completionStatus,
       successStatus,
-      scoreRaw: scoreRaw !== null ? Number(scoreRaw) : null,
-      scoreMax: scoreMax !== null ? Number(scoreMax) : null,
+      scoreRaw,
+      scoreMax,
       totalTime: cmi?.core?.total_time ?? cmi?.total_time ?? null,
       suspendData: cmi?.suspend_data ?? null,
       location: cmi?.core?.lesson_location ?? cmi?.location ?? null,
       cmiData: JSON.stringify(cmi),
     });
 
-    // When SCORM reports done, mark the embedding lesson complete so course
-    // progress and certificates stay consistent with the player.
+    /**
+     * The lesson is complete when the package reports the CONTENT finished —
+     * whatever it thinks of the learner's score.
+     *
+     * `failed` is deliberately included, and that is a change. It used to be
+     * excluded on the reasoning that "a failed attempt must not complete a
+     * lesson or issue a certificate", which conflates two different things:
+     *
+     *   - DID THEY WORK THROUGH IT          -> what a lesson records
+     *   - DID THEY DEMONSTRATE COMPETENCE   -> what an assessment records
+     *
+     * A package's internal quiz is not the course's assessment. Course
+     * completion already requires passing the real one (§10.11), and that is
+     * untouched here — so a learner who finishes a package and fails its
+     * embedded quiz still cannot complete the course or earn a certificate.
+     * What they can now do is reach the NEXT LESSON, which is the whole
+     * point: the sequential gate asks "have you done this one", and under the
+     * old rule a failed quiz locked somebody out of the rest of the module
+     * with no way forward and nothing on screen explaining why.
+     *
+     * The score and the pass/fail are still recorded in full, on the tracking
+     * row and on every attempt, and still shown to the admin. Nothing is
+     * being hidden — it simply no longer gates the gate.
+     *
+     * CREDIT IS A SEPARATE QUESTION AND IS NOT WIDENED. See `packageFailed`
+     * below: a commit reporting failure completes the lesson but does not
+     * trigger certificate issue, because a course with no assessment of its
+     * own would otherwise certify somebody the package had just failed.
+     */
     const isDone =
       completionStatus === 'completed' ||
       lessonStatus === 'passed' ||
-      lessonStatus === 'completed';
+      lessonStatus === 'completed' ||
+      lessonStatus === 'failed' ||
+      successStatus === 'failed';
+
+    /** The package says they did not pass. Unlocks, but does not credit. */
+    const packageFailed =
+      lessonStatus === 'failed' || successStatus === 'failed';
 
     /**
      * Close an attempt on the transition into a finished state.
@@ -573,8 +624,8 @@ export class ScormService {
 
     if (isSubmission && !wasSubmission) {
       const percentage =
-        scoreRaw !== null && scoreMax !== null && Number(scoreMax) > 0
-          ? Math.round((Number(scoreRaw) / Number(scoreMax)) * 100)
+        scoreRaw !== null && scoreMax !== null && scoreMax > 0
+          ? Math.round((scoreRaw / scoreMax) * 100)
           : null;
 
       // Null, not false, when the package only reports completion: "not graded"
@@ -589,8 +640,8 @@ export class ScormService {
       await this.repository.appendAttempt(scope, {
         userId,
         packageId,
-        scoreRaw: scoreRaw !== null ? Number(scoreRaw) : null,
-        scoreMax: scoreMax !== null ? Number(scoreMax) : null,
+        scoreRaw,
+        scoreMax,
         percentage,
         lessonStatus,
         completionStatus,
@@ -604,11 +655,36 @@ export class ScormService {
     if (isDone) {
       const lesson = await this.repository.findLinkedLesson(scope, userId, packageId);
       if (lesson) {
+        // The content was worked through. This is what unlocks the next
+        // lesson, and it happens whatever the package thought of the score.
         await this.repository.markLessonComplete(scope, userId, Number(lesson.id));
-        await this.certificates.autoIssue(scope, userId, Number(lesson.course_id));
-        // Passing the assessment can be what finishes the course, and the
-        // course can be the last step of a journey (spec §4.2).
-        await this.journeys.onCourseProgress(scope, userId, Number(lesson.course_id));
+
+        /*
+         * Credit, however, is withheld on a reported failure.
+         *
+         * `autoIssue` re-derives course completion itself and will refuse
+         * unless every lesson is done AND the course assessment is passed
+         * (§10.11) — but a course carrying NO assessment of its own has
+         * nothing else to check, so the package's own verdict is the only
+         * one there is. Issuing there would hand a certificate to somebody
+         * the package had just failed.
+         *
+         * A retake that passes commits again and takes this branch, so
+         * nothing is permanently withheld.
+         *
+         * Known and accepted: this only inspects THIS commit. A learner who
+         * fails an early SCORM lesson and then finishes the rest will have
+         * the last commit trigger issue, and the earlier failure is not
+         * re-read. Closing that means teaching the completion snapshot about
+         * per-package pass state, which reaches hours, certificates and
+         * journeys and deserves its own change.
+         */
+        if (!packageFailed) {
+          await this.certificates.autoIssue(scope, userId, Number(lesson.course_id));
+          // Passing the assessment can be what finishes the course, and the
+          // course can be the last step of a journey (spec §4.2).
+          await this.journeys.onCourseProgress(scope, userId, Number(lesson.course_id));
+        }
       }
     }
 
