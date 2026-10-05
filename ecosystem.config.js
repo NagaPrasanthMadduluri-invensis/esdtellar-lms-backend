@@ -20,7 +20,10 @@ module.exports = {
   apps: [
     {
       name: 'edstellar_lms_api',
-      script: 'dist/main',
+      // The `.js` is required. pm2 resolves `script` as a literal path and
+      // does not try extensions, so `dist/main` fails with "Script not
+      // found" even though the file is sitting right there.
+      script: 'dist/main.js',
       cwd: __dirname,
       /**
        * ONE instance. Not a performance choice to revisit later:
@@ -40,7 +43,7 @@ module.exports = {
       // The SAME build. `WORKER=1` makes `main.ts` fork into the worker
       // bootstrap before any HTTP setup runs, so there is no second
       // artefact to keep in step and no second deploy step.
-      script: 'dist/main',
+      script: 'dist/main.js',
       cwd: __dirname,
       /**
        * ONE instance, and this one is load-bearing for a different reason.

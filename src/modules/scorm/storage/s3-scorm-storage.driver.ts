@@ -63,7 +63,7 @@ export class S3ScormStorageDriver implements ScormStorageDriver {
       // hard dependency of startup would take the whole LMS down over a typo
       // in one variable. SCORM routes raise 503 with the variable NAMES.
       this.logger.warn(
-        'SCORM_STORAGE_DRIVER=s3 but R2 is not configured. SCORM upload and ' +
+        'R2 is not configured. SCORM has no local fallback, so upload and ' +
           'content serving will return 503 until the R2_* variables are set ' +
           'and the process is RESTARTED — config is read once at boot.',
       );

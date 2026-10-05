@@ -1,7 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import { LocalScormStorageDriver } from './local-scorm-storage.driver';
 import {
   SCORM_STORAGE_DRIVER,
   type PackageLocation,
@@ -10,8 +9,11 @@ import {
 } from './scorm-storage.driver';
 
 /**
- * Owns SCORM package files, delegating to whichever driver
- * `SCORM_STORAGE_DRIVER` selected.
+ * Owns SCORM package files, delegating to the R2 driver.
+
+ * There is one driver. `local` was removed in §10.31 — it pinned the API to
+ * a single instance, because a second process could not see packages the
+ * first had extracted.
  *
  * This class is the seam BACKEND_STRUCTURE.md §10.3 asked for: call sites talk
  * to it and never to a driver, so `local` -> `s3` is an environment variable
@@ -44,27 +46,22 @@ export class ScormStorageService {
   constructor(
     @Inject(SCORM_STORAGE_DRIVER)
     private readonly driver: ScormStorageDriver,
-    config: ConfigService,
   ) {
-    const configured = config.get<string>('storage.driver') ?? 'local';
+    // No cross-check against a configured value any more: there is nothing
+    // left to disagree with. What IS worth saying loudly is R2 being
+    // unconfigured, because SCORM is now entirely unavailable in that state
+    // rather than degraded.
     this.logger.log(
       `SCORM storage driver: ${this.driver.kind}` +
         (this.driver.isReady
           ? ''
-          : ` (NOT READY — missing ${this.driver.missingConfig.join(', ')})`),
+          : ` (NOT READY — missing ${this.driver.missingConfig.join(', ')}. ` +
+            'SCORM upload and playback will return 503 until these are set ' +
+            'and the process is RESTARTED.)'),
     );
-    if (configured !== this.driver.kind) {
-      // Only reachable if the factory and the config disagree, which would
-      // mean packages were being written somewhere other than where the
-      // operator asked. Loud, because it is silent data misplacement.
-      this.logger.error(
-        `SCORM_STORAGE_DRIVER is "${configured}" but the resolved driver is ` +
-          `"${this.driver.kind}".`,
-      );
-    }
   }
 
-  get driverKind(): 'local' | 's3' {
+  get driverKind(): 's3' {
     return this.driver.kind;
   }
 
@@ -74,23 +71,6 @@ export class ScormStorageService {
 
   get missingConfig(): string[] {
     return this.driver.missingConfig;
-  }
-
-  /**
-   * The local storage root. Only meaningful for the `local` driver, where
-   * `main.ts` hands it to `useStaticAssets`. Throws on `s3` rather than
-   * returning a misleading path — a caller reaching for a filesystem root
-   * under object storage has a bug, and an empty string would let it mount
-   * `express.static` on the process's working directory.
-   */
-  get rootPath(): string {
-    if (this.driver instanceof LocalScormStorageDriver) {
-      return this.driver.rootPath;
-    }
-    throw new Error(
-      `SCORM storage driver "${this.driver.kind}" has no local root path. ` +
-        'Serve content through ScormContentController instead.',
-    );
   }
 
   /**

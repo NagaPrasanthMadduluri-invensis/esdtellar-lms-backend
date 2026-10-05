@@ -14,7 +14,6 @@ import { ScormContentMiddleware } from './scorm-content.middleware';
 import { ScormDatamodelRepository } from './scorm-datamodel.repository';
 import { ScormRepository } from './scorm.repository';
 import { ScormService } from './scorm.service';
-import { LocalScormStorageDriver } from './storage/local-scorm-storage.driver';
 import { S3ScormStorageDriver } from './storage/s3-scorm-storage.driver';
 import { SCORM_STORAGE_DRIVER } from './storage/scorm-storage.driver';
 import { ScormStorageService } from './storage/scorm-storage.service';
@@ -48,25 +47,25 @@ import { JourneysModule } from '@/modules/journeys/journeys.module';
     ScormContentHandler,
     EntitlementCache,
     ScormContentMiddleware,
-    LocalScormStorageDriver,
     S3ScormStorageDriver,
     {
       /**
-       * The `SCORM_STORAGE_DRIVER` switch, resolved once at boot.
+       * ONE driver. There is no `SCORM_STORAGE_DRIVER` switch any more.
        *
-       * An unrecognised value falls back to `local` with a loud log rather than
-       * throwing: a typo in this variable should not take down an LMS whose
-       * only affected feature is SCORM, and silently writing packages to a
-       * different backing store than the operator asked for is exactly what
-       * `ScormStorageService`'s constructor cross-check catches.
+       * The local-disk driver pinned the API to a single instance — a second
+       * process could not see packages the first had extracted — and every
+       * package now lives in R2. Keeping a disabled code path around would
+       * have meant a typo in an env var silently writing new uploads to a
+       * disk nothing serves.
+       *
+       * The consequence is deliberate and worth stating: R2 is now a HARD
+       * DEPENDENCY for SCORM. Misconfigure it and SCORM returns 503 for
+       * everyone rather than quietly falling back, which is the point — a
+       * silent fallback is how nobody finds out object storage is broken.
        */
       provide: SCORM_STORAGE_DRIVER,
-      inject: [ConfigService, LocalScormStorageDriver, S3ScormStorageDriver],
-      useFactory: (
-        config: ConfigService,
-        local: LocalScormStorageDriver,
-        s3: S3ScormStorageDriver,
-      ) => (config.get<string>('storage.driver') === 's3' ? s3 : local),
+      inject: [S3ScormStorageDriver],
+      useFactory: (s3: S3ScormStorageDriver) => s3,
     },
   ],
   exports: [

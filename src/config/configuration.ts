@@ -37,8 +37,12 @@ export interface AppConfig {
     cookieDomain: string;
   };
   storage: {
-    driver: 'local' | 's3';
-    localPath: string;
+    /**
+     * SCORM no longer appears here. Its files live in R2 only — the
+     * local-disk driver and the `SCORM_STORAGE_DRIVER` / `SCORM_STORAGE_PATH`
+     * variables were removed once every package was migrated (§10.31).
+     * The R2 credentials under `media.r2` are what SCORM now needs.
+     */
     /**
      * Root for files this process writes and serves itself, rather than
      * handing to R2 — currently course thumbnails. Local disk, like the
@@ -180,8 +184,6 @@ export default (): AppConfig => ({
     cookieDomain: process.env.COOKIE_DOMAIN ?? 'localhost',
   },
   storage: {
-    driver: (process.env.SCORM_STORAGE_DRIVER as 'local' | 's3') ?? 'local',
-    localPath: process.env.SCORM_STORAGE_PATH ?? './storage/scorm',
     uploadsPath: process.env.UPLOAD_STORAGE_PATH ?? './storage/uploads',
   },
   reporting: {

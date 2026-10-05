@@ -199,8 +199,8 @@ async function main() {
     [edOrg.id],
   );
   const edScormRow =
-    (await one('SELECT id, package_dir FROM scorm_packages WHERE package_dir = $1', [KNOWN_ED_SCORM_DIR])) ??
-    (await one('SELECT id, package_dir FROM scorm_packages WHERE organization_id = $1 LIMIT 1', [edOrg.id]));
+    (await one('SELECT id, package_dir, storage_prefix FROM scorm_packages WHERE package_dir = $1', [KNOWN_ED_SCORM_DIR])) ??
+    (await one('SELECT id, package_dir, storage_prefix FROM scorm_packages WHERE organization_id = $1 LIMIT 1', [edOrg.id]));
 
   if (!edCourseRow || !globalCourseRow || !edSessionRow || !edAssessmentRow || !edLearnerRow || !invLearnerRow) {
     throw new Error(
@@ -582,8 +582,30 @@ async function main() {
     const anon = await scormGet(`${dir}/index.html`, null);
     check('scorm content: anonymous is 401', anon.status === 401, `status=${anon.status}`);
 
-    const entitled = await scormGet(`${dir}/index.html`, edLearner.cookie);
-    check('scorm content: entitled learner (sneha.k) is 200', entitled.status === 200, `status=${entitled.status}`);
+    /**
+     * Serving the bytes needs the package to BE somewhere.
+     *
+     * SCORM moved to R2 only — the local-disk driver was removed (§10.31) —
+     * so a package whose `storage_prefix` is still NULL has no content to
+     * serve and correctly 404s. That is a missing precondition, not a
+     * broken boundary, so it SKIPS rather than failing: a skip says "no
+     * information", which is the honest answer, where a pass would claim
+     * something was checked that was not.
+     *
+     * The three boundary assertions around it still run unconditionally.
+     * They are the ones that matter here — whether the WRONG person can
+     * reach a package does not depend on where its bytes live.
+     */
+    if (!edScormRow.storage_prefix) {
+      skip(
+        'scorm content: entitled learner (sneha.k) is 200',
+        `package ${dir} has no storage_prefix — it exists only on local disk, `
+          + 'which is no longer served. Run `npm run db:migrate:scorm-r2 -- --commit`.',
+      );
+    } else {
+      const entitled = await scormGet(`${dir}/index.html`, edLearner.cookie);
+      check('scorm content: entitled learner (sneha.k) is 200', entitled.status === 200, `status=${entitled.status}`);
+    }
 
     const foreign = await scormGet(`${dir}/index.html`, invLearner.cookie);
     check('scorm content: learner from the other org is 404', foreign.status === 404, `status=${foreign.status}`);

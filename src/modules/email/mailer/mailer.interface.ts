@@ -1,6 +1,6 @@
 /**
- * One interface, three drivers — the same shape `SCORM_STORAGE_DRIVER`
- * already uses, and for the same reason: the feature must be fully
+ * One interface, three drivers — the shape SCORM storage used before it
+ * collapsed to one, and for the same reason: the feature must be fully
  * exercisable on a laptop with no cloud credentials.
  *
  * That is not developer convenience. The R2 variables are optional (§9.1)
