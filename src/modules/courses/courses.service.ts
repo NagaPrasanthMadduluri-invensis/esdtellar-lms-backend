@@ -972,10 +972,26 @@ export class CoursesService {
       ? (await this.media.verifyUploadedDocument(documentKey)).sizeBytes
       : null;
 
+    /*
+     * A video may now be attached by the SAVE, not only by a later confirm.
+     *
+     * Without this a new video lesson could not carry its video at all:
+     * `assertLessonContent` was called with no `videoKey`, so it demanded a
+     * URL and refused every genuine upload with "Upload a video or provide a
+     * link to one" — immediately after the upload had succeeded.
+     *
+     * Verified before the row records it, exactly as the document key is:
+     * a key that does not exist, or does not sit under a prefix this lesson
+     * may claim, must not reach the column.
+     */
+    const videoKey = contentType === 'video' ? (dto.video_key ?? null) : null;
+    if (videoKey) await this.media.verifyUploadedVideo(videoKey);
+
     this.assertLessonContent({
       contentType,
       contentUrl: dto.content_url ?? null,
       documentKey,
+      videoKey,
       scormPackageId: dto.scorm_package_id ?? null,
       durationMinutes: dto.duration_minutes ?? null,
     });
@@ -1003,6 +1019,8 @@ export class CoursesService {
       documentName: documentKey ? (dto.document_name ?? null) : null,
       documentMime: documentKey ? (dto.document_mime ?? null) : null,
       documentSizeBytes: documentSize,
+      videoKey,
+      videoDurationSeconds: videoKey ? (dto.video_duration_seconds ?? null) : null,
       durationMinutes: dto.duration_minutes ?? null,
       sortOrder,
       isPreview: dto.is_preview ? 1 : 0,
@@ -1063,10 +1081,27 @@ export class CoursesService {
       documentSize = null;
     }
 
+    /*
+     * The video, merged the same way the document is — an OMITTED key means
+     * "leave it alone", an explicit null means "remove it" (§10.10). Without
+     * the merge, an ordinary title edit on a video lesson would arrive with
+     * no `video_key` and be read as a lesson with no content.
+     *
+     * A lesson that is no longer a video keeps no video key, mirroring the
+     * document rule directly above.
+     */
+    const requestedVideoKey =
+      dto.video_key !== undefined ? dto.video_key : current.videoKey;
+    const videoKey = contentType === 'video' ? (requestedVideoKey ?? null) : null;
+    if (videoKey && videoKey !== current.videoKey) {
+      await this.media.verifyUploadedVideo(videoKey);
+    }
+
     this.assertLessonContent({
       contentType,
       contentUrl,
       documentKey,
+      videoKey,
       scormPackageId: isScorm
         ? (dto.scorm_package_id !== undefined
             ? dto.scorm_package_id
@@ -1104,6 +1139,12 @@ export class CoursesService {
         ? (dto.document_mime !== undefined
             ? dto.document_mime
             : current.documentMime)
+        : null,
+      videoKey,
+      videoDurationSeconds: videoKey
+        ? (dto.video_duration_seconds !== undefined
+            ? dto.video_duration_seconds
+            : current.videoDurationSeconds)
         : null,
       documentSizeBytes: documentSize,
       durationMinutes,

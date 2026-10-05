@@ -213,6 +213,22 @@ export class CreateLessonDto {
   @IsOptional() @Transform(nullable) document_key?: string | null;
   @IsOptional() @Transform(nullable) @MaxLength(255) document_name?: string | null;
   @IsOptional() @Transform(nullable) @MaxLength(255) document_mime?: string | null;
+
+  /**
+   * An uploaded video, attached by the SAVE rather than by a later confirm.
+   *
+   * `POST /admin/lessons/:id/video/confirm` still exists and still works —
+   * it is how a video is swapped on a lesson that already exists. This field
+   * is what lets a video lesson be CREATED with its video, which it could
+   * not be: the create ran `assertLessonContent` with no video key, so a new
+   * video lesson always demanded a URL and a genuine upload was refused with
+   * "Upload a video or provide a link to one" right after it succeeded.
+   *
+   * The key is proven to exist in storage, and to sit under a prefix this
+   * lesson may claim, before the row records it (`verifyUploadedVideo`).
+   */
+  @IsOptional() @Transform(nullable) video_key?: string | null;
+  @IsOptional() @IsInt() video_duration_seconds?: number | null;
   @IsOptional() @IsInt() sort_order?: number;
   @IsOptional() @IsBoolean() is_preview?: boolean;
   @IsOptional() @IsBoolean() is_active?: boolean;
@@ -247,6 +263,22 @@ export class UpdateLessonDto {
   @IsOptional() @Transform(nullable) document_key?: string | null;
   @IsOptional() @Transform(nullable) @MaxLength(255) document_name?: string | null;
   @IsOptional() @Transform(nullable) @MaxLength(255) document_mime?: string | null;
+
+  /**
+   * An uploaded video, attached by the SAVE rather than by a later confirm.
+   *
+   * `POST /admin/lessons/:id/video/confirm` still exists and still works —
+   * it is how a video is swapped on a lesson that already exists. This field
+   * is what lets a video lesson be CREATED with its video, which it could
+   * not be: the create ran `assertLessonContent` with no video key, so a new
+   * video lesson always demanded a URL and a genuine upload was refused with
+   * "Upload a video or provide a link to one" right after it succeeded.
+   *
+   * The key is proven to exist in storage, and to sit under a prefix this
+   * lesson may claim, before the row records it (`verifyUploadedVideo`).
+   */
+  @IsOptional() @Transform(nullable) video_key?: string | null;
+  @IsOptional() @IsInt() video_duration_seconds?: number | null;
   @IsOptional() @IsInt() sort_order?: number;
   @IsOptional() @IsBoolean() is_preview?: boolean;
   @IsOptional() @IsBoolean() is_active?: boolean;

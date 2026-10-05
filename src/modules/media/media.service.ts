@@ -141,6 +141,54 @@ export class MediaService {
     return { sizeBytes: stat.size, contentType: stat.contentType };
   }
 
+  /**
+   * The video equivalent of `verifyUploadedDocument`, for a key being
+   * recorded by the lesson SAVE rather than by `confirmVideoUpload`.
+   *
+   * It exists because a video lesson could not be CREATED with its video.
+   * `assertLessonContent` was never passed a `videoKey` on create, so a new
+   * video lesson always demanded a URL — and the browser's upload-then-create
+   * -then-confirm order hit that wall every time, with a 422 reading "Upload
+   * a video or provide a link to one" immediately after a successful upload.
+   *
+   * The prefix rule is the same one `confirmVideoUpload` applies, and for the
+   * same reason: `lessons/incoming/` is where `presignStandaloneVideoUpload`
+   * puts an object for a lesson that does not exist yet, and
+   * `lessons/<id>/video/` is a key minted for a lesson that does. Anything
+   * else is refused so a save cannot repoint a lesson at another lesson's
+   * object.
+   */
+  async verifyUploadedVideo(key: string): Promise<{
+    sizeBytes: number;
+    contentType: string | null;
+  }> {
+    const allowed =
+      key.startsWith('lessons/incoming/') ||
+      /^lessons\/\d+\/video\//.test(key);
+    if (!allowed) {
+      throw new BadRequestException('Object key is not a lesson video.');
+    }
+
+    const stat = await this.storage.statObject(key);
+    if (!stat) {
+      throw new UnprocessableEntityException(
+        'Upload not found in storage. The video may not have finished uploading.',
+      );
+    }
+
+    const maxBytes = this.config.get<number>('media.videoMaxBytes') ?? 0;
+    if (maxBytes > 0 && stat.size > maxBytes) {
+      // A presigned PUT cannot cap its own body, so the real size is only
+      // knowable here. Drop the object rather than keep one over the limit.
+      await this.storage.deleteObject(key);
+      throw new UnprocessableEntityException(
+        `Video is ${formatBytes(stat.size)}, which exceeds the ${formatBytes(maxBytes)} limit.`,
+      );
+    }
+
+    return { sizeBytes: stat.size, contentType: stat.contentType };
+  }
+
   /** A short-lived URL to read a stored document. */
   async documentUrl(key: string): Promise<string> {
     return this.storage.presignDownload(key);
