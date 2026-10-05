@@ -40,6 +40,39 @@ export interface LessonContentType {
   hint: string;
 }
 
+/**
+ * WORD AND POWERPOINT ARE DELIBERATELY ABSENT, and this is the one entry in
+ * this file that is a product decision rather than a description.
+ *
+ * Course content is not meant to leave the product, so a lesson's primary
+ * content must be something a BROWSER can render — only then can it be shown
+ * without handing over the file. PDF, images and video all qualify. `.docx`
+ * and `.pptx` do not: a browser's only move is to pass them to a desktop
+ * application, which means a download. Offering them as protected lesson
+ * content would have been a control that lies.
+ *
+ * Converting them to PDF server-side was considered and rejected. It would
+ * work for a plain reference deck and would silently destroy a narrated one —
+ * PDF has no audio, no animation and no timings, so a 20-minute voiced-over
+ * deck becomes a stack of silent slides with every progressive reveal
+ * collapsed on top of itself, and nothing on screen says anything was lost.
+ *
+ * What an admin should do instead is stated in the lesson form:
+ *   narrated / animated deck -> PowerPoint's File > Export > Create a Video,
+ *                               uploaded as a `video` lesson. Keeps the
+ *                               voiceover, the animations and the timings,
+ *                               AND earns measured watch time (§10.4) rather
+ *                               than a duration somebody typed.
+ *   plain reference deck     -> Save as PDF.
+ *
+ * Both remain perfectly valid as supporting RESOURCES (`lesson_resources`),
+ * which are labelled as reference material, carry no duration and are not
+ * the thing being protected.
+ *
+ * They stay in `DOCUMENT_LIKE_TYPES` below, so any row that already holds one
+ * keeps rendering. Readable, not creatable — the same treatment the legacy
+ * `document` / `doc` / `xls` values get.
+ */
 export const LESSON_CONTENT_TYPES: LessonContentType[] = [
   {
     key: 'video',
@@ -56,24 +89,6 @@ export const LESSON_CONTENT_TYPES: LessonContentType[] = [
     durationRequired: true,
     accept: 'application/pdf,.pdf',
     hint: 'PDF only',
-  },
-  {
-    key: 'word',
-    label: 'Word document',
-    upload: true,
-    durationRequired: true,
-    accept:
-      'application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.doc,.docx',
-    hint: 'DOC or DOCX',
-  },
-  {
-    key: 'ppt',
-    label: 'PowerPoint',
-    upload: true,
-    durationRequired: true,
-    accept:
-      'application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,.ppt,.pptx',
-    hint: 'PPT or PPTX',
   },
   {
     key: 'image',

@@ -605,38 +605,49 @@ export class MediaService {
   }
 
   async learnerLessonMedia(scope: OrgScope, lessonId: number, userId: number) {
-    const lesson = await this.repository.findLessonForLearner(
-      scope,
-      lessonId,
-      userId,
-    );
-    if (!lesson) throw new NotFoundException('Lesson not found');
+    // Enrolment, preview and the journey gate — all three in one place, so
+    // this and `openLearnerDocument` cannot come to disagree about who may
+    // read a lesson (spec §4.3).
+    const lesson = await this.assertLessonReadable(scope, lessonId, userId);
 
-    if (!lesson.assigned && !lesson.is_preview) {
-      throw new ForbiddenException('You are not enrolled in this course.');
-    }
-
-    // A journey's sequence gates CONTENT, not just the lesson page. Signing a
-    // URL for a locked lesson would hand over exactly what the lock exists to
-    // withhold (spec §4.3).
-    await this.gate.assertUnlocked(scope, userId, Number(lesson.course_id));
-
-    // A document lesson has no video, so the player never asks — but the same
-    // endpoint is what hands back a link to the document, and it must be signed
-    // per request for exactly the reason the video URL is.
+    /*
+     * A document lesson has no video, so the player never asks — but the same
+     * endpoint is what tells the page how to reach the document.
+     *
+     * IT NO LONGER HANDS BACK A PRESIGNED URL, and that is the point of this
+     * branch rather than an implementation detail. A presigned R2 URL is a
+     * BEARER TOKEN IN A LINK: it carries its own authorisation, so whoever
+     * reads it out of the Network tab can paste it into any browser, signed
+     * out, in any tenant, and receive the file. Course content is not meant
+     * to leave the product, and a shareable link is the one thing that
+     * guarantees it can.
+     *
+     * The caller gets a RELATIVE path to `GET /learner/lessons/:id/document`
+     * instead, which is same-origin and cookie-authenticated. Copying it out
+     * of the Network tab and sending it to somebody else yields a 401, and
+     * sending it to a learner in another tenant yields a 404. That is the
+     * difference this change exists to make.
+     *
+     * It does NOT make the file un-saveable by the entitled learner
+     * themselves — nothing can, once their own browser has the bytes. What
+     * closes that gap is `documentPages` below: a PDF is rasterised at upload
+     * and only its page IMAGES are ever served, so the source file never
+     * reaches a browser at all.
+     */
     if (!lesson.video_key) {
-      const documentUrl = lesson.document_key
-        ? await this.storage.presignDownload(lesson.document_key)
-        : null;
+      const hasDocument = Boolean(lesson.document_key);
 
       return {
         lessonId: lesson.id,
         videoUrl: null,
         captionUrl: null,
-        expiresIn: documentUrl
-          ? (this.config.get<number>('media.videoUrlTtlSeconds') ?? 900)
-          : 0,
-        documentUrl,
+        // No URL is being handed out, so there is nothing to expire. Leaving
+        // the old TTL here would have the page start a countdown against a
+        // link it no longer holds.
+        expiresIn: 0,
+        documentUrl: hasDocument
+          ? `/api/learner/lessons/${lesson.id}/document`
+          : null,
         documentName: lesson.document_name,
         documentMime: lesson.document_mime,
         documentSizeBytes: lesson.document_size_bytes,
@@ -664,6 +675,63 @@ export class MediaService {
       watchedSeconds: progress?.watched_seconds ?? 0,
       resumeAtSeconds: progress?.last_position_seconds ?? 0,
     };
+  }
+
+  /**
+   * Opens a lesson's document for streaming THROUGH this process.
+   *
+   * Entitlement is re-checked here rather than trusted from whatever call
+   * produced the path. That is not belt-and-braces: the path is a plain URL
+   * the learner's browser holds, so it will be replayed after they finish the
+   * course, after they are unassigned, and after their account is
+   * deactivated. Only a check at read time can answer the question that
+   * matters at read time.
+   *
+   * Returns null when the row names no document or the object is gone, so the
+   * controller can 404 rather than stream nothing. A credentials or network
+   * failure propagates instead — §8.3's distinction, which `getObjectStream`
+   * already draws.
+   */
+  async openLearnerDocument(scope: OrgScope, lessonId: number, userId: number) {
+    const lesson = await this.assertLessonReadable(scope, lessonId, userId);
+    if (!lesson.document_key) return null;
+
+    const object = await this.storage.getObjectStream(lesson.document_key);
+    if (!object) return null;
+
+    return {
+      stream: object.stream,
+      // The STORED mime, not the one R2 reports. R2 echoes whatever was set at
+      // upload, and the upload is presigned — so its Content-Type is a value
+      // the admin's browser chose. The stored column was validated.
+      contentType: lesson.document_mime || object.contentType || 'application/octet-stream',
+      contentLength: object.contentLength,
+      filename: lesson.document_name || `lesson-${lesson.id}`,
+    };
+  }
+
+  /**
+   * The three questions every learner content read has to ask, in one place.
+   *
+   * `learnerLessonMedia` and `openLearnerDocument` both need them and they
+   * must not drift: a document route that forgot the journey gate would hand
+   * over exactly what the gate exists to withhold, and it would do so
+   * silently, because a locked lesson still has a perfectly valid key.
+   */
+  private async assertLessonReadable(
+    scope: OrgScope,
+    lessonId: number,
+    userId: number,
+  ) {
+    const lesson = await this.repository.findLessonForLearner(scope, lessonId, userId);
+    if (!lesson) throw new NotFoundException('Lesson not found');
+
+    if (!lesson.assigned && !lesson.is_preview) {
+      throw new ForbiddenException('You are not enrolled in this course.');
+    }
+
+    await this.gate.assertUnlocked(scope, userId, Number(lesson.course_id));
+    return lesson;
   }
 }
 
