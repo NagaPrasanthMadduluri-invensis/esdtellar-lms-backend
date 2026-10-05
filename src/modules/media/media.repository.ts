@@ -116,6 +116,22 @@ export class MediaRepository {
     const rows = await this.db.all<LearnerLessonMediaRow>(sql`
       SELECT l.id, l.title, cm.course_id, l.content_type,
              l.video_key, l.caption_key, l.video_duration_seconds, l.is_preview,
+             -- These four were MISSING while the row interface declared all
+             -- of them, so document_key was always undefined here and a
+             -- document lesson's media read always answered with a null
+             -- documentUrl. The learner saw "This document could not be
+             -- loaded."
+             --
+             -- It stayed invisible because the lesson editor only ever
+             -- offered a LINK for a document, and a link is served from
+             -- content_url without touching any of these. The first
+             -- genuinely uploaded document is what found it.
+             --
+             -- A type that declares a column the query does not select is
+             -- the whole trap. Section 3.1 asks for an explicit column list;
+             -- this is what it costs when the list and the interface drift.
+             l.document_key, l.document_name, l.document_mime,
+             l.document_size_bytes,
              CASE WHEN EXISTS (
                SELECT 1 FROM user_course_assignments uca
                WHERE uca.user_id = ${userId} AND uca.course_id = cm.course_id
