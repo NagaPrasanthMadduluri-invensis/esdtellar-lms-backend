@@ -95,8 +95,13 @@ export const LESSON_CONTENT_TYPES: LessonContentType[] = [
     label: 'Image',
     upload: true,
     durationRequired: true,
-    accept: 'image/jpeg,image/png,image/gif,image/webp',
-    hint: 'JPG, PNG, GIF or WebP',
+    // Extensions as well as mime types: a file picker matches either, and
+    // the browser resolves the upload's content type from the EXTENSION.
+    // SVG is excluded deliberately — see ALLOWED_DOCUMENT_TYPES.
+    accept:
+      'image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp,'
+      + '.png,.jpg,.jpeg,.gif,.webp,.avif,.bmp',
+    hint: 'PNG, JPG, GIF, WebP, AVIF or BMP',
   },
   {
     key: 'link',

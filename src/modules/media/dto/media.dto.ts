@@ -89,6 +89,31 @@ export const ALLOWED_DOCUMENT_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'text/plain',
   'text/csv',
+
+  /*
+   * Images, because an `image` lesson stores its file in the document slot
+   * and so presigns through this same endpoint. Without them the upload was
+   * refused before it started: "contentType must be one of: application/pdf,
+   * ..." — with no image type in the list at all.
+   *
+   * Only formats a BROWSER CAN RENDER are here, which is the same rule that
+   * decides what may be a lesson at all: the learner is shown the file
+   * inline, never handed it.
+   *
+   * SVG IS DELIBERATELY ABSENT. It is XML that can carry script, and this
+   * one is streamed from the API origin with the learner's cookie in scope —
+   * so an uploaded SVG would be script execution on the origin that holds
+   * the session. The thumbnail upload refuses it for the same reason
+   * (BACKEND_STRUCTURE section 10.10), and that reasoning is stronger here,
+   * not weaker: a thumbnail is served from a static path, this is served
+   * from the authenticated API.
+   */
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/bmp',
 ] as const;
 
 /** Extension used for a stored object, per declared type. */
@@ -100,6 +125,15 @@ export const EXTENSION_FOR_DOCUMENT_TYPE: Record<string, string> = {
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
   'application/vnd.ms-excel': 'xls',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'image/png': 'png',
+  // `.jpg` rather than `.jpeg`: both decode identically and this is only the
+  // stored object's extension, never what the learner sees — the download
+  // name comes from `document_name`, which keeps what the admin uploaded.
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/avif': 'avif',
+  'image/bmp': 'bmp',
   'text/plain': 'txt',
   'text/csv': 'csv',
 };
