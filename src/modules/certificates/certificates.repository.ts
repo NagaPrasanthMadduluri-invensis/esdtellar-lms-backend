@@ -11,6 +11,7 @@ import {
   journeys,
   lessons,
   organizations,
+  sessions,
   userAssessmentAttempts,
   userLessonCompletions,
   users,
@@ -346,6 +347,9 @@ export class CertificatesRepository {
         certificateCode: certificates.certificateCode,
         courseName: courses.name,
         journeyName: journeys.title,
+        // Says which KIND of certificate this is: set for a session's
+        // companion training (§10.7). See `certificateKind`.
+        sessionId: courses.sessionId,
         issuedAt: certificates.issuedAt,
         finalScore: certificates.finalScore,
         isRevoked: certificates.isRevoked,
@@ -360,6 +364,23 @@ export class CertificatesRepository {
         ),
       )
       .orderBy(desc(certificates.issuedAt));
+  }
+
+  /**
+   * The tenant's certificate-code prefix, or null to follow the default.
+   *
+   * Read here rather than through `OrganizationsService` because that module
+   * already depends on this one's neighbours and injecting it would be a
+   * cycle for a single column. It is one indexed read by primary key, taken
+   * once per issue — not per certificate in a list.
+   */
+  async findCertificatePrefix(scope: OrgScope): Promise<string | null> {
+    const [row] = await this.db
+      .select({ prefix: organizations.certificatePrefix })
+      .from(organizations)
+      .where(eq(organizations.id, scope.organizationId))
+      .limit(1);
+    return row?.prefix ?? null;
   }
 
   async findDetailById(scope: OrgScope, id: number) {
@@ -385,10 +406,87 @@ export class CertificatesRepository {
          * authored the material, which is a different claim.
          */
         organizationName: organizations.name,
+        // The tenant's own mark, printed beside its name on the document.
+        // Null is the normal case and the certificate falls back to the
+        // built-in layered-diamond rather than leaving a gap.
+        organizationLogoUrl: organizations.logoUrl,
+        // Who signs it (0039). Read at render time, so a re-download carries
+        // the signatory the organisation names now. Both null by default.
+        signatoryName: organizations.certificateSignatoryName,
+        signatoryTitle: organizations.certificateSignatoryTitle,
+        /*
+         * For the certificate document's meta row, which names the category
+         * and the course's length beside the issue date.
+         *
+         * Both come from the course and are null for a JOURNEY certificate,
+         * which has no single course behind it — the document renders only
+         * the fields it has rather than printing an em dash for a fact that
+         * does not exist at that level.
+         */
+        category: courses.category,
+        durationMinutes: sql<number | null>`(
+          SELECT SUM(l.duration_minutes)
+            FROM lessons l
+            JOIN course_modules cm ON cm.id = l.module_id
+           WHERE cm.course_id = ${certificates.courseId}
+             AND l.is_active = 1 AND cm.is_active = 1
+        )`,
+
+        /*
+         * ── A SESSION certificate ──
+         *
+         * Issued against the session's companion training course (§10.7), so
+         * `courses.session_id` is what says this is one, and the sitting's
+         * own facts come from `sessions`. `durationMinutes` above already IS
+         * the sitting's length: the companion lesson's duration is the
+         * scheduled length. All null for any other certificate.
+         */
+        sessionId: courses.sessionId,
+        sessionTitle: sessions.title,
+        sessionType: sessions.sessionType,
+        sessionDate: sessions.date,
+        sessionTrainer: sessions.trainer,
+        // A ROOM for ILT, a MEETING URL for Virtual — the service decides
+        // what of it is fit to print.
+        sessionVenue: sessions.venueUrl,
+        // The path's own subtitle ("Sales · Role Path"), printed under its name.
+        journeyTag: journeys.tag,
+
+        /*
+         * ── A LEARNING PATH certificate ──
+         *
+         * Its courses in the path's own order, its total length, and when
+         * THIS learner finished it. Correlated subqueries in the same round
+         * trip (§7.1). The courses are the path's CONTENT, so no activity
+         * predicate; completedAt is the learner's own enrolment row, scoped
+         * to this certificate's organization.
+         */
+        pathCourses: sql<string[] | null>`(
+          SELECT json_agg(c2.name ORDER BY jc.sort_order, jc.id)
+            FROM journey_courses jc
+            JOIN courses c2 ON c2.id = jc.course_id
+           WHERE jc.journey_id = ${certificates.journeyId}
+        )`,
+        pathDurationMinutes: sql<number | null>`(
+          SELECT SUM(l.duration_minutes)
+            FROM journey_courses jc
+            JOIN course_modules cm ON cm.course_id = jc.course_id AND cm.is_active = 1
+            JOIN lessons l ON l.module_id = cm.id AND l.is_active = 1
+           WHERE jc.journey_id = ${certificates.journeyId}
+        )`,
+        pathCompletedAt: sql<string | null>`(
+          SELECT je.completed_at
+            FROM journey_enrollments je
+           WHERE je.journey_id = ${certificates.journeyId}
+             AND je.user_id = ${certificates.userId}
+             AND je.organization_id = ${certificates.organizationId}
+           LIMIT 1
+        )`,
       })
       .from(certificates)
       .leftJoin(courses, eq(courses.id, certificates.courseId))
       .leftJoin(journeys, eq(journeys.id, certificates.journeyId))
+      .leftJoin(sessions, eq(sessions.id, courses.sessionId))
       .innerJoin(users, eq(users.id, certificates.userId))
       .innerJoin(
         organizations,

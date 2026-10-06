@@ -104,6 +104,31 @@ export class AdminMediaUploadController {
    * rollback: the browser knows at once that the save failed, and it is the
    * only party that knows the upload is now pointing at nothing.
    */
+  /**
+   * The organization's mark, printed on its certificates.
+   *
+   * Delegates to the course-thumbnail path rather than duplicating it: the
+   * validation is the part that matters and it is identical — the BYTES are
+   * sniffed against the format's magic number, the filename is a fresh UUID
+   * so a caller cannot steer the write, and SVG is refused because it can
+   * carry script and this is our own origin (§10.10). Sharing the storage
+   * directory is the cost; re-implementing a checked upload would be worse.
+   *
+   * Guarded by `upload_content`, not `manage_organization`, for the reason
+   * §10.10 gives: an upload on its own changes nothing. The PATCH that
+   * actually records the URL on the organization is what carries
+   * `manage_organization`.
+   */
+  @Post('organization-logo')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('upload_content')
+  @UseInterceptors(
+    FileInterceptor('image', { limits: { fileSize: COURSE_THUMBNAIL_MAX_BYTES } }),
+  )
+  async uploadOrganizationLogo(@UploadedFile() file: Express.Multer.File) {
+    return this.media.uploadCourseThumbnail(file);
+  }
+
   @Delete('course-thumbnail')
   @Permissions('upload_content')
   async deleteCourseThumbnail(@Body() dto: DiscardThumbnailDto) {

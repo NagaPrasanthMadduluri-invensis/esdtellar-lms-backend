@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from 'node:crypto';
 
 import {
   ConflictException,
@@ -9,6 +8,7 @@ import {
 } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
+import { certificatePrefix, codeHash } from '@/common/certificate-branding';
 import { ActivityService } from '@/modules/activity/activity.service';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
@@ -44,17 +44,25 @@ export class CertificatesService {
   /**
    * Server-side only. A client-supplied code is never accepted anywhere —
    * the code is the thing the public verify endpoint trusts.
+   *
+   * ## The course and user ids are no longer in the code
+   *
+   * It used to read `EDS-19-18-EFC3E4E1`, where 19 and 18 were the course
+   * and the learner. They are gone: a code is printed on a document the
+   * learner shows to other people, and it published two internal row ids
+   * and let anyone holding two certificates work out roughly how many
+   * learners and courses the tenant has.
+   *
+   * THAT MOVED WHERE UNIQUENESS COMES FROM, which is the part not to
+   * undo. `certificate_code` is UNIQUE NOT NULL, and with the ids present
+   * two different (course, learner) pairs could never collide whatever the
+   * hash did. Without them the hash is the only thing keeping codes apart,
+   * so it went from 8 hex characters to `CODE_HASH_CHARS` — see the note
+   * there. Shortening it back reintroduces a collision that surfaces as a
+   * learner's certificate failing to issue.
    */
-  generateCode(courseId: number, userId: number): string {
-    const shorthash = createHash('sha256')
-      .update(
-        `${courseId}:${userId}:${Date.now()}:${randomBytes(8).toString('hex')}`,
-      )
-      .digest('hex')
-      .slice(0, 8)
-      .toUpperCase();
-
-    return `EDS-${courseId}-${userId}-${shorthash}`;
+  generateCode(courseId: number, userId: number, prefix?: string | null): string {
+    return `${certificatePrefix(prefix)}-${codeHash(`${courseId}:${userId}`)}`;
   }
 
   /**
@@ -62,16 +70,12 @@ export class CertificatesService {
    * with the `J` (and the journey id in the `J<id>` slot rather than a course
    * id) so the two are tellable apart by eye in a support ticket (§3.4).
    */
-  generateJourneyCode(journeyId: number, userId: number): string {
-    const shorthash = createHash('sha256')
-      .update(
-        `J${journeyId}:${userId}:${Date.now()}:${randomBytes(8).toString('hex')}`,
-      )
-      .digest('hex')
-      .slice(0, 8)
-      .toUpperCase();
-
-    return `EDS-J${journeyId}-${userId}-${shorthash}`;
+  generateJourneyCode(
+    journeyId: number,
+    userId: number,
+    prefix?: string | null,
+  ): string {
+    return `${certificatePrefix(prefix)}-J-${codeHash(`J${journeyId}:${userId}`)}`;
   }
 
   /**
@@ -158,10 +162,11 @@ export class CertificatesService {
       // `certificates` is an activity table — it takes the learner's org,
       // which is exactly what `scope` is here: the caller is the learner
       // completing their own lesson/assessment.
+      const prefix = await this.repository.findCertificatePrefix(scope);
       const certificateId = await this.repository.insert(scope, {
         userId,
         courseId,
-        certificateCode: this.generateCode(courseId, userId),
+        certificateCode: this.generateCode(courseId, userId, prefix),
         issuedAt: new Date().toISOString(),
         finalScore: verdict.finalScore,
       });
@@ -248,10 +253,11 @@ export class CertificatesService {
       );
       if (existing) return null;
 
+      const prefix = await this.repository.findCertificatePrefix(scope);
       return await this.repository.insertJourney(scope, {
         userId,
         journeyId,
-        certificateCode: this.generateJourneyCode(journeyId, userId),
+        certificateCode: this.generateJourneyCode(journeyId, userId, prefix),
         issuedAt: new Date().toISOString(),
         finalScore: null,
       });
@@ -317,10 +323,11 @@ export class CertificatesService {
       return { ...reinstated, reinstated: true, hadCompleted: verdict.complete };
     }
 
+    const prefix = await this.repository.findCertificatePrefix(scope);
     const id = await this.repository.insert(scope, {
       userId,
       courseId,
-      certificateCode: this.generateCode(courseId, userId),
+      certificateCode: this.generateCode(courseId, userId, prefix),
       issuedAt: new Date().toISOString(),
       finalScore: verdict.finalScore,
     });
@@ -351,6 +358,27 @@ export class CertificatesService {
   }
 
   /** `journeyName` is additive — set only on a `J`-code row (§5). */
+  /**
+   * Which document a certificate is, decided ONCE here and sent down, so the
+   * list chip, the document's wording and its details cannot disagree.
+   *
+   *   journey_id set           -> 'path'     Certificate of Achievement
+   *   course is a session's    -> 'session'  Certificate of Attendance
+   *   anything else            -> 'course'   Certificate of Completion
+   *
+   * A session certificate is only ever issued by hand (`issueManually`),
+   * because auto-issue refuses session trainings (§10.7) — the trainer
+   * marks attendance, an admin decides it merits a document.
+   */
+  private certificateKind(row: {
+    journeyName: string | null;
+    sessionId: number | null;
+  }): 'course' | 'path' | 'session' {
+    if (row.journeyName !== null) return 'path';
+    if (row.sessionId !== null) return 'session';
+    return 'course';
+  }
+
   async listForLearner(scope: OrgScope, userId: number) {
     const rows = await this.repository.listForLearner(scope, userId);
     return rows.map((row) => ({
@@ -358,6 +386,7 @@ export class CertificatesService {
       certificateCode: row.certificateCode,
       courseName: row.courseName,
       journeyName: row.journeyName,
+      kind: this.certificateKind(row),
       issuedAt: row.issuedAt,
       finalScore: row.finalScore,
       isRevoked: row.isRevoked === 1,
@@ -379,9 +408,56 @@ export class CertificatesService {
       // product name used to be. See the repository's note on why this is the
       // learner's org and not the course's author.
       organizationName: row.organizationName,
+      // The tenant's own mark. Null is the normal case; the document falls
+      // back to the built-in layered-diamond rather than leaving a gap.
+      organizationLogoUrl: row.organizationLogoUrl ?? null,
+      // Null means the document signs with the organisation's own name.
+      signatoryName: row.signatoryName ?? null,
+      signatoryTitle: row.signatoryTitle ?? null,
       issuedAt: row.issuedAt,
       finalScore: row.finalScore,
       isRevoked: row.isRevoked === 1,
+      // The certificate document names the category and the course length
+      // beside the issue date. Both are null on a journey certificate, which
+      // has no single course behind it, and the document simply omits what
+      // it does not have rather than printing a dash for a fact that does
+      // not exist at that level.
+      category: row.category ?? null,
+      durationMinutes:
+        row.durationMinutes === null || row.durationMinutes === undefined
+          ? null
+          : Number(row.durationMinutes),
+      kind: this.certificateKind(row),
+      // Present only for its own kind; null otherwise, so the document never
+      // has to guess which block applies.
+      path:
+        this.certificateKind(row) === 'path'
+          ? {
+              tag: row.journeyTag ?? null,
+              courses: row.pathCourses ?? [],
+              durationMinutes:
+                row.pathDurationMinutes === null ? null : Number(row.pathDurationMinutes),
+              completedAt: row.pathCompletedAt ?? null,
+            }
+          : null,
+      session:
+        this.certificateKind(row) === 'session'
+          ? {
+              title: row.sessionTitle ?? row.courseName,
+              // The stored enum is ILT / Virtual; the document says it in words.
+              format: row.sessionType === 'Virtual' ? 'Virtual' : 'In person',
+              mode: row.sessionType === 'Virtual' ? 'virtual' : 'ilt',
+              // A virtual session's venue is its meeting link. That is never
+              // printed: it is a credential to a call, it goes stale, and on
+              // a document somebody keeps it would read as an address.
+              venue:
+                row.sessionType === 'Virtual'
+                  ? 'Online'
+                  : row.sessionVenue?.trim() || null,
+              date: row.sessionDate ?? null,
+              trainer: row.sessionTrainer ?? null,
+            }
+          : null,
     };
   }
 
@@ -431,10 +507,11 @@ export class CertificatesService {
 
     // Exactly one of the two is set (§3.4's CHECK constraint) — the journey
     // code format is picked the same way `verify()` tells the two apart.
+    const prefix = await this.repository.findCertificatePrefix(scope);
     const certificateCode =
       cert.journeyId !== null
-        ? this.generateJourneyCode(cert.journeyId, cert.userId)
-        : this.generateCode(cert.courseId, cert.userId);
+        ? this.generateJourneyCode(cert.journeyId, cert.userId, prefix)
+        : this.generateCode(cert.courseId, cert.userId, prefix);
     const issuedAt = new Date().toISOString();
     await this.repository.reinstate(scope, id, certificateCode, issuedAt);
 

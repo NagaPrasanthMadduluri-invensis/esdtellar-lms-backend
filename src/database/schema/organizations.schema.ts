@@ -17,6 +17,24 @@ export const organizations = pgTable(
     name: text('name').notNull(),
     slug: text('slug').notNull().unique(),
     logoUrl: text('logo_url'),
+    /**
+     * Replaces the built-in `EDS` at the front of a generated certificate
+     * code. NULL means "use the default" rather than "unset" — see 0038.
+     *
+     * Read only when a code is GENERATED. An issued code is printed on a
+     * document somebody holds and is what the public verify route takes, so
+     * changing this must never rewrite one.
+     */
+    certificatePrefix: text('certificate_prefix'),
+    /**
+     * Who signs this tenant's certificates — a name and the title printed
+     * under it. NULL is the normal case: the document then signs with the
+     * organisation's own name, as every certificate did before 0039. Read at
+     * render time, unlike the prefix, because it is presentation rather than
+     * something the verify route looks up.
+     */
+    certificateSignatoryName: text('certificate_signatory_name'),
+    certificateSignatoryTitle: text('certificate_signatory_title'),
     isPlatform: boolean('is_platform').notNull().default(false),
     isActive: integer('is_active').notNull().default(1),
     /**
