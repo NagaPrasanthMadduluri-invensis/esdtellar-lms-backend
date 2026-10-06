@@ -33,6 +33,7 @@ export interface RecipientRow {
   first_name: string | null;
   last_name: string | null;
   org_name: string | null;
+  org_logo_url: string | null;
   org_announcements: number;
   all_off: number;
   groups_off: string;
@@ -48,6 +49,7 @@ export interface NewOutboxRow {
   toEmail: string;
   toName: string | null;
   orgName: string | null;
+  orgLogoUrl: string | null;
   subject: string;
   body: string | null;
   link: string | null;
@@ -65,6 +67,7 @@ export interface OutboxRow {
   toEmail: string;
   toName: string | null;
   orgName: string | null;
+  orgLogoUrl: string | null;
   subject: string;
   body: string | null;
   link: string | null;
@@ -81,6 +84,7 @@ interface RawOutboxRow {
   to_email: string;
   to_name: string | null;
   org_name: string | null;
+  org_logo_url: string | null;
   subject: string;
   body: string | null;
   link: string | null;
@@ -113,6 +117,7 @@ export class EmailOutboxRepository {
              u.first_name,
              u.last_name,
              o.name                           AS org_name,
+             o.logo_url                       AS org_logo_url,
              COALESCE(o.email_announcements, 0) AS org_announcements,
              COALESCE(p.all_off, 0)           AS all_off,
              COALESCE(p.groups_off, '')       AS groups_off,
@@ -142,14 +147,14 @@ export class EmailOutboxRepository {
     const values = rows.map(
       (r) => sql`(${r.organizationId}, ${r.userId}, ${r.notificationId},
                   ${r.type}, ${r.policy}, ${r.toEmail}, ${r.toName},
-                  ${r.orgName}, ${r.subject}, ${r.body}, ${r.link},
-                  ${r.actorName}, ${r.dedupeKey})`,
+                  ${r.orgName}, ${r.orgLogoUrl}, ${r.subject}, ${r.body},
+                  ${r.link}, ${r.actorName}, ${r.dedupeKey})`,
     );
 
     const inserted = await this.db.all<{ id: string }>(sql`
       INSERT INTO email_outbox
         (organization_id, user_id, notification_id, type, policy,
-         to_email, to_name, org_name, subject, body, link,
+         to_email, to_name, org_name, org_logo_url, subject, body, link,
          actor_name, dedupe_key)
       VALUES ${sql.join(values, sql`, `)}
       ON CONFLICT (dedupe_key) DO NOTHING
@@ -170,13 +175,13 @@ export class EmailOutboxRepository {
     const values = rows.map(
       (r) => sql`(${r.organizationId}, ${r.userId}, ${r.notificationId},
                   ${r.type}, ${r.policy}, ${r.toEmail}, ${r.toName},
-                  ${r.orgName}, ${r.subject}, ${r.body}, ${r.link},
-                  ${r.actorName}, ${r.dedupeKey}, 'suppressed', ${reason})`,
+                  ${r.orgName}, ${r.orgLogoUrl}, ${r.subject}, ${r.body},
+                  ${r.link}, ${r.actorName}, ${r.dedupeKey}, 'suppressed', ${reason})`,
     );
     const inserted = await this.db.all<{ id: string }>(sql`
       INSERT INTO email_outbox
         (organization_id, user_id, notification_id, type, policy,
-         to_email, to_name, org_name, subject, body, link,
+         to_email, to_name, org_name, org_logo_url, subject, body, link,
          actor_name, dedupe_key, status, last_error)
       VALUES ${sql.join(values, sql`, `)}
       ON CONFLICT (dedupe_key) DO NOTHING
@@ -227,7 +232,8 @@ export class EmailOutboxRepository {
           FOR UPDATE SKIP LOCKED
        )
       RETURNING id, organization_id, user_id, type, policy, to_email, to_name,
-                org_name, subject, body, link, actor_name, attempts
+                org_name, org_logo_url, subject, body, link, actor_name,
+                attempts
     `);
     return rows.map((r) => ({
       id: Number(r.id),
@@ -238,6 +244,7 @@ export class EmailOutboxRepository {
       toEmail: r.to_email,
       toName: r.to_name,
       orgName: r.org_name,
+      orgLogoUrl: r.org_logo_url,
       subject: r.subject,
       body: r.body,
       link: r.link,

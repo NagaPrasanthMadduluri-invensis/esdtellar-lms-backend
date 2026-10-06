@@ -148,6 +148,10 @@ export class EmailOutboxService {
         policy,
         toEmail: r.email,
         toName: [r.first_name, r.last_name].filter(Boolean).join(' ') || null,
+        // Frozen with the name, for the reason 0040 gives: the queue drains
+        // later, and a logo changed in between must not silently re-brand
+        // mail about things that happened under the old one.
+        orgLogoUrl: r.org_logo_url,
         orgName: r.org_name,
         subject,
         body: input.body ?? null,

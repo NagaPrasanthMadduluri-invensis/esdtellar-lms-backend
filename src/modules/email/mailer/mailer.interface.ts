@@ -53,7 +53,7 @@ export class MailSendError extends Error {
 }
 
 export abstract class Mailer {
-  abstract readonly kind: 'log' | 'file' | 'ses';
+  abstract readonly kind: 'log' | 'file' | 'ses' | 'gmail';
   /** Why this driver cannot send, or null when it can. */
   abstract unavailableReason(): string | null;
   abstract send(mail: OutgoingMail): Promise<SendResult>;

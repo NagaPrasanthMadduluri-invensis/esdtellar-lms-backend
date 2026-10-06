@@ -114,6 +114,62 @@ else warn('EMAIL_ENABLED is not true', 'nothing is being queued or sent');
 
 ok('EMAIL_DRIVER', driver);
 
+if (driver === 'gmail') {
+  if (process.env.EMAIL_FROM) ok('EMAIL_FROM', 'set');
+  else bad('EMAIL_FROM is not set', 'Set it to the sending mailbox and restart.');
+
+  const hasServiceAccount = Boolean(process.env.GMAIL_SERVICE_ACCOUNT_KEY);
+  const hasRefresh =
+    process.env.GMAIL_CLIENT_ID &&
+    process.env.GMAIL_CLIENT_SECRET &&
+    process.env.GMAIL_REFRESH_TOKEN;
+
+  if (hasServiceAccount) {
+    ok('GMAIL_SERVICE_ACCOUNT_KEY', 'set — no refresh token needed, nothing to expire');
+    if (process.env.GMAIL_IMPERSONATE) ok('GMAIL_IMPERSONATE', 'set');
+    else
+      bad(
+        'GMAIL_IMPERSONATE is not set',
+        'A service account has no mailbox of its own — set the address it sends AS.',
+      );
+  } else if (hasRefresh) {
+    ok('GMAIL_REFRESH_TOKEN', 'set');
+    /*
+     * The single likeliest way this integration dies quietly, so it is a
+     * warning on every run rather than a line in a README. While the OAuth
+     * consent screen is in Testing, Google expires refresh tokens after 7
+     * days — mail stops a week after launch with invalid_grant.
+     */
+    warn(
+      'Using a refresh token',
+      'if the OAuth consent screen is still in "Testing", this expires after '
+        + '7 DAYS. Publish the app, or move to a service account.',
+    );
+  } else {
+    bad(
+      'No Gmail credential',
+      'A client id and secret alone cannot send. Run '
+        + '`npm run email:gmail-authorize` to mint a refresh token, or set '
+        + 'GMAIL_SERVICE_ACCOUNT_KEY.',
+    );
+  }
+
+  /*
+   * Gmail is a far smaller pipe than SES. Worth catching here rather than
+   * when a fan-out hits the wall halfway through.
+   */
+  const ceiling = Number(process.env.GMAIL_DAILY_CEILING ?? 2000);
+  const perDay = Number(process.env.EMAIL_MAX_PER_DAY ?? 200);
+  if (perDay > ceiling) {
+    warn(
+      `EMAIL_MAX_PER_DAY (${perDay}) is above the Gmail ceiling (${ceiling})`,
+      'Google will start refusing partway through a fan-out.',
+    );
+  } else {
+    ok('Daily cap', `${perDay} within the Gmail ceiling of ${ceiling}`);
+  }
+}
+
 if (driver === 'ses') {
   for (const name of ['EMAIL_FROM', 'SES_REGION']) {
     if (process.env[name]) ok(name, 'set');
