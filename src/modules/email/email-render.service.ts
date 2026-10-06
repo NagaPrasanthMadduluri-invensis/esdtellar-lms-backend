@@ -69,7 +69,18 @@ export class EmailRenderService {
    * times.
    */
   assertSendable(driverKind: string): string | null {
-    if (driverKind !== 'ses') return null;
+    /*
+     * Every driver that REALLY SENDS, not just SES.
+     *
+     * This read `driverKind !== 'ses'` when SES was the only real one, and
+     * adding the Gmail driver silently widened the hole it exists to close:
+     * mail would have gone out with every link pointing at localhost, which
+     * is exactly the unrecallable failure the message below describes.
+     *
+     * `log` and `file` are exempt because nothing leaves the machine —
+     * localhost links are correct for them.
+     */
+    if (driverKind === 'log' || driverKind === 'file') return null;
     const origin = this.origin;
     if (/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(origin)) {
       return (
@@ -102,6 +113,14 @@ export class EmailRenderService {
       paragraphs,
       cta,
       orgName: row.orgName,
+      /*
+       * Frozen on the row at enqueue (0040), never joined at send time.
+       *
+       * Absolutised through the same `absoluteUrl` the CTA uses: the stored
+       * value is a path, and a relative src in an email resolves against
+       * nothing at all — every client would show a broken image.
+       */
+      orgLogoUrl: row.orgLogoUrl ? this.absoluteUrl(row.orgLogoUrl) : null,
       footerExtraHtml,
       preheader: row.body ?? undefined,
     });

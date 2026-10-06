@@ -25,7 +25,8 @@
     "db:clean-orphan-scorm": "node scripts/clean-orphan-scorm.mjs",
     "db:seed-history": "node scripts/seed-history.mjs",
     "email:verify": "node scripts/verify-email.mjs",
-    "db:migrate:scorm-r2": "node scripts/migrate-scorm-to-r2.mjs"
+    "db:migrate:scorm-r2": "node scripts/migrate-scorm-to-r2.mjs",
+    "email:gmail-authorize": "node scripts/gmail-authorize.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",

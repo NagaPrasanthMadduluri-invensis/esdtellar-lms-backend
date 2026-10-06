@@ -12,6 +12,7 @@ import { FileMailerService } from './mailer/file-mailer.service';
 import { LogMailerService } from './mailer/log-mailer.service';
 import { Mailer } from './mailer/mailer.interface';
 import { SesMailerService } from './mailer/ses-mailer.service';
+import { GmailMailerService } from './mailer/gmail-mailer.service';
 
 /**
  * The email module.
@@ -50,6 +51,7 @@ import { SesMailerService } from './mailer/ses-mailer.service';
     LogMailerService,
     FileMailerService,
     SesMailerService,
+    GmailMailerService,
     {
       /**
        * The driver is chosen once, at boot, from `EMAIL_DRIVER`.
@@ -59,16 +61,25 @@ import { SesMailerService } from './mailer/ses-mailer.service';
        * should make the API send nothing, not fail to start.
        */
       provide: Mailer,
-      inject: [ConfigService, LogMailerService, FileMailerService, SesMailerService],
+      inject: [
+        ConfigService,
+        LogMailerService,
+        FileMailerService,
+        SesMailerService,
+        GmailMailerService,
+      ],
       useFactory: (
         config: ConfigService,
         log: LogMailerService,
         file: FileMailerService,
         ses: SesMailerService,
+        gmail: GmailMailerService,
       ): Mailer => {
         switch (config.get<string>('email.driver')) {
           case 'ses':
             return ses;
+          case 'gmail':
+            return gmail;
           case 'file':
             return file;
           default:

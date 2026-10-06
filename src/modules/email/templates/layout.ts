@@ -3,6 +3,7 @@ import {
   MAIL_BRAND as C,
   MONO_STACK,
   PRODUCT_BY,
+  PRODUCT_FULL,
   PRODUCT_NAME,
   groupStyle,
 } from '../email-brand';
@@ -55,6 +56,11 @@ export interface LayoutParts {
   callout?: { tone: 'accent' | 'success' | 'warning' | 'danger'; text: string };
   /** Who the recipient is, for the footer's "you are receiving this" line. */
   orgName?: string | null;
+  /**
+   * The organization's own mark, absolute. Null for most tenants, and the
+   * header falls back to the product wordmark rather than leaving a gap.
+   */
+  orgLogoUrl?: string | null;
   /** Rendered under the footer rule. Already-escaped HTML. */
   footerExtraHtml?: string;
   /** The preheader — the grey text a client shows beside the subject. */
@@ -160,6 +166,16 @@ export function renderLayout(parts: LayoutParts): {
           </p>`
     : '';
 
+  /*
+   * Built here rather than inline: a nested template literal inside the
+   * HTML one terminates the outer literal, which is the same trap SQL
+   * comments hit in BACKEND_STRUCTURE 10.26.
+   */
+  const logoTag = parts.orgLogoUrl
+    ? '<img src="' + escapeHtml(parts.orgLogoUrl) + '" alt="" height="28" '
+      + 'style="max-height:28px;width:auto;border:0;display:block;margin-bottom:8px;" />'
+    : '';
+
   const orgLine = parts.orgName
     ? `You are receiving this because you have a ${escapeHtml(PRODUCT_NAME)} account at ${escapeHtml(parts.orgName)}.`
     : `You are receiving this because you have a ${escapeHtml(PRODUCT_NAME)} account.`;
@@ -184,11 +200,26 @@ export function renderLayout(parts: LayoutParts): {
              style="width:600px;max-width:100%;border:1px solid ${C.line};background:${C.surface};">
 
         <!-- The navy chrome, matching the product's top bar. The byline takes
-             accent-soft because accent-blue on navy is unreadable (§10.1). -->
+             accent-soft because accent-blue on navy is unreadable (§10.1).
+
+             IT LEADS WITH THE ORGANIZATION, not the product. The mail is
+             about the learner's employer's training, sent by their employer;
+             the product is the byline underneath. A tenant with no name
+             recorded falls back to the product, so the header is never
+             blank.
+
+             The logo is an img with a max-height and no width, because a
+             tenant's mark is whatever shape they uploaded and a fixed box
+             would squash a wordmark. Outlook ignores max-height, which is
+             why the tag also carries a real height attribute — and why
+             the NAME is always rendered beside it rather than replaced by
+             it: an image that does not load, or is blocked by default as
+             most clients do, must not leave an unlabelled email. -->
         <tr>
           <td style="background:${C.navy};padding:18px 28px;">
-            <div style="font-family:${FONT_STACK};font-size:18px;font-weight:700;color:#FFFFFF;line-height:1.1;">${escapeHtml(PRODUCT_NAME)}</div>
-            <div style="font-family:${MONO_STACK};font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:${C.accentSoft};line-height:1.1;padding-top:4px;">${escapeHtml(PRODUCT_BY)}</div>
+            ${logoTag}
+            <div style="font-family:${FONT_STACK};font-size:18px;font-weight:700;color:#FFFFFF;line-height:1.1;">${escapeHtml(parts.orgName || PRODUCT_NAME)}</div>
+            <div style="font-family:${MONO_STACK};font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:${C.accentSoft};line-height:1.1;padding-top:4px;">${escapeHtml(parts.orgName ? PRODUCT_FULL : PRODUCT_BY)}</div>
           </td>
         </tr>
 

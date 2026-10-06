@@ -94,9 +94,20 @@ export interface AppConfig {
   email: {
     /** The off switch, and step one of any rollout. */
     enabled: boolean;
-    /** `log` prints, `file` writes .eml to disk, `ses` actually sends. */
-    driver: 'log' | 'file' | 'ses';
-    /** Must be an SES-verified identity, so it differs per environment. */
+    /**
+     * `log` prints, `file` writes .eml to disk, `ses` and `gmail` send.
+     *
+     * Two real drivers rather than one because they suit different
+     * deployments, not because either is a fallback for the other: SES is
+     * the high-volume path (50,000/day once out of the sandbox), Gmail
+     * sends as an actual mailbox a human can also read and reply from, and
+     * is capped far lower — see `gmail.dailyCeiling`.
+     */
+    driver: 'log' | 'file' | 'ses' | 'gmail';
+    /**
+     * The From address. Must be an SES-verified identity under `ses`, and
+     * the authorised mailbox (or an alias it may send as) under `gmail`.
+     */
     from: string;
     /**
      * Sends per second, and the hard stop per UTC day.
@@ -119,6 +130,48 @@ export interface AppConfig {
       region: string;
       /** Enables SES-side bounce and complaint suppression. */
       configurationSet: string;
+    };
+    /**
+     * Gmail API, sending as a real mailbox.
+     *
+     * TWO WAYS TO AUTHENTICATE, and the choice is about who has to be
+     * present:
+     *
+     *   - **refresh token** — works with an ordinary OAuth *web* client.
+     *     A human consents once as the sending mailbox and the server
+     *     trades the refresh token for an access token from then on. The
+     *     catch worth knowing before choosing it: while the OAuth consent
+     *     screen is in "Testing" publishing status Google expires refresh
+     *     tokens after SEVEN DAYS, so mail stops dead a week after launch
+     *     unless the app is published.
+     *   - **service account + domain-wide delegation** — no human, no
+     *     expiry. A Workspace super-admin authorises the service account's
+     *     client id for the `gmail.send` scope, and the server impersonates
+     *     `impersonate`. This is the right end state for an unattended
+     *     sender.
+     *
+     * Whichever is configured, the driver ends up with an access token and
+     * POSTs the same raw MIME to `users.messages.send`. No SDK: the token
+     * exchange and the send are each one HTTPS call, and `googleapis` is a
+     * very large dependency to add for two of them — the same reasoning
+     * that put SESv2 over HTTPS rather than SMTP.
+     */
+    gmail: {
+      clientId: string;
+      clientSecret: string;
+      refreshToken: string;
+      /** Service-account JSON key, as a path or the raw JSON. */
+      serviceAccountKey: string;
+      /** The mailbox a service account sends as. */
+      impersonate: string;
+      /**
+       * What Google will actually accept in a day, for the verifier to
+       * compare `maxPerDay` against. Workspace is ~2,000 recipients/day;
+       * a consumer gmail.com account is 500. Not enforced here — the
+       * outbox already has `maxPerDay` — it exists so a misconfiguration
+       * is reported before a fan-out discovers it.
+       */
+      dailyCeiling: number;
     };
   };
 }
@@ -218,7 +271,8 @@ export default (): AppConfig => ({
     // Defaults to `log` rather than `ses`: a deployment that enables email
     // and forgets the driver writes to a log, which is recoverable. The
     // opposite mistake is not.
-    driver: (process.env.EMAIL_DRIVER as 'log' | 'file' | 'ses') ?? 'log',
+    driver:
+      (process.env.EMAIL_DRIVER as 'log' | 'file' | 'ses' | 'gmail') ?? 'log',
     from: process.env.EMAIL_FROM ?? '',
     // The defaults are the SES SANDBOX figures, so a half-configured
     // production sends slowly rather than catastrophically.
@@ -236,6 +290,16 @@ export default (): AppConfig => ({
       // config, then the EC2 instance role. Bespoke SES_* names added
       // nothing and invited somebody to put a key on disk that the
       // instance role made unnecessary.
+    },
+    gmail: {
+      clientId: process.env.GMAIL_CLIENT_ID ?? '',
+      clientSecret: process.env.GMAIL_CLIENT_SECRET ?? '',
+      refreshToken: process.env.GMAIL_REFRESH_TOKEN ?? '',
+      serviceAccountKey: process.env.GMAIL_SERVICE_ACCOUNT_KEY ?? '',
+      impersonate: process.env.GMAIL_IMPERSONATE ?? '',
+      // Workspace's external-recipient ceiling. A consumer gmail.com
+      // account is 500; set the var if this ever sends from one.
+      dailyCeiling: Number(process.env.GMAIL_DAILY_CEILING ?? 2000),
     },
   },
 });
