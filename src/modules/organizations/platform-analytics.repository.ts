@@ -173,6 +173,9 @@ export class PlatformAnalyticsRepository {
         o.name       AS name,
         o.slug       AS slug,
         o.logo_url   AS logo_url,
+        o.certificate_prefix AS certificate_prefix,
+        o.certificate_signatory_name  AS certificate_signatory_name,
+        o.certificate_signatory_title AS certificate_signatory_title,
         o.is_platform AS is_platform,
         o.is_active  AS is_active,
         o.created_at AS created_at,
@@ -257,6 +260,9 @@ export interface OrganizationStatsRow {
   name: string;
   slug: string;
   logo_url: string | null;
+  certificate_prefix: string | null;
+  certificate_signatory_name: string | null;
+  certificate_signatory_title: string | null;
   is_platform: boolean;
   is_active: number;
   created_at: string;

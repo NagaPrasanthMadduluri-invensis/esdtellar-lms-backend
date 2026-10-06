@@ -221,10 +221,21 @@ export class OrganizationsRepository {
       plan?: string | null;
       billingCycle?: string | null;
       notes?: string | null;
+      logoUrl?: string | null;
+      certificatePrefix?: string | null;
+      certificateSignatoryName?: string | null;
+      certificateSignatoryTitle?: string | null;
     },
   ): Promise<OrganizationRow | null> {
     const values: Record<string, unknown> = {};
     if (input.name !== undefined) values.name = input.name;
+    if (input.logoUrl !== undefined) values.logoUrl = input.logoUrl;
+    if (input.certificatePrefix !== undefined)
+      values.certificatePrefix = input.certificatePrefix;
+    if (input.certificateSignatoryName !== undefined)
+      values.certificateSignatoryName = input.certificateSignatoryName;
+    if (input.certificateSignatoryTitle !== undefined)
+      values.certificateSignatoryTitle = input.certificateSignatoryTitle;
     if (input.isActive !== undefined) values.isActive = input.isActive;
     for (const key of [
       'industry', 'region', 'contactName', 'contactEmail', 'contactPhone',

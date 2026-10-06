@@ -201,6 +201,12 @@ export class OrganizationsService implements OnModuleInit {
         slug: row.slug,
         industry: row.industry,
         region: row.region,
+        // Certificate branding. Both are writable by this tenant, unlike the
+        // commercial fields below them, which are returned read-only.
+        logo_url: row.logo_url ?? null,
+        certificate_prefix: row.certificate_prefix ?? null,
+        certificate_signatory_name: row.certificate_signatory_name ?? null,
+        certificate_signatory_title: row.certificate_signatory_title ?? null,
         created_at: row.created_at,
 
         /** Read-only here. Written only by `@PlatformAdmin()` routes. */
@@ -234,6 +240,10 @@ export class OrganizationsService implements OnModuleInit {
       name: dto.name,
       industry: dto.industry,
       region: dto.region,
+      logoUrl: dto.logo_url,
+      certificatePrefix: dto.certificate_prefix,
+      certificateSignatoryName: dto.certificate_signatory_name,
+      certificateSignatoryTitle: dto.certificate_signatory_title,
     });
     return this.getOwnOrganization(scope);
   }

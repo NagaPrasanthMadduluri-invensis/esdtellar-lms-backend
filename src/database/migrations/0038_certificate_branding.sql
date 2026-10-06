@@ -1,0 +1,47 @@
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0038 — A tenant brands its own certificates
+--
+-- The certificate a learner downloads is the one artefact of this product
+-- that leaves the building. It carries the EMPLOYER's name, not Edstellar's
+-- (§10.23 argues that at length), and until now that was the only thing a
+-- tenant could influence about it: the mark beside the name was a hardcoded
+-- SVG, and every code began with a hardcoded `EDS-`.
+--
+-- Two columns close that.
+--
+-- ## certificate_prefix
+--
+-- Replaces the literal `EDS` at the front of a generated code, so Invensis
+-- issues `INV-19-18-…` rather than `EDS-19-18-…`.
+--
+-- NULLABLE ON PURPOSE, AND NULL IS NOT "UNSET". It means "use the built-in
+-- default", which is still `EDS`. Backfilling every existing organization
+-- with 'EDS' would look identical today and would quietly freeze the default
+-- for tenants that never expressed a preference — so when the default
+-- changes, the rows that chose nothing follow it and the rows that chose
+-- something do not. That distinction is only expressible as NULL.
+--
+-- ## THE PREFIX DOES NOT APPLY RETROACTIVELY, AND MUST NOT
+--
+-- A certificate code is printed on a document somebody already holds, and
+-- it is exactly what `GET /api/certificates/verify/:code` takes. Rewriting
+-- issued codes would invalidate every certificate already in circulation —
+-- the holder's copy would verify as "not found" with nothing to explain it.
+-- So this column is read when a code is GENERATED and never afterwards, and
+-- the admin form says so above the field.
+--
+-- Nothing in the codebase parses a code (verification is a plain string
+-- lookup, checked before this shipped), so a tenant changing its prefix
+-- cannot break the lookup for old or new certificates.
+--
+-- ## logo_url
+--
+-- The column already existed and nothing wrote to it. No DDL here; it is
+-- named because this migration is what gives it a reader and a writer, and
+-- a search for "where did the certificate logo come from" should land here.
+-- It holds a path produced by the image upload — public, anonymously
+-- fetchable, magic-number checked and never an SVG (§10.10).
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE organizations
+  ADD COLUMN IF NOT EXISTS certificate_prefix text;
