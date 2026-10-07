@@ -1197,6 +1197,14 @@ invalidates every outstanding one for that user. A successful reset bumps
 believe was compromised, and finding the attacker still signed in, has gained
 nothing.
 
+**A token knows what it was issued FOR** — `password_reset_tokens.purpose`,
+`'welcome'` or `'reset'` (0045, default `'reset'`). Consuming a WELCOME link
+used to send the "your password was changed — somebody else may have access"
+alert to a person who had just chosen their first password: every new user,
+alarmed on day one. A welcome link now skips that alert, the check route
+returns `purpose`, and the page says "Your password is set" instead of
+"changed… every session ended". A reset still sends the alert.
+
 **Three refusals, three sentences** — not found, already used, expired —
 because the useful next step differs. The page checks the link BEFORE
 offering the form, so an expired link is not discovered after typing a
@@ -2424,6 +2432,22 @@ the org exists and the account does not, and no compensating delete to get
 wrong. Slug and email conflicts are checked BEFORE the write, so the caller
 gets a sentence rather than a constraint violation.
 
+**The first admin is WELCOMED, and the password is optional** (2026-10-07).
+`NewTenantAdminDto.password` may be omitted: the account then gets an
+unguessable password nobody holds, and the admin chooses their own from the
+welcome email's set-password link — `PasswordResetService.sendWelcome(..,
+'admin')`, the same path a learner's takes. A typed password still works at
+once, and the email still goes. `PasswordResetService` moved into its own
+`PasswordResetModule` (imports only `EmailModule`) because AuthModule imports
+OrganizationsModule, so the reverse import was a cycle; AuthModule re-exports
+it, so its existing importers are unchanged.
+
+**Provisioning seeds the three built-in feedback forms.** 0034 seeds them for
+every organization, but only at BOOT, so a tenant provisioned afterwards had
+none until the next restart — every course resolved to no form and the admin's
+Survey / Feedback page was empty. `SurveysService.seedSystemTemplates(orgId)`
+runs the same two statements for the one org; keep it in step with 0034.
+
 `@IsDefined()` on the nested `admin` block is load-bearing:
 `@ValidateNested()` alone skips an undefined value, so a body with no `admin`
 key passed validation and the service then dereferenced `dto.admin.email` —
@@ -3572,6 +3596,19 @@ rather than seeding on top:
 npm run db:reset-to-admin -- --commit
 npm run db:seed -- --confirm
 ```
+
+**`scripts/wipe-to-superadmin.mjs` is the clean start for production, and
+`db:reset-to-admin` must NOT be used for it.** The older script truncates
+`roles`, and `users.role_id` references `roles`, so its `TRUNCATE ... CASCADE`
+empties `users` too — every account, the superadmin included. It also keeps
+every tenant's admins. The new script keeps the platform organization, its
+roles and its admin accounts; removes every other organization and user; and
+empties every other table. It refuses if any kept table has a foreign key
+into a truncated one (checked from the live catalogue, so a schema change
+cannot quietly widen it), runs in one transaction with a post-check before
+COMMIT, and is dry-run by default. Run on 2026-10-07, locally and in
+production, after a `pg_dump` (production's is in `/home/ubuntu/db-backups/`).
+It does not touch uploaded files or the pg-boss schema.
 
 `npm run db:seed-history` is the third data script and the only destructive one
 that targets a SINGLE organization — see §10.12. Dry-run by default like the

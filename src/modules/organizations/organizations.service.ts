@@ -15,6 +15,9 @@ import { OrgOptionsService } from '@/modules/org-options/org-options.service';
 import { createOrgScope, type OrgScope } from '@/database/org-scope';
 
 import type { UpdateOrgSettingsDto } from './dto/org-settings.dto';
+import { PasswordResetService } from '@/modules/auth/password-reset.service';
+import { SurveysService } from '@/modules/surveys/surveys.service';
+import { randomBytes } from 'node:crypto';
 import type {
   CreateOrganizationDto,
   UpdateOrganizationDto,
@@ -92,6 +95,10 @@ export class OrganizationsService implements OnModuleInit {
     private readonly seats: SeatsService,
     /** Branch locations and job levels for a new tenant (`0031`). */
     private readonly orgOptions: OrgOptionsService,
+    /** The first admin's welcome email and set-password link. */
+    private readonly passwordReset: PasswordResetService,
+    /** The three built-in feedback forms every tenant needs (`0034`). */
+    private readonly surveys: SurveysService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -311,7 +318,12 @@ export class OrganizationsService implements OnModuleInit {
           firstName: dto.admin.firstName,
           lastName: dto.admin.lastName,
           email: dto.admin.email,
-          passwordHash: await hashPassword(dto.admin.password),
+          // No password given: an unguessable one nobody holds, so the
+          // account cannot be signed into until its owner chooses their own
+          // from the welcome email's link.
+          passwordHash: await hashPassword(
+            dto.admin.password ?? randomBytes(32).toString('base64url'),
+          ),
         },
       );
 
@@ -370,6 +382,32 @@ export class OrganizationsService implements OnModuleInit {
       await this.orgOptions.setJobLevels(created.id, {
         job_levels: dto.jobLevels,
       });
+    }
+
+    /*
+     * The three built-in feedback forms. Migration 0034 seeds them for every
+     * organization — but only when the API BOOTS, so a tenant provisioned
+     * afterwards had none until the next restart: every course resolved to
+     * no form, and the admin's Survey / Feedback page was empty.
+     */
+    await this.surveys.seedSystemTemplates(created.id);
+
+    /*
+     * The first admin's welcome email, with a set-password link — the same
+     * path a learner's takes. Sent whether or not a password was typed, as
+     * for a learner created with a temporary one. Best-effort: sendWelcome
+     * never throws, so a mail failure cannot undo the provisioning.
+     */
+    if (owner) {
+      await this.passwordReset.sendWelcome(
+        {
+          id: owner.id,
+          email: dto.admin.email,
+          organizationId: created.id,
+          firstName: dto.admin.firstName,
+        },
+        'admin',
+      );
     }
 
     this.logger.log(

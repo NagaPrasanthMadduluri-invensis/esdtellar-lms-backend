@@ -62,10 +62,16 @@ export class NewTenantAdminDto {
   @MaxLength(160) @Transform(lower)
   email!: string;
 
-  /** Same floor the admin user form uses, so one rule across both screens. */
+  /**
+   * OPTIONAL. Omitted, the admin chooses their own from the welcome email's
+   * set-password link — the platform never has to know or pass on a
+   * password. Given, it works at once AND the welcome email still goes, the
+   * same as a learner created with a temporary password.
+   */
+  @IsOptional()
   @IsString() @MinLength(6, { message: 'password must be at least 6 characters' })
   @MaxLength(200)
-  password!: string;
+  password?: string;
 }
 
 export class CreateOrganizationDto {
