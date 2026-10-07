@@ -235,6 +235,29 @@ export class UsersRepository {
    * admin pass the check and then hit the database's unique constraint — a 500
    * where the caller expects a clean 409.
    */
+  /**
+   * Which of these addresses are already registered, in ONE query.
+   *
+   * DELIBERATELY NOT org-scoped, exactly like `emailExists` beside it: an
+   * email is the global login identity, so a learner cannot be created
+   * with an address another tenant already uses. Scoping this would let
+   * two organizations register the same address and the second one could
+   * never sign in — the row would exist and the login lookup would find
+   * the first.
+   *
+   * Returns lower-cased values, because the caller compares against a
+   * lower-cased DTO field and a Set comparison does no normalising of its
+   * own.
+   */
+  async existingEmails(emails: string[]): Promise<Set<string>> {
+    if (emails.length === 0) return new Set();
+    const rows = await this.db
+      .select({ email: users.email })
+      .from(users)
+      .where(inArray(users.email, emails));
+    return new Set(rows.map((r) => r.email.toLowerCase()));
+  }
+
   async emailExists(email: string, excludeId?: number): Promise<boolean> {
     const where = excludeId
       ? and(eq(users.email, email), ne(users.id, excludeId))

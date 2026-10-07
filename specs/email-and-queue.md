@@ -1,13 +1,35 @@
 # Spec: Transactional email, on a Postgres-backed outbox
 
-> **Status: NOT APPROVED. Nothing in here is built.** Written 2026-10-01,
-> awaiting the owner's go-ahead.
+> **Status: BUILT AND IN PRODUCTION since 2026-10-06.** This file is the
+> PLAN as it was approved, kept for its reasoning. Read
+> `BACKEND_STRUCTURE.md` §10.30 and §10.32 for what actually shipped.
 >
-> Schema changes in §3 are a **human checkpoint** — nothing there auto-merges.
+> **ONE locked decision changed during the build, and this document was not
+> rewritten to hide it: the transport is GMAIL, not Amazon SES.** The owner
+> supplied Gmail API credentials for `spectralms@edstellar.com` instead, so
+> `EMAIL_DRIVER=gmail` is what runs in production and in development. Every
+> mention of SES below — the driver, `SES_REGION`, the configuration set,
+> the typed exceptions, the bounce/complaint feedback loop — describes a
+> path that was built and is NOT the one in use.
 >
-> Four decisions are locked by the owner and are not open for re-litigation by
-> whoever implements this: **Amazon SES**, **all 25 notification types**,
-> **pg-boss on the existing Postgres**, **a separate pm2 worker process**.
+> The architecture around it is unchanged and was worth the writing: the
+> outbox is still the message store, pg-boss is still only the clock, the
+> worker is still a separate pm2 process, and the retry classification
+> still has the same three shapes. Only the thing at the far end differs.
+>
+> **The one consequence that bites.** SES feeds bounces and complaints back
+> through SNS, which is what `POST /api/email/ses-events` consumes and what
+> fills the suppression list. Gmail does not, and that endpoint is dead
+> under this driver — so `sent` means Gmail ACCEPTED the message and
+> nothing downstream of that reaches us. The admin Email Delivery page
+> (§10.32) therefore says "Handed to Gmail" and never "Delivered", and
+> wiring Gmail's own bounce handling is the open work.
+>
+> Schema changes in §3 were a **human checkpoint** and have been applied.
+>
+> Four decisions were locked by the owner: **Amazon SES** (superseded —
+> Gmail), **all 25 notification types**, **pg-boss on the existing
+> Postgres**, **a separate pm2 worker process**.
 
 ---
 

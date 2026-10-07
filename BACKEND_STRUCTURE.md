@@ -540,6 +540,17 @@ paragraphs. That is courtesy; this is enforcement.
 | `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
 | `ORG_NAME` | no (`Edstellar`) | Name of the first real organization created by `db:migrate:tenancy` |
 | `ORG_SLUG` | no (`edstellar`) | Organization `db:seed` seeds into |
+| `EMAIL_ENABLED` | no (`false`) | Master switch. False writes no outbox rows at all |
+| `EMAIL_DRIVER` | no (`log`) | `log` · `file` · `ses` · `gmail`. **Production runs `gmail`** |
+| `EMAIL_FROM` / `EMAIL_FROM_NAME` / `EMAIL_REPLY_TO` | for sending | The envelope. `spectralms@edstellar.com` in production |
+| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REFRESH_TOKEN` | for `gmail` | OAuth. The refresh token expires in 7 days while the consent screen is in "Testing" |
+| `GMAIL_SERVICE_ACCOUNT_KEY` | alternative | Domain-wide delegation instead of a refresh token — does not expire |
+| `SES_REGION` / `SES_CONFIGURATION_SET` | for `ses` | Built, not in use |
+| `EMAIL_RATE_PER_SECOND` | no (1) | Worker pacing. One send, then sleep |
+| `EMAIL_MAX_PER_DAY` | no (200) | **2000 in production** — which is Gmail's own Workspace ceiling, so there is no headroom left |
+| `EMAIL_BATCH_SIZE` | no (25) | Rows claimed per drain tick |
+| `EMAIL_ALLOWLIST` | no (empty) | Comma-separated. Non-empty = a dry run: every other row is written `suppressed/not_allowlisted` and counted. **Empty in production — real learners are emailed** |
+| `EMAIL_MAX_RECIPIENTS_PER_NOTIFY` | no (200) | One notification above this is SKIPPED, not truncated |
 
 The R2 variables are **not** boot-required: without them the API starts, logs a
 warning, and returns 503 from the video routes only. `S3_API_ENDPOINT` from the
@@ -1040,12 +1051,31 @@ exist to prevent. The layout is tables and inline hexes because Gmail strips
 of the palette for that reason, and moves with `globals.css` like
 `lib/brand.js` does.
 
-**Three mailer drivers** — `log` (default), `file` (writes `.eml`), `ses` —
-mirroring `SCORM_STORAGE_DRIVER`, so the whole feature is exercisable with no
-AWS account. SESv2 over HTTPS rather than SMTP: the box is EC2, so it can use
-an instance role and hold no credential on disk, `SendEmail` returns the
-`MessageId` that SNS events correlate on, and the typed exceptions are what
-make the retry classification possible.
+**FOUR mailer drivers, and `gmail` is the one that runs.** `log` (the
+default), `file` (writes `.eml`), `ses` and `gmail`, mirroring
+`SCORM_STORAGE_DRIVER` so the whole feature is exercisable with no account
+anywhere. Production and development both set `EMAIL_DRIVER=gmail`, sending
+as `spectralms@edstellar.com` over the Gmail API.
+
+`specs/email-and-queue.md` locked SES and the owner then supplied Gmail
+credentials instead; the SES driver is built, tested and **not in use**. The
+architecture around it did not change — outbox as the message store, pg-boss
+as the clock, a separate worker, the same three retry shapes.
+
+**The consequence worth knowing is the feedback loop.** SESv2 returns a
+`MessageId` that SNS bounce and complaint events correlate on, which is what
+`POST /api/email/ses-events` consumes and what fills the suppression list.
+**Gmail gives us none of that**, so that endpoint is dead under this driver
+and `sent` means Gmail ACCEPTED the message — not that it arrived. §10.32
+records why the admin page therefore says "Handed to Gmail" and never
+"Delivered". Wiring Gmail's own bounce handling is the open work, and until
+it exists the suppression list only ever grows by hand.
+
+Gmail auth is a refresh token (`scripts/gmail-authorize.mjs`) or a service
+account with domain-wide delegation. **The refresh token expires after SEVEN
+DAYS while the OAuth consent screen is in "Testing"** — the single likeliest
+way this integration fails quietly, and `npm run email:verify` warns about it
+on every run.
 
 **Throttling is not a message failure.** A `ThrottlingException` returns the
 row to `pending` WITHOUT consuming an attempt; counting it would burn a good
