@@ -533,6 +533,35 @@ export class UsersService {
     // with a generic reason and the real cause never shown.
     const learnerRole = await this.roles.roleByKey(scope, 'learner');
 
+    /*
+     * THE MANAGER COLUMN, resolved ONCE for the whole file.
+     *
+     * The spreadsheet carries an EMAIL, because that is the only identifier
+     * an admin can type that is guaranteed to mean one person — a name
+     * column would attach somebody's reports to the wrong Priya and say
+     * nothing about it. The browser resolves the same address back to a NAME
+     * in the preview, so what the admin confirms is the human one.
+     *
+     * One query for every distinct address in the file, not one per row
+     * (§7.1): a 500-row import naming forty managers costs one round trip.
+     * `activeByEmails` carries the organization in its predicate, so an
+     * address belonging to another tenant simply resolves to nothing.
+     */
+    const managerEmails = [
+      ...new Set(
+        dto.users
+          .map((row) => row.manager?.trim().toLowerCase())
+          .filter((email): email is string => !!email),
+      ),
+    ];
+    const managerByEmail = new Map<string, number>();
+    for (const found of await this.repository.activeByEmails(
+      scope.organizationId,
+      managerEmails,
+    )) {
+      managerByEmail.set(found.email.toLowerCase(), found.id);
+    }
+
     for (const [index, row] of dto.users.entries()) {
       const rowNum = index + 1;
       const email = row.email ?? '';
@@ -610,8 +639,45 @@ export class UsersService {
         continue;
       }
 
+      /*
+       * BLANK IS A VALID ROW and always will be: most learners have no
+       * manager recorded, and an import that refused them would be an
+       * import nobody could use.
+       *
+       * An address that does not resolve is a different thing and FAILS the
+       * row. The admin typed it, so it was meant; importing the learner
+       * without it would leave somebody their manager cannot see in Team
+       * Learning, discovered weeks later by the manager wondering where
+       * their report went. Same instinct as the location and job level
+       * checks above — name what is wrong while the CSV is still open.
+       */
+      let managerId: number | null = null;
+      const managerEmail = row.manager?.trim().toLowerCase() ?? '';
+      if (managerEmail) {
+        if (managerEmail === email) {
+          failed.push({
+            row: rowNum,
+            email,
+            reason: 'A person cannot be their own manager',
+          });
+          continue;
+        }
+        managerId = managerByEmail.get(managerEmail) ?? null;
+        if (managerId === null) {
+          failed.push({
+            row: rowNum,
+            email,
+            reason:
+              `No active user with the email ${managerEmail} in this `
+              + 'organization. Add the manager first, or list them higher up '
+              + 'in this file, or leave the column blank.',
+          });
+          continue;
+        }
+      }
+
       try {
-        await this.repository.createLearner(scope, {
+        const createdUser = await this.repository.createLearner(scope, {
           employeeId: row.employee_id ?? null,
           firstName: row.first_name,
           lastName: row.last_name,
@@ -621,10 +687,21 @@ export class UsersService {
           location,
           jobRole: row.job_role ?? null,
           jobLevel,
+          managerId,
           roleId: learnerRole.id,
           role: learnerRole.portal,
         });
         created++;
+        /*
+         * A person created by THIS file can be named as a manager by a row
+         * BELOW them, which is how an admin onboards a team in one upload.
+         *
+         * A cycle is impossible by construction rather than by a check: a
+         * manager has to already exist at the moment their report's row is
+         * processed, and rows are processed in order. A pair that names each
+         * other simply fails the first row, and then the second.
+         */
+        if (createdUser?.id) managerByEmail.set(email, createdUser.id);
       } catch {
         failed.push({ row: rowNum, email, reason: 'Database error — could not insert' });
       }

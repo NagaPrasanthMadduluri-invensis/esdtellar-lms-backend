@@ -600,6 +600,63 @@ Update this table with every module you move.
 | forgot password (request, check, reset) | 3 | `server/src/modules/auth` |
 | scheduled reminders (`course_due_soon`) — cron, no HTTP | 0 | `server/src/modules/reminders` |
 
+### 10.31 The bulk import learned a reporting line
+
+`users.manager_id` has existed since `0033`, and the only way to set it was
+the Add User form one person at a time — so an admin onboarding forty people
+from a spreadsheet got forty learners with no manager and no Team Learning
+for anybody above them. **No migration, no new endpoint, no new permission:**
+one optional column on `BulkUserRowDto`, one repository read, and a column in
+the template.
+
+**The file carries an EMAIL; the browser shows a NAME.** A spreadsheet cannot
+hold a `users.id`, and two people in one organization can share a name — a
+name column would attach somebody's reports to the wrong Priya and say nothing
+about it. An address is the login identity and is unique. So the admin types
+the unambiguous thing and the upload preview resolves it back to the human one
+before anything is written, which is where a wrong address is actually
+noticed. The template's instruction row says EMAIL ADDRESS in those words,
+because it is the one column whose heading does not explain itself.
+
+**`activeByEmails` is ONE query for the whole file** (§7.1), keyed by the
+distinct addresses in it: a 500-row upload naming forty managers costs one
+round trip, not five hundred. `organization_id` is in the predicate, so an
+address belonging to another tenant resolves to nothing at all — the manager
+column cannot become a cross-tenant write through a spreadsheet, and the
+caller cannot tell "no such person" from "not yours". ACTIVE only, matching
+the picker in the Add User form: a deactivated account cannot sign in to read
+Team Learning, so pointing reports at one records a line nobody can follow.
+
+**Blank is a valid row and always will be.** Most learners have no manager
+recorded, and an import that refused them would be an import nobody could use.
+
+**An address that resolves to nobody FAILS the row**, with the reason naming
+it. The admin typed it, so it was meant; importing the learner without it
+would leave somebody their manager cannot see, discovered weeks later by the
+manager wondering where their report went. Same instinct as the location and
+job-level checks beside it — name what is wrong while the CSV is still open.
+
+**A person created by the file can be named as a manager by a row BELOW
+them**, which is how a team is onboarded in one upload: each successful insert
+is added to the lookup. A cycle is impossible by CONSTRUCTION rather than by a
+check — a manager must already exist at the moment their report's row is
+processed, and rows are processed in order, so a pair naming each other simply
+fails the first row and then the second. That is why `assertManager`'s walk is
+not needed here; self-reference still is, and is refused with its own
+sentence.
+
+Verified through the real admin UI with a six-row file: 4 created, 2 failed,
+and the two reporting lines (one to an existing manager, one to a learner
+created three rows earlier) confirmed in the database.
+
+**Known and NOT fixed here: a bulk-created learner gets no welcome email.**
+`UsersService.create` calls `passwordReset.sendWelcome`; `bulkCreate` does
+not, so forty imported learners hold `DEFAULT_BULK_PASSWORD` and have no way
+to learn it. Measured — zero outbox rows for the four created above. It is
+left out deliberately rather than overlooked: a 500-row import is a 500-email
+fan-out, which is a decision about volume and timing (§10.30), not a line to
+add quietly to a loop.
+
 ### 10.27 What KIND of learning an hour came from
 
 My Progress splits a learner's hours three ways — courses, learning paths,
