@@ -1,0 +1,38 @@
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0041 — The facts an email states about the thing that happened
+--
+-- The emails said WHAT they were about and almost nothing else: "New
+-- course: Leadership & Communication", then "Open My Courses to start".
+-- A learner reading it could not tell whether the course sits inside a
+-- learning path, whether there is an assessment at the end, when it is
+-- due, or whether somebody assigned it or they picked it up themselves.
+-- All four change what they would do next.
+--
+-- `facts` is a small ordered list of label/value pairs — the layout already
+-- renders one as a bordered panel and simply never received any.
+--
+-- ## FROZEN AT ENQUEUE, like to_email, org_name and org_logo_url before it
+--
+-- The obvious alternative is to look these up when the worker sends. It
+-- would be less code and it would be wrong, for the reason 0037 and 0040
+-- each give: the queue drains minutes to hours later. A course moved into
+-- a learning path, or an assessment added, between the write and the send
+-- would produce an email describing a state that did not exist when the
+-- thing happened. A queued message is a record of what we decided to say,
+-- not a template to re-evaluate.
+--
+-- ## jsonb, with the usual caveat stated rather than discovered
+--
+-- These are display strings composed by whichever service fired the
+-- notification. They are NOT queryable as structured data and nothing
+-- should start reporting on them — the same trade `service_requests.answers`
+-- records (BACKEND_STRUCTURE 10.14). Anything that needs reporting on must
+-- be promoted to a real column first.
+--
+-- Nullable, and null is the common case: a type that has nothing extra to
+-- say renders no panel at all, which is correct. No backfill, and every
+-- queued row keeps rendering exactly as it does today.
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE email_outbox
+  ADD COLUMN IF NOT EXISTS facts jsonb;

@@ -52,6 +52,23 @@ export interface NotificationTypeDef {
    * and a boolean collapses them.
    */
   email: EmailPolicy;
+  /**
+   * The words on the email's button.
+   *
+   * Per type because "Open in Spectra LMS" tells the reader nothing about
+   * what happens next, and a button that does not name its destination is
+   * the one people do not press. "Start learning" and "View my certificate"
+   * are different promises and should not share a label.
+   */
+  cta: string;
+  /**
+   * One optional line under the button, saying why this matters.
+   *
+   * Deliberately absent on the administrative and commercial types: an
+   * encouraging sentence under "Seat request raised" reads as filler, and
+   * filler on every email is how people stop reading any of them.
+   */
+  aspiration?: string;
 }
 
 /** @see NotificationTypeDef.email */
@@ -65,6 +82,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'BookOpen',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'Start learning',
+    aspiration: 'Every course you finish adds to your learning hours and your record.',
   },
   journey_assigned: {
     label: 'New learning path assigned',
@@ -72,6 +91,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'Map',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'View the learning path',
+    aspiration: 'A path is a sequence somebody chose — each step unlocks the next.',
   },
   course_completed: {
     label: 'Course completed',
@@ -79,6 +100,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'CheckCircle2',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'See my progress',
+    aspiration: 'That is one more course on your record, and the hours to go with it.',
   },
   course_due_soon: {
     label: 'Course due soon',
@@ -86,6 +109,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'CalendarClock',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'Continue the course',
+    aspiration: 'A short sitting now is easier than a long one on the deadline.',
   },
 
   /* Self-enrolment opened (0035). TWO types rather than one "something is
@@ -100,6 +125,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'BookOpen',
     audience: ['learner'],
     email: 'announcement',
+    cta: 'Add to my learning',
+    aspiration: 'Nothing is added to your courses until you choose it.',
   },
   session_open_enrolment: {
     label: 'A session is open for booking',
@@ -107,6 +134,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'CalendarPlus',
     audience: ['learner'],
     email: 'announcement',
+    cta: 'Book my place',
+    aspiration: 'Places are limited and are taken in the order people book.',
   },
 
   /* ── Recognition ── */
@@ -116,6 +145,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'Award',
     audience: ['learner'],
     email: 'announcement',
+    cta: 'See my achievements',
+    aspiration: 'Badges recognise consistent work rather than one good day.',
   },
   certificate_issued: {
     label: 'Certificate issued',
@@ -123,6 +154,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'Award',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'View my certificate',
+    aspiration: 'Yours to download, keep and share — it does not expire.',
   },
   leaderboard_rank: {
     label: 'Leaderboard movement',
@@ -130,6 +163,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'Trophy',
     audience: ['learner'],
     email: 'announcement',
+    cta: 'View the leaderboard',
+    aspiration: 'Points come from lessons finished and assessments passed.',
   },
 
   /* ── Sessions ──
@@ -143,6 +178,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'CalendarCheck',
     audience: ['trainer'],
     email: 'transactional',
+    cta: 'View the session',
   },
   session_trainer_set: {
     label: 'Trainer assigned to a session',
@@ -150,6 +186,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'UserCheck',
     audience: ['admin', 'learner'],
     email: 'transactional',
+    cta: 'View the session',
   },
   session_enrolled: {
     label: 'You are booked on a session',
@@ -157,6 +194,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'CalendarCheck',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'See my sessions',
+    aspiration: 'Your trainer marks attendance — that is what credits the training.',
   },
   session_cancelled: {
     label: 'Session cancelled',
@@ -164,6 +203,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'CalendarX',
     audience: ['learner', 'trainer'],
     email: 'transactional',
+    cta: 'See my sessions',
   },
   /* The one notification in this catalogue that must carry NO actor. Every
      other type names who caused it; naming the author here would undo the
@@ -174,6 +214,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'MessageSquare',
     audience: ['trainer'],
     email: 'transactional',
+    cta: 'Read the feedback',
+    aspiration: 'Feedback is anonymous: three ratings, never a name.',
   },
 
   /* Course feedback (0034). The learner IS named, unlike
@@ -187,6 +229,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'MessageSquare',
     audience: ['admin'],
     email: 'transactional',
+    cta: 'Read the feedback',
   },
 
   /* External certifications (0036). Four types because four different
@@ -200,6 +243,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'Award',
     audience: ['learner', 'admin'],
     email: 'transactional',
+    cta: 'Review the claim',
   },
   external_cert_ready: {
     label: 'External certification awaiting final approval',
@@ -207,6 +251,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'Award',
     audience: ['admin'],
     email: 'transactional',
+    cta: 'Review the claim',
   },
   external_cert_approved: {
     label: 'External certification approved',
@@ -214,6 +259,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'Award',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'See my courses',
+    aspiration: 'It now counts towards your learning hours and your completed courses.',
   },
   external_cert_rejected: {
     label: 'External certification not approved',
@@ -221,6 +268,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'Award',
     audience: ['learner'],
     email: 'transactional',
+    cta: 'View the details',
   },
 
   /* ── A manager and their reports ── */
@@ -230,6 +278,8 @@ export const NOTIFICATION_TYPES = {
     icon: 'Bell',
     audience: ['learner'],
     email: 'announcement',
+    cta: 'Continue learning',
+    aspiration: 'Picking it back up takes less time than starting over.',
   },
 
   /* ── The admin's org ── */
@@ -239,6 +289,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'UserPlus',
     audience: ['admin'],
     email: 'transactional',
+    cta: 'Manage users',
   },
 
   /* ── Commercial, both directions ── */
@@ -248,6 +299,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'Sparkles',
     audience: ['admin', 'platform'],
     email: 'transactional',
+    cta: 'View the request',
   },
   service_request_answered: {
     label: 'Edstellar replied to your service request',
@@ -255,6 +307,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'Sparkles',
     audience: ['admin'],
     email: 'transactional',
+    cta: 'Read the reply',
   },
   seat_requested: {
     label: 'Seat request raised',
@@ -262,6 +315,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'Users',
     audience: ['admin', 'platform'],
     email: 'transactional',
+    cta: 'View seat requests',
   },
   seat_request_answered: {
     label: 'Edstellar answered your seat request',
@@ -269,6 +323,7 @@ export const NOTIFICATION_TYPES = {
     icon: 'Users',
     audience: ['admin'],
     email: 'transactional',
+    cta: 'View seats',
   },
 } as const satisfies Record<string, NotificationTypeDef>;
 

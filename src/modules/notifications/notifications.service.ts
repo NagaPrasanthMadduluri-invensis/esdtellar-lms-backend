@@ -35,6 +35,20 @@ export interface NotifyInput {
    */
   exceptUserId?: number | null;
   /**
+   * Extra facts the email states about what happened — due date, the path
+   * it belongs to, whether there is an assessment, how they came to have
+   * it. Rendered as a bordered panel under the body.
+   *
+   * Composed by the caller because only the caller knows them, and frozen
+   * onto the outbox row at enqueue (0041) rather than looked up when the
+   * worker sends: the queue drains later, and a fact that changed in
+   * between would describe a state that did not exist when this happened.
+   *
+   * The BELL does not show them. A notification row is a one-line prompt;
+   * the detail belongs where there is room for it.
+   */
+  facts?: Array<{ label: string; value: string }> | null;
+  /**
    * `never` writes the bell row and skips the inbox entirely.
    *
    * Nothing passes it yet, and the hook exists rather than being added
@@ -149,6 +163,7 @@ export class NotificationsService {
       body: input.body ?? null,
       link: input.link ?? null,
       actorName: input.actorName ?? null,
+      facts: input.facts ?? null,
       subjectType: input.subjectType ?? null,
       subjectId: input.subjectId ?? null,
       notificationIds:

@@ -612,6 +612,36 @@ export class CoursesService {
     scope: OrgScope,
     course: { id: number; name: string; category: string | null },
   ): Promise<void> {
+    /*
+     * The same panel the assignment email uses, with the opposite first
+     * line: this one is THEIRS TO TAKE, not something somebody gave them.
+     * §10.3.1.19 draws the same distinction on the catalogue page —
+     * "nothing in it is theirs until they press the button" — and an email
+     * that did not say which would read exactly like an assignment.
+     */
+    const f = await this.repository.courseEmailFacts(scope, course.id);
+    const facts: Array<{ label: string; value: string }> = [
+      { label: 'How to get it', value: 'Add it yourself from the Course Catalogue' },
+    ];
+    if (course.category) facts.push({ label: 'Category', value: course.category });
+    if (f.lessonCount > 0) {
+      facts.push({
+        label: 'Content',
+        value: f.totalMinutes
+          ? `${f.lessonCount} lesson${f.lessonCount === 1 ? '' : 's'} · about ${Math.round(f.totalMinutes / 6) / 10} hours`
+          : `${f.lessonCount} lesson${f.lessonCount === 1 ? '' : 's'}`,
+      });
+    }
+    facts.push({
+      label: 'Assessment',
+      value: f.assessmentCount > 0
+        ? `Yes — ${f.assessmentCount} to pass before the course counts as complete`
+        : 'None — finishing the lessons completes this course',
+    });
+    if (f.journeyTitles) {
+      facts.push({ label: 'Part of a learning path', value: f.journeyTitles });
+    }
+
     await this.notifications.notify({
       userIds: await this.notifications.learnersForOpenCourse(
         scope.organizationId,
@@ -619,10 +649,10 @@ export class CoursesService {
       ),
       organizationId: scope.organizationId,
       type: 'course_open_enrolment',
-      title: `"${course.name}" is open to join`,
-      body: course.category
-        ? `${course.category} · add it to your learning from the Course Catalogue.`
-        : 'Add it to your learning from the Course Catalogue.',
+      title: course.name,
+      body: `${course.name} is now open to everyone at your organisation. `
+        + 'Nothing is added to your courses until you choose it.',
+      facts,
       link: '/catalogue',
       subjectType: 'course',
       subjectId: course.id,
@@ -1277,14 +1307,54 @@ export class CoursesService {
      * unawaited (§8.4) — an assignment must not fail over a bell.
      */
     const course = await this.repository.findById(scope, courseId);
+
+    /*
+     * What the email says about the course, beyond its name.
+     *
+     * Read ONCE per action, not per learner: these are properties of the
+     * course, and the same assignment may go to forty people. Composed
+     * into display strings here and frozen onto the outbox row (0041),
+     * because the queue drains later and a course that gains an
+     * assessment in between must not retroactively change what the email
+     * claimed at the time.
+     *
+     * Each line is omitted when it has nothing to say. "Assessment: none"
+     * is noise; the absence of the row is the same information with less
+     * to read.
+     */
+    const f = await this.repository.courseEmailFacts(scope, courseId);
+    const facts: Array<{ label: string; value: string }> = [];
+    facts.push({ label: 'How you got it', value: 'Assigned to you by your L&D team' });
+    if (dto.due_date) facts.push({ label: 'Due by', value: dto.due_date });
+    if (f.lessonCount > 0) {
+      facts.push({
+        label: 'Content',
+        value: f.totalMinutes
+          ? `${f.lessonCount} lesson${f.lessonCount === 1 ? '' : 's'} · about ${Math.round(f.totalMinutes / 6) / 10} hours`
+          : `${f.lessonCount} lesson${f.lessonCount === 1 ? '' : 's'}`,
+      });
+    }
+    facts.push({
+      label: 'Assessment',
+      value: f.assessmentCount > 0
+        // Said plainly because it changes how somebody plans their time,
+        // and because passing it is what the certificate depends on.
+        ? `Yes — ${f.assessmentCount} to pass before the course counts as complete`
+        : 'None — finishing the lessons completes this course',
+    });
+    if (f.journeyTitles) {
+      facts.push({ label: 'Part of a learning path', value: f.journeyTitles });
+    }
+
     void this.notifications.notify({
       userIds: inScope,
       organizationId: scope.organizationId,
       type: 'course_assigned',
-      title: course?.name ? `New course: ${course.name}` : 'A new course was assigned to you',
-      body: dto.due_date
-        ? `Due ${dto.due_date}. Open My Courses to start.`
-        : 'Open My Courses to start.',
+      title: course?.name ?? 'A new course',
+      body: course?.name
+        ? `${course.name} has been added to your learning. Everything you need is in My Courses.`
+        : 'A new course has been added to your learning.',
+      facts,
       link: '/my-courses',
       subjectType: 'course',
       subjectId: courseId,

@@ -710,6 +710,53 @@ export class CoursesRepository {
     return Number(rows[0]?.n ?? 1);
   }
 
+  /**
+   * The handful of facts a course email states, in ONE query.
+   *
+   * An assignment email is sent to a whole department at once, so this is
+   * read once per ACTION, never once per learner — the figures are
+   * properties of the course, not of the person receiving it.
+   *
+   * Four correlated subqueries rather than four round trips (§7.1). They
+   * are display values: the caller turns them into label/value strings and
+   * freezes them onto the outbox row (0041), so nothing here is queried
+   * again when the mail is finally sent.
+   */
+  async courseEmailFacts(scope: OrgScope, courseId: number) {
+    const [row] = await this.db.all<{
+      lesson_count: number;
+      total_minutes: number | null;
+      assessment_count: number;
+      journey_titles: string | null;
+    }>(sql`
+      SELECT
+        (SELECT COUNT(*) FROM lessons l
+           JOIN course_modules cm ON cm.id = l.module_id
+          WHERE cm.course_id = ${courseId}
+            AND l.is_active = 1 AND cm.is_active = 1)        AS lesson_count,
+        (SELECT SUM(l.duration_minutes) FROM lessons l
+           JOIN course_modules cm ON cm.id = l.module_id
+          WHERE cm.course_id = ${courseId}
+            AND l.is_active = 1 AND cm.is_active = 1)        AS total_minutes,
+        (SELECT COUNT(*) FROM assessments a
+          WHERE a.course_id = ${courseId} AND a.is_active = 1) AS assessment_count,
+        -- Comma-separated because a course can sit in more than one path,
+        -- and naming them all is shorter than a second query for a case
+        -- that is almost always zero or one.
+        (SELECT STRING_AGG(j.title, ', ' ORDER BY j.title)
+           FROM journey_courses jc
+           JOIN journeys j ON j.id = jc.journey_id
+          WHERE jc.course_id = ${courseId})                  AS journey_titles
+    `);
+    return {
+      lessonCount: Number(row?.lesson_count ?? 0),
+      totalMinutes: row?.total_minutes === null || row?.total_minutes === undefined
+        ? null : Number(row.total_minutes),
+      assessmentCount: Number(row?.assessment_count ?? 0),
+      journeyTitles: row?.journey_titles ?? null,
+    };
+  }
+
   async createLesson(values: typeof lessons.$inferInsert) {
     const [created] = await this.db.insert(lessons).values(values).returning();
     return created;
