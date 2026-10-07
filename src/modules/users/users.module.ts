@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '@/modules/auth/auth.module';
 
 import { OrgOptionsModule } from '@/modules/org-options/org-options.module';
 
@@ -21,7 +22,17 @@ import { UsersService } from './users.service';
  * this one.
  */
 @Module({
-  imports: [ActivityModule, ReportsModule, RolesModule, SeatsModule, NotificationsModule, OrgOptionsModule],
+  imports: [
+    ActivityModule,
+    ReportsModule,
+    RolesModule,
+    SeatsModule,
+    NotificationsModule,
+    OrgOptionsModule,
+    // For the welcome email's set-password link. Safe in this direction:
+    // AuthModule does not import UsersModule, so there is no cycle.
+    AuthModule,
+  ],
   controllers: [UsersController, EmployeesController],
   providers: [UsersService, UsersRepository],
   exports: [UsersService],

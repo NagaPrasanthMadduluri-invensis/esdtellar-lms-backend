@@ -203,7 +203,8 @@ export class CertificatesService {
         userIds: [userId],
         organizationId: scope.organizationId,
         type: 'certificate_issued',
-        title: snapshot.courseName ?? 'Your course',
+        title: 'Your certificate is ready',
+        subjectName: snapshot.courseName ?? null,
         body: `You have completed ${snapshot.courseName ?? 'your course'} and your `
           + 'certificate is ready to download.',
         /*

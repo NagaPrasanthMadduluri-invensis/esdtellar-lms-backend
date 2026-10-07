@@ -20,6 +20,8 @@ import {
 export interface EnqueueInput {
   /** Display facts for the email's panel, frozen at enqueue (0041). */
   facts?: Array<{ label: string; value: string }> | null;
+  /** The bare name of the subject, for the email's subheading (0042). */
+  subjectName?: string | null;
   organizationId: number;
   type: string;
   userIds: number[];
@@ -156,6 +158,7 @@ export class EmailOutboxService {
         orgLogoUrl: r.org_logo_url,
         // Serialised once here, frozen with the rest (0041).
         facts: input.facts?.length ? JSON.stringify(input.facts) : null,
+        subjectName: input.subjectName ?? null,
         orgName: r.org_name,
         subject,
         body: input.body ?? null,

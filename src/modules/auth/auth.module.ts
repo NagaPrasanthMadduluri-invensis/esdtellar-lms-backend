@@ -25,6 +25,9 @@ import { TokenService } from './token.service';
     PasswordResetService,
     PasswordResetRepository,
   ],
-  exports: [TokenService, AuthRepository],
+  // PasswordResetService is exported so UsersService can send the welcome
+  // email: it mints the same one-time token, and a second implementation
+  // would be a second way to create a credential.
+  exports: [TokenService, AuthRepository, PasswordResetService],
 })
 export class AuthModule {}

@@ -1,0 +1,32 @@
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0042 — The bare NAME of the thing, for the email's subheading
+--
+-- Fixes a regression shipped in the previous change.
+--
+-- The email wants the action and the name apart — "New course assigned"
+-- as the heading, "AI for Banking" under it — while the BELL wants one
+-- self-contained line, "New course: AI for Banking". The first attempt
+-- served both from `subject` and could not: setting it to the bare name
+-- gave the email what it wanted and left the bell reading "AI for
+-- Banking", which says nothing about what happened.
+--
+-- It also produced a visible bug. The renderer prefixed the catalogue's
+-- action label onto the stored subject, which is right when that subject
+-- is a bare name and wrong for the 22 call sites still passing a full
+-- sentence:
+--
+--     You are running a session: You are running "Isolation Suite Session"
+--
+-- A guard on an exact prefix match did not catch it, and widening that
+-- guard into word-overlap guesswork would be a heuristic standing in for
+-- a fact the caller already knows.
+--
+-- So the caller states it. `subject_name` is the bare name when the call
+-- site has one to give, and NULL otherwise — and null is the honest
+-- default: a type whose call site has not been updated keeps exactly the
+-- behaviour it had, heading from `subject`, no subheading, no prefix.
+-- Nothing has to be migrated and nothing silently changes wording.
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE email_outbox
+  ADD COLUMN IF NOT EXISTS subject_name text;

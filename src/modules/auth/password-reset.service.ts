@@ -35,6 +35,15 @@ import { PasswordResetRepository } from './password-reset.repository';
  *    logged in, has gained nothing.
  */
 const TOKEN_BYTES = 32;
+
+/**
+ * How long a WELCOME link lives: seven days.
+ *
+ * Much longer than a reset's 60 minutes, and for a different situation —
+ * see `sendWelcome`. Somebody onboarded on a Friday should still be able
+ * to use it on Monday.
+ */
+const WELCOME_TTL_MINUTES = 7 * 24 * 60;
 const RATE_LIMIT_WINDOW_MINUTES = 15;
 const RATE_LIMIT_MAX = 3;
 
@@ -134,6 +143,83 @@ export class PasswordResetService {
       );
     }
     return NEUTRAL_RESPONSE;
+  }
+
+  /**
+   * Welcomes a newly-created learner and lets them choose their own
+   * password, instead of being sent one.
+   *
+   * ## Why a link and not the temporary password
+   *
+   * The outbox IS the message store and it keeps every body for 90 days
+   * (0037). Emailing the password would therefore put a plaintext
+   * credential in a database table readable by anyone with database
+   * access, and leave it in the learner's inbox indefinitely — a wider
+   * exposure than the admin screen, which merely shows it on a page while
+   * somebody reads it out.
+   *
+   * A link stores only a SHA-256 hash, expires, and is spent on first use.
+   * The temporary password still exists and still works, so an admin can
+   * read it to somebody over the phone exactly as before. This only
+   * changes what travels by email.
+   *
+   * ## A longer TTL than a reset, deliberately
+   *
+   * A reset link is 60 minutes because somebody asked for it 30 seconds
+   * ago and is watching their inbox. A welcome is sent when an admin
+   * onboards a batch, and the learner may not look until tomorrow — an
+   * hour would make the link dead on arrival for most of them, and a dead
+   * link is worse than no link because it reads as a broken product on
+   * first contact.
+   *
+   * ## Best-effort, like every other notification (§8.4)
+   *
+   * Never throws. Creating the account is the thing the admin asked for;
+   * an email failure must not fail it or leave a half-made user. The
+   * account works regardless — the admin has the temporary password on
+   * screen.
+   */
+  async sendWelcome(user: {
+    id: number;
+    email: string;
+    organizationId: number;
+    firstName?: string | null;
+  }): Promise<void> {
+    try {
+      const token = randomBytes(TOKEN_BYTES).toString('base64url');
+      const expiresAt = new Date(
+        Date.now() + WELCOME_TTL_MINUTES * 60_000,
+      );
+      await this.repository.issue(user.id, hashToken(token), expiresAt, null);
+
+      await this.email.enqueue({
+        organizationId: user.organizationId,
+        userIds: [user.id],
+        type: 'welcome',
+        subject: 'Your Spectra LMS account is ready',
+        subjectName: null,
+        body:
+          `${user.firstName ? `${user.firstName}, your` : 'Your'} account has `
+          + 'been created. Choose a password below and you can start learning '
+          + 'straight away.',
+        facts: [
+          { label: 'Sign in with', value: user.email },
+          {
+            label: 'This link lasts',
+            value: `${Math.round(WELCOME_TTL_MINUTES / 60 / 24)} days — after that, use "Forgot password" on the sign-in page`,
+          },
+        ],
+        link: `/reset-password?token=${encodeURIComponent(token)}`,
+      });
+
+      this.logger.log(`Welcome link issued for user ${user.id}.`);
+    } catch (error) {
+      this.logger.warn(
+        `Welcome email not sent for user ${user.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**

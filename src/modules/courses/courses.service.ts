@@ -649,7 +649,8 @@ export class CoursesService {
       ),
       organizationId: scope.organizationId,
       type: 'course_open_enrolment',
-      title: course.name,
+      title: `"${course.name}" is open to join`,
+      subjectName: course.name,
       body: `${course.name} is now open to everyone at your organisation. `
         + 'Nothing is added to your courses until you choose it.',
       facts,
@@ -1350,7 +1351,10 @@ export class CoursesService {
       userIds: inScope,
       organizationId: scope.organizationId,
       type: 'course_assigned',
-      title: course?.name ?? 'A new course',
+      // The BELL needs one self-contained line; the email splits the
+      // action from the name through `subjectName` (0042).
+      title: course?.name ? `New course: ${course.name}` : 'A new course was assigned to you',
+      subjectName: course?.name ?? null,
       body: course?.name
         ? `${course.name} has been added to your learning. Everything you need is in My Courses.`
         : 'A new course has been added to your learning.',

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
+import { PasswordResetService } from '@/modules/auth/password-reset.service';
 import {
   OptionNotOfferedError,
   OrgOptionsService,
@@ -41,6 +42,12 @@ export class UsersService {
      * `RolesRepository` — `BACKEND_STRUCTURE.md` §3.2.
      */
     private readonly roles: RolesService,
+    /**
+     * For the welcome email's set-password link. The SERVICE, never its
+     * repository (§3.2) — and the same one the forgot-password flow uses,
+     * so there is exactly one way a one-time credential gets minted.
+     */
+    private readonly passwordReset: PasswordResetService,
     /**
      * Best-effort recording for the dashboard's Recent Activity panel. Every
      * call is fire-and-forget by contract (`ActivityService.record` never
@@ -260,6 +267,25 @@ export class UsersService {
      * lights up twenty times learns within a day to ignore it — at which
      * point every other notification is lost too.
      */
+    /*
+     * The learner's own welcome, with a link to choose a password.
+     *
+     * Not the temporary password itself: the outbox keeps every body for
+     * 90 days, so mailing it would put a plaintext credential in a
+     * database table and leave it in their inbox for good. The temporary
+     * password still exists and the admin can still read it out — this
+     * only changes what travels by email.
+     *
+     * Best-effort and unawaited (§8.4). The account is created either
+     * way, and the admin has the password on screen if the mail fails.
+     */
+    void this.passwordReset.sendWelcome({
+      id: user.id,
+      email: dto.email,
+      organizationId: scope.organizationId,
+      firstName: dto.first_name ?? null,
+    });
+
     void (async () => {
       void this.notifications.notify({
         userIds: await this.notifications.adminsOf(scope.organizationId),
