@@ -44,8 +44,26 @@ import {
 export interface LayoutParts {
   /** Small caps word above the heading — the notification group. */
   group: string;
-  /** The heading. Already-composed wording; escaped here, not by the caller. */
+  /**
+   * The heading, and it states the ACTION — "New course assigned", not
+   * "New course: Leadership & Communication". A reader skimming an inbox
+   * needs the verb before the noun.
+   */
   title: string;
+  /**
+   * The specific thing the action happened to, set under the heading.
+   *
+   * Separate from `title` because they answer different questions and are
+   * read at different speeds: the action is scanned, the name is read.
+   * Omitted when it would merely repeat the heading.
+   */
+  subtitle?: string;
+  /**
+   * One encouraging line under the button. Absent on administrative types
+   * — see the catalogue — because filler on every email teaches people to
+   * skip all of them.
+   */
+  aspiration?: string;
   /** One or more paragraphs of body copy. */
   paragraphs: string[];
   /** The one call to action. Omitted when there is nowhere useful to go. */
@@ -106,6 +124,16 @@ export function renderLayout(parts: LayoutParts): {
    * pulling the footer up into the preview.
    */
   const preheader = escapeHtml(parts.preheader ?? parts.paragraphs[0] ?? '');
+
+  const subtitle = parts.subtitle
+    ? `<p style="margin:0 0 16px;font-size:16px;line-height:1.45;font-weight:600;color:${C.ink};">${escapeHtml(parts.subtitle)}</p>`
+    : '';
+
+  /* Set apart from the body: it is encouragement, not instruction, and
+     reading as another instruction is what makes it grating. */
+  const aspiration = parts.aspiration
+    ? `<p style="margin:12px 0 0;font-size:13px;line-height:1.6;color:${C.text3};">${escapeHtml(parts.aspiration)}</p>`
+    : '';
 
   const paragraphs = parts.paragraphs
     .map(
@@ -230,11 +258,13 @@ export function renderLayout(parts: LayoutParts): {
         <tr>
           <td style="padding:28px;font-family:${FONT_STACK};">
             <div style="font-family:${MONO_STACK};font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:${g.color};font-weight:600;padding-bottom:10px;">${escapeHtml(g.label)}</div>
-            <h1 style="margin:0 0 14px;font-size:21px;line-height:1.3;font-weight:700;color:${C.ink};">${title}</h1>
+            <h1 style="margin:0 0 10px;font-size:21px;line-height:1.3;font-weight:700;color:${C.ink};">${title}</h1>
+            ${subtitle}
             ${paragraphs}
             ${callout}
             ${facts}
             ${cta}
+            ${aspiration}
           </td>
         </tr>
 

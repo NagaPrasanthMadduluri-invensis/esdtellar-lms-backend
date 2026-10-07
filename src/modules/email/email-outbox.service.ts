@@ -18,6 +18,8 @@ import {
 
 /** What `notify()` hands over, plus what a direct email supplies itself. */
 export interface EnqueueInput {
+  /** Display facts for the email's panel, frozen at enqueue (0041). */
+  facts?: Array<{ label: string; value: string }> | null;
   organizationId: number;
   type: string;
   userIds: number[];
@@ -152,6 +154,8 @@ export class EmailOutboxService {
         // later, and a logo changed in between must not silently re-brand
         // mail about things that happened under the old one.
         orgLogoUrl: r.org_logo_url,
+        // Serialised once here, frozen with the rest (0041).
+        facts: input.facts?.length ? JSON.stringify(input.facts) : null,
         orgName: r.org_name,
         subject,
         body: input.body ?? null,

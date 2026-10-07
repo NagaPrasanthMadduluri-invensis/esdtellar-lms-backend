@@ -163,10 +163,12 @@ export class CertificatesService {
       // which is exactly what `scope` is here: the caller is the learner
       // completing their own lesson/assessment.
       const prefix = await this.repository.findCertificatePrefix(scope);
+      // Held in a variable because the email quotes it back to the learner.
+      const code = this.generateCode(courseId, userId, prefix);
       const certificateId = await this.repository.insert(scope, {
         userId,
         courseId,
-        certificateCode: this.generateCode(courseId, userId, prefix),
+        certificateCode: code,
         issuedAt: new Date().toISOString(),
         finalScore: verdict.finalScore,
       });
@@ -201,8 +203,22 @@ export class CertificatesService {
         userIds: [userId],
         organizationId: scope.organizationId,
         type: 'certificate_issued',
-        title: 'Your certificate is ready',
-        body: `${snapshot.courseName ?? 'Your course'} — download it from Certificates.`,
+        title: snapshot.courseName ?? 'Your course',
+        body: `You have completed ${snapshot.courseName ?? 'your course'} and your `
+          + 'certificate is ready to download.',
+        /*
+         * The code is on the panel because it is the one thing the learner
+         * may need to quote — it is what the public verification check
+         * looks up, and it is printed on the document itself.
+         */
+        facts: [
+          { label: 'Course', value: snapshot.courseName ?? '—' },
+          { label: 'Certificate ID', value: code },
+          {
+            label: 'Verification',
+            value: 'Quote the certificate ID — anyone can confirm it is genuine',
+          },
+        ],
         link: '/certifications',
         subjectType: 'certificate',
         subjectId: certificateId,

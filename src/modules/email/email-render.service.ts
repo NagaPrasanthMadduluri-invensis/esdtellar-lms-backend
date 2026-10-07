@@ -6,6 +6,26 @@ import { NOTIFICATION_TYPES } from '@/common/notifications';
 import { DIRECT_EMAIL_TYPES, isDirectEmailType } from './email-types';
 import { MAIL_BRAND as C, FONT_STACK } from './email-brand';
 import { escapeHtml, renderLayout } from './templates/layout';
+
+/**
+ * The catalogue entry for a type, or undefined for the direct-email types
+ * (password reset and friends) which are not notifications and have no
+ * entry. Every caller falls back rather than assuming one exists.
+ */
+/** "New course assigned: X", without repeating a label the caller used. */
+function subjectLine(label: string | undefined, stored: string): string {
+  if (!label) return stored;
+  const a = label.trim().toLowerCase();
+  const b = stored.trim().toLowerCase();
+  if (b.startsWith(a) || b === a) return stored;
+  return `${label}: ${stored}`;
+}
+
+function typeDef(type: string) {
+  return (NOTIFICATION_TYPES as Record<string, {
+    label: string; cta: string; aspiration?: string;
+  }>)[type];
+}
 import { createUnsubscribeToken } from './unsubscribe-token';
 import type { OutboxRow } from './email-outbox.repository';
 import type { OutgoingMail } from './mailer/mailer.interface';
@@ -96,6 +116,22 @@ export class EmailRenderService {
     const group = this.groupOf(row.type);
     const cta = this.ctaFor(row);
 
+    /*
+     * THE HEADLINE IS THE ACTION; the subject line names the thing.
+     *
+     * These emails used to lead with "New course: Leadership &
+     * Communication", which says what it is ABOUT and not what HAPPENED.
+     * A reader skimming an inbox needs the verb: was it assigned to me,
+     * did I complete it, is it due? The catalogue already carries exactly
+     * that sentence as `label` — it was only ever being used as a fallback
+     * for a row with no title at all.
+     *
+     * So the H1 is the action and the stored subject becomes the line
+     * under it. The envelope Subject stays as it was: in a list of
+     * forty unread messages the specific course name is what distinguishes
+     * one row from another.
+     */
+    const def = typeDef(row.type);
     const paragraphs: string[] = [];
     if (row.body) paragraphs.push(row.body);
     if (row.actorName) paragraphs.push(`Actioned by ${row.actorName}.`);
@@ -105,11 +141,35 @@ export class EmailRenderService {
       paragraphs.push('There is an update waiting for you in Spectra LMS.');
     }
 
+    /*
+     * Facts the caller froze at enqueue (0041). Parsed defensively: this
+     * is a jsonb column written by 24 call sites, and a malformed value
+     * must cost the panel, never the email.
+     */
+    let facts: Array<{ label: string; value: string }> | undefined;
+    if (row.facts) {
+      try {
+        const parsed = typeof row.facts === 'string' ? JSON.parse(row.facts) : row.facts;
+        if (Array.isArray(parsed)) {
+          const clean = parsed
+            .filter((f) => f && typeof f.label === 'string' && typeof f.value === 'string')
+            .map((f) => ({ label: String(f.label), value: String(f.value) }));
+          if (clean.length) facts = clean;
+        }
+      } catch {
+        /* a bad panel is not worth losing the message over */
+      }
+    }
+
     const { footerExtraHtml, headers } = this.footerAndHeaders(row);
 
     const { html, text } = renderLayout({
       group,
-      title: row.subject,
+      title: def?.label ?? row.subject,
+      // The specific thing this is about, under the action.
+      subtitle: def?.label && def.label !== row.subject ? row.subject : undefined,
+      facts,
+      aspiration: def?.aspiration,
       paragraphs,
       cta,
       orgName: row.orgName,
@@ -130,7 +190,20 @@ export class EmailRenderService {
       toName: row.toName,
       // Verbatim, with no `[Spectra LMS]` prefix: a prefix burns the width
       // an inbox gives the subject line and reads as bulk mail.
-      subject: row.subject,
+      /*
+       * ACTION then NAME — "New course assigned: Data Analytics
+       * Fundamentals".
+       *
+       * The stored subject is just the thing's name, because that is what
+       * reads well as the subtitle inside the email. On its own in an
+       * inbox it says nothing: forty unread rows of bare course names
+       * give the reader no idea which need them. Prefixing the catalogue's
+       * action label costs nothing and makes the list scannable.
+       *
+       * Skipped when the stored subject already opens with the label, so
+       * a caller that composed its own full sentence is not doubled up.
+       */
+      subject: subjectLine(def?.label, row.subject),
       html,
       text,
       headers,
@@ -159,15 +232,17 @@ export class EmailRenderService {
       };
     }
     if (!row.link) return undefined;
-    const labels: Record<string, string> = {
-      learning: 'Open in Spectra LMS',
-      sessions: 'View the session',
-      recognition: 'View it',
-      people: 'Open Manage Users',
-      commercial: 'Open the request',
-    };
+    /*
+     * The button's words come from the TYPE, not the group.
+     *
+     * Five group labels meant "Open in Spectra LMS" on everything from a
+     * new course to a revoked certificate — a button that names no
+     * destination, which is the one people do not press. The catalogue
+     * carries a per-type `cta` ("Start learning", "View my certificate")
+     * so the button states what pressing it does.
+     */
     return {
-      label: labels[this.groupOf(row.type)] ?? 'Open in Spectra LMS',
+      label: typeDef(row.type)?.cta ?? 'Open in Spectra LMS',
       url: this.absoluteUrl(row.link),
     };
   }
