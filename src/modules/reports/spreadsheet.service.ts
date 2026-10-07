@@ -51,22 +51,37 @@ export class SpreadsheetService {
   buildLearnerUploadTemplate(): Buffer {
     const workbook = XLSX.utils.book_new();
 
+    /*
+     * MANAGER EMAIL, not manager name — and the instruction row says so,
+     * because this is the one column whose heading does not explain itself.
+     *
+     * A name is ambiguous the moment an organization has two people called
+     * Priya, and a spreadsheet cannot carry a user id. The address is the
+     * login identity and therefore unique. The admin types the unambiguous
+     * thing; the upload preview resolves it back to the NAME before anything
+     * is written, which is where a wrong address is actually noticed.
+     *
+     * Optional, like Password: the third sample row leaves it blank on
+     * purpose, so the template demonstrates that a learner with no manager
+     * is a legitimate row rather than an omission.
+     */
     const sheet = XLSX.utils.aoa_to_sheet([
       [
-        '⚠ Instructions: Fill in one learner per row. Password column is optional — leave blank to use default password: Edstellar@123',
-        '', '', '', '', '', '', '',
+        '⚠ Instructions: Fill in one learner per row. Password is optional — leave blank for the default: Edstellar@123. '
+        + 'Manager Email is optional too — enter the EMAIL ADDRESS of an existing active user (not their name), or leave it blank.',
+        '', '', '', '', '', '', '', '',
       ],
-      ['Employee ID', 'First Name', 'Last Name', 'Email', 'Department', 'Location', 'Job Role', 'Password'],
-      ['EMP-001', 'Alice', 'Johnson', 'alice@company.com', 'Engineering', 'Bangalore', 'Software Engineer', ''],
-      ['EMP-002', 'Bob', 'Smith', 'bob@company.com', 'Sales', 'Mumbai', 'Sales Manager', ''],
-      ['EMP-003', 'Carol', 'Williams', 'carol@company.com', 'HR', 'Delhi', 'HR Coordinator', ''],
+      ['Employee ID', 'First Name', 'Last Name', 'Email', 'Department', 'Location', 'Job Role', 'Manager Email', 'Password'],
+      ['EMP-001', 'Alice', 'Johnson', 'alice@company.com', 'Engineering', 'Bangalore', 'Software Engineer', 'priya.n@company.com', ''],
+      ['EMP-002', 'Bob', 'Smith', 'bob@company.com', 'Sales', 'Mumbai', 'Sales Manager', 'priya.n@company.com', ''],
+      ['EMP-003', 'Carol', 'Williams', 'carol@company.com', 'HR', 'Delhi', 'HR Coordinator', '', ''],
     ]);
 
     sheet['!cols'] = [
       { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 32 },
-      { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 20 },
+      { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 32 }, { wch: 20 },
     ];
-    sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }];
+    sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
 
     XLSX.utils.book_append_sheet(workbook, sheet, 'Learner Upload');
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;

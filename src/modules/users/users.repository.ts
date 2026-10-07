@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 
 import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
@@ -290,6 +290,44 @@ export class UsersRepository {
    * which is the only way an INSERT can satisfy both the constraint and the
    * denormalisation rule in §8.3.
    */
+  /**
+   * Resolve a set of email addresses to ACTIVE users of one organization.
+   *
+   * For the bulk import's manager column. One statement for the whole file
+   * rather than a lookup per row (§7.1) — a 500-row upload naming forty
+   * distinct managers costs one round trip, not five hundred.
+   *
+   * `organizationId` is in the predicate, so an address belonging to another
+   * tenant resolves to nothing at all. That is what keeps the manager column
+   * from becoming a cross-tenant write through a spreadsheet: the caller
+   * cannot tell "no such person" from "not yours", and does not need to.
+   *
+   * ACTIVE only, matching the picker in the Add User form. A deactivated
+   * account cannot sign in to read Team Learning, so pointing reports at one
+   * records a line nobody can follow.
+   */
+  async activeByEmails(
+    organizationId: number,
+    emails: string[],
+  ): Promise<{ id: number; email: string; first_name: string; last_name: string }[]> {
+    if (emails.length === 0) return [];
+    return this.db
+      .select({
+        id: users.id,
+        email: users.email,
+        first_name: users.firstName,
+        last_name: users.lastName,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.organizationId, organizationId),
+          eq(users.isActive, 1),
+          inArray(users.email, emails),
+        ),
+      );
+  }
+
   async createLearner(
     scope: OrgScope,
     input: {

@@ -27,6 +27,12 @@ const nullable = ({ value }: { value: unknown }) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+/** `nullable`, then lowercased — for an optional column holding an address. */
+const nullableLower = ({ value }: { value: unknown }) => {
+  const trimmed = nullable({ value });
+  return typeof trimmed === 'string' ? trimmed.toLowerCase() : trimmed;
+};
+
 export class CreateUserDto {
   @IsString()
   @MinLength(1, { message: 'first_name is required' })
@@ -178,6 +184,20 @@ export class BulkUserRowDto {
   @IsOptional() @Transform(nullable) location?: string | null;
   @IsOptional() @Transform(nullable) job_role?: string | null;
   @IsOptional() @Transform(nullable) job_level?: string | null;
+  /**
+   * The manager's EMAIL ADDRESS, not their name and not an id.
+   *
+   * A spreadsheet has no way to carry a `users.id`, and two people in one
+   * organization can share a name — so a name column would silently attach
+   * somebody's reports to the wrong Priya. An address is the login identity
+   * and is unique, which is why the template asks for it and the browser
+   * resolves it back to a NAME in the preview: the admin types the
+   * unambiguous thing and confirms the human one before committing.
+   *
+   * Optional throughout. Blank is a learner with no manager, which is the
+   * majority of them.
+   */
+  @IsOptional() @Transform(nullableLower) manager?: string | null;
   @IsOptional() @Transform(trim) password?: string;
 }
 
