@@ -53,6 +53,17 @@ const WELCOME_TTL_MINUTES = 7 * 24 * 60;
  * is the right answer here rather than raising that ceiling.
  */
 const WELCOME_CHUNK = 100;
+
+/**
+ * The reconcile sweep ignores flags younger than this, so it never races a
+ * request whose own enqueue is seconds from clearing the flag. Comfortably
+ * longer than a bulk import takes to finish its batched enqueue.
+ */
+const WELCOME_RECONCILE_GRACE_MINUTES = 10;
+
+/** Per sweep tick, so a huge backlog drains over several ticks rather than
+ * one giant transaction. */
+const WELCOME_RECONCILE_LIMIT = 500;
 const RATE_LIMIT_WINDOW_MINUTES = 15;
 const RATE_LIMIT_MAX = 3;
 
@@ -326,6 +337,18 @@ export class PasswordResetService {
         });
       }
 
+      /*
+       * Clear the "owed a welcome" marker for everyone we just queued, so the
+       * reconcile sweep (§10.33) does not pick them up again. The flag was set
+       * atomically with the learner (0044); clearing it here makes the happy
+       * path transient — set in the request, cleared in the same request — and
+       * leaves the flag standing ONLY for learners whose enqueue never
+       * happened, which is exactly what the sweep exists to catch.
+       */
+      if (queued > 0) {
+        await this.repository.clearWelcomePending(users.map((u) => u.id));
+      }
+
       this.logger.log(
         `Welcome links issued for ${users.length} imported user(s); ${queued} queued.`,
       );
@@ -337,6 +360,79 @@ export class PasswordResetService {
         }`,
       );
       return 0;
+    }
+  }
+
+  /**
+   * Re-enqueue the welcome for any learner whose flag is still set — the
+   * safety net that makes "no bulk-created learner slips through" true rather
+   * than almost-true.
+   *
+   * ## Why this is needed at all
+   *
+   * `bulkCreate` commits learners per row and enqueues their welcomes in a
+   * batch afterwards (§7.1). That enqueue is best-effort: a restart in the
+   * window, or a failed chunk write, leaves a learner created with no welcome
+   * row and no retry — and Resend only recovers a FAILED row, not a MISSING
+   * one. The outbox pattern guarantees delivery only once the row EXISTS; this
+   * is what guarantees the row comes to exist.
+   *
+   * ## How it stays correct
+   *
+   * The flag (0044) is the durable intent, written atomically with the
+   * learner. This runs on the worker clock (§10.33) and:
+   *
+   *   - reads learners whose flag is OLDER than a grace window, so it never
+   *     races a request whose own enqueue is about to clear it;
+   *   - asks the outbox which of them ALREADY have a welcome row — those had a
+   *     successful enqueue whose flag-clear was lost, so it just clears the
+   *     flag rather than sending a second welcome (idempotency);
+   *   - sends the rest through the SAME `sendWelcomeMany` the request uses, so
+   *     there is one credential path, not two, and it clears their flags on
+   *     success.
+   *
+   * Best-effort as a whole (§8.4): it is a background reconciliation, and a
+   * failure this tick is simply retried the next.
+   */
+  async reconcileWelcomes(): Promise<{
+    checked: number;
+    enqueued: number;
+    alreadyHad: number;
+  }> {
+    try {
+      const candidates = await this.repository.findPendingWelcomes(
+        WELCOME_RECONCILE_GRACE_MINUTES,
+        WELCOME_RECONCILE_LIMIT,
+      );
+      if (candidates.length === 0) return { checked: 0, enqueued: 0, alreadyHad: 0 };
+
+      const have = await this.email.usersWithWelcome(candidates.map((c) => c.id));
+
+      const alreadyHad = candidates.filter((c) => have.has(c.id));
+      const toSend = candidates.filter((c) => !have.has(c.id));
+
+      // Row existed, flag lingered — clear it, do not re-send.
+      if (alreadyHad.length > 0) {
+        await this.repository.clearWelcomePending(alreadyHad.map((c) => c.id));
+      }
+
+      // Never queued — send now. sendWelcomeMany clears their flags on success.
+      const enqueued = toSend.length > 0 ? await this.sendWelcomeMany(toSend) : 0;
+
+      if (toSend.length > 0 || alreadyHad.length > 0) {
+        this.logger.warn(
+          `Welcome reconcile: ${candidates.length} pending, ${enqueued} re-queued, `
+          + `${alreadyHad.length} already had a row.`,
+        );
+      }
+      return { checked: candidates.length, enqueued, alreadyHad: alreadyHad.length };
+    } catch (error) {
+      this.logger.warn(
+        `Welcome reconcile failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { checked: 0, enqueued: 0, alreadyHad: 0 };
     }
   }
 
@@ -403,7 +499,10 @@ export class PasswordResetService {
       );
     }
 
-    await this.repository.setPassword(row.user_id, hashPassword(newPassword));
+    await this.repository.setPassword(
+      row.user_id,
+      await hashPassword(newPassword),
+    );
 
     /**
      * Tell them it happened, and do not wait for it.

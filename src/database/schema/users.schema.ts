@@ -78,6 +78,13 @@ export const users = pgTable(
      */
     permVersion: integer('perm_version').notNull().default(1),
     isActive: integer('is_active').notNull().default(1),
+    /**
+     * When a bulk-imported learner was recorded as owed a welcome email, and
+     * NULL once one has been queued (0044). Written in the same INSERT as the
+     * learner so the intent cannot be lost; the reconcile sweep (§10.33)
+     * re-enqueues anything still set after a grace window.
+     */
+    welcomePendingSince: timestamp('welcome_pending_since', { withTimezone: true }),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

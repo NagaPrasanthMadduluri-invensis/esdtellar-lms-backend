@@ -85,6 +85,45 @@ export class PasswordResetRepository {
    * person, so a learner who is somehow imported twice cannot end up with
    * two live links.
    */
+  /**
+   * Learners still owed a welcome email after a grace window — the sweep's
+   * input (§10.33).
+   *
+   * On the users table, which this repository already reads and writes
+   * (findByEmail, setPassword), so no module boundary is crossed to get it.
+   * The grace window matters: the happy path clears the flag seconds after
+   * the request sets it, so a flag older than a few minutes is a genuine
+   * straggler, not a request still in flight.
+   */
+  async findPendingWelcomes(
+    olderThanMinutes: number,
+    limit: number,
+  ): Promise<
+    { id: number; email: string; organizationId: number; firstName: string | null }[]
+  > {
+    const rows = await this.db.execute(sql`
+      SELECT u.id, u.email, u.organization_id AS "organizationId",
+             u.first_name AS "firstName"
+        FROM users u
+       WHERE u.welcome_pending_since IS NOT NULL
+         AND u.welcome_pending_since < now() - (${olderThanMinutes} || ' minutes')::interval
+       ORDER BY u.welcome_pending_since
+       LIMIT ${limit}
+    `);
+    return rows.rows as {
+      id: number; email: string; organizationId: number; firstName: string | null;
+    }[];
+  }
+
+  /** Clear the marker — a welcome has been queued, or already existed. */
+  async clearWelcomePending(userIds: number[]): Promise<void> {
+    if (userIds.length === 0) return;
+    await this.db.run(sql`
+      UPDATE users SET welcome_pending_since = NULL
+       WHERE id IN ${idList(userIds)}
+    `);
+  }
+
   async issueMany(
     rows: { userId: number; tokenHash: string; expiresAt: Date }[],
   ): Promise<void> {

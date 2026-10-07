@@ -9,6 +9,7 @@ import { PgBoss } from 'pg-boss';
 
 import { RemindersService } from '@/modules/reminders/reminders.service';
 import { EmailFailureAlertsService } from '@/modules/reminders/email-failure-alerts.service';
+import { PasswordResetService } from '@/modules/auth/password-reset.service';
 
 import { OutboxDrainJob } from './outbox-drain.job';
 
@@ -56,6 +57,7 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     private readonly drain: OutboxDrainJob,
     private readonly reminders: RemindersService,
     private readonly failureAlerts: EmailFailureAlertsService,
+    private readonly passwordReset: PasswordResetService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -86,6 +88,7 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     await this.registerPrune();
     await this.registerDueSoon();
     await this.registerFailureAlerts();
+    await this.registerWelcomeReconcile();
 
     this.logger.log(
       'Worker started — email drain every minute, due-soon reminders at ' +
@@ -168,6 +171,25 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     });
     await boss.schedule(queue, '20 * * * *', undefined, {
       singletonKey: 'failure-alerts',
+    });
+  }
+
+  /**
+   * Re-queue welcome emails for bulk-created learners whose enqueue slipped
+   * through (§10.33). Every 10 minutes — a learner who cannot sign in is more
+   * urgent than the hourly failure sweep, and the grace window inside
+   * reconcileWelcomes keeps it from racing a request that is about to clear
+   * the flag itself.
+   */
+  private async registerWelcomeReconcile(): Promise<void> {
+    const boss = this.boss!;
+    const queue = 'welcome-reconcile';
+    await boss.createQueue(queue);
+    await boss.work(queue, async () => {
+      await this.passwordReset.reconcileWelcomes();
+    });
+    await boss.schedule(queue, '*/10 * * * *', undefined, {
+      singletonKey: 'welcome-reconcile',
     });
   }
 

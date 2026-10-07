@@ -366,6 +366,13 @@ export class UsersRepository {
       managerId?: number | null;
       roleId: number;
       role: RolePortal;
+      /**
+       * Set the "owed a welcome email" marker in THIS insert, so the intent
+       * is recorded atomically with the learner and cannot be lost in the
+       * window before the batched enqueue (0044, §10.33). The bulk importer
+       * passes the admin's checkbox; every other caller leaves it false.
+       */
+      welcomePending?: boolean;
     },
   ) {
     const [created] = await this.db
@@ -387,6 +394,7 @@ export class UsersRepository {
         jobRole: input.jobRole,
         jobLevel: input.jobLevel,
         managerId: input.managerId ?? null,
+        welcomePendingSince: input.welcomePending ? new Date() : null,
       })
       .returning({
         id: users.id,

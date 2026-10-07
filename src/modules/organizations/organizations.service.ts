@@ -311,7 +311,7 @@ export class OrganizationsService implements OnModuleInit {
           firstName: dto.admin.firstName,
           lastName: dto.admin.lastName,
           email: dto.admin.email,
-          passwordHash: hashPassword(dto.admin.password),
+          passwordHash: await hashPassword(dto.admin.password),
         },
       );
 
@@ -485,7 +485,7 @@ export class OrganizationsService implements OnModuleInit {
       firstName: input.firstName,
       lastName: input.lastName,
       email: input.email,
-      passwordHash: hashPassword(input.password),
+      passwordHash: await hashPassword(input.password),
       roleId: input.roleId,
       role: input.role,
       department: input.department ?? null,
