@@ -266,7 +266,13 @@ export class SessionsService {
 
     if (action === 'archive') affected = await this.repository.setArchived(scope, ids, true);
     else if (action === 'restore') affected = await this.repository.setArchived(scope, ids, false);
-    else if (action === 'cancel') affected = await this.repository.setCancelled(scope, ids);
+    else if (action === 'cancel') {
+      const cancelled = await this.repository.setCancelled(scope, ids);
+      affected = cancelled.length;
+      // Unlike a bulk publish (§10.25), a bulk CANCEL must tell people: it is
+      // the one change that sends somebody to a room where nothing happens.
+      void this.announceCancelled(scope, cancelled);
+    }
     else {
       for (const id of ids) {
         try {
@@ -438,6 +444,12 @@ export class SessionsService {
         start_time: dto.start_time ?? null,
         session_type: dto.session_type ?? null,
       });
+    }
+
+    // The transition INTO cancelled only — the form posts the status on every
+    // save, so a later edit to a cancelled session must not re-announce it.
+    if (requested === 'cancelled' && before.status !== 'cancelled') {
+      void this.announceCancelled(scope, [sessionId]);
     }
 
     if (requested === 'completed') {
@@ -1155,6 +1167,78 @@ export class SessionsService {
    * Never throws: every call is `void`-ed and `notify` swallows its own
    * errors (§8.4).
    */
+  /**
+   * `session_cancelled` — in the catalogue since 0030 with no call site, so a
+   * cancelled session told nobody and a learner found out by turning up.
+   *
+   * Two audiences, two sentences: the roster loses a booking, the trainer
+   * loses work. One notify per session, because each names its own sitting —
+   * a bulk cancel is a handful of sessions, not a fan-out to optimise.
+   * Never throws (§8.4).
+   */
+  private async announceCancelled(scope: OrgScope, sessionIds: number[]): Promise<void> {
+    for (const sessionId of sessionIds) {
+      try {
+        const s = await this.repository.findWithCourse(scope, sessionId);
+        if (!s) continue;
+        const title = String(s.title ?? 'A session');
+        const date = typeof s.date === 'string' ? s.date : null;
+        const start = typeof s.start_time === 'string' ? s.start_time : null;
+        const end = typeof s.end_time === 'string' ? s.end_time : null;
+        const when = date ? ` on ${cancelDate(date)}` : '';
+
+        const facts: Array<{ label: string; value: string }> = [];
+        if (date) facts.push({ label: 'Was scheduled for', value: cancelDate(date) });
+        if (start) facts.push({ label: 'Time', value: end ? `${start} – ${end}` : start });
+        if (s.trainer) facts.push({ label: 'Trainer', value: String(s.trainer) });
+
+        const trainerId = s.trainer_user_id ? Number(s.trainer_user_id) : null;
+        const roster = (await this.notifications.sessionRoster(sessionId)).filter(
+          (id) => id !== trainerId,
+        );
+
+        if (roster.length > 0) {
+          void this.notifications.notify({
+            userIds: roster,
+            organizationId: scope.organizationId,
+            type: 'session_cancelled',
+            title: `Cancelled: ${title}`,
+            subjectName: title,
+            body:
+              `${title}${when} will no longer go ahead. You do not need to do `
+              + 'anything — if it is rescheduled, you will be told separately.',
+            facts: facts.length ? facts : null,
+            link: '/my-sessions',
+            subjectType: 'session',
+            subjectId: sessionId,
+            actorName: 'Your L&D team',
+          });
+        }
+
+        if (trainerId) {
+          void this.notifications.notify({
+            userIds: [trainerId],
+            organizationId: scope.organizationId,
+            type: 'session_cancelled',
+            title: `Cancelled: ${title}`,
+            subjectName: title,
+            body:
+              `${title}${when} has been cancelled, so you are no longer running it. `
+              + 'Nobody needs to be marked for attendance.',
+            // Their own name is no news to them.
+            facts: facts.filter((f) => f.label !== 'Trainer'),
+            link: '/trainer/sessions',
+            subjectType: 'session',
+            subjectId: sessionId,
+            actorName: 'Your L&D team',
+          });
+        }
+      } catch {
+        /* best-effort (§8.4) — the session is cancelled either way */
+      }
+    }
+  }
+
   private async announceTrainer(
     scope: OrgScope,
     input: {
@@ -1251,4 +1335,12 @@ export class SessionsService {
       enrollMode: dto.enroll_mode ?? 'assigned',
     };
   }
+}
+
+/** "31 May 2026" from a session's bare YYYY-MM-DD. */
+function cancelDate(value: string): string {
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
+  return Number.isNaN(d.getTime())
+    ? value
+    : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }

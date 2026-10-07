@@ -12,6 +12,9 @@ import type { OrgScope } from '@/database/org-scope';
 import { journeyBadgeKey } from '@/common/badges';
 import { BadgesService } from '@/modules/badges/badges.service';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { actorLabel } from '@/common/notifications';
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import type { AssignJourneyDto } from './dto/assign-journey.dto';
 import type {
@@ -130,6 +133,7 @@ export class JourneysService {
     private readonly certificates: CertificatesService,
     private readonly badges: BadgesService,
     private readonly gate: JourneyGateService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /* ── Shaping ── */
@@ -456,7 +460,13 @@ export class JourneysService {
       : { kind: 'department', department: dto.department!.trim() };
   }
 
-  async assign(scope: OrgScope, journeyId: number, dto: AssignJourneyDto, adminId: number) {
+  async assign(
+    scope: OrgScope,
+    journeyId: number,
+    dto: AssignJourneyDto,
+    adminId: number,
+    actor?: AuthenticatedUser,
+  ) {
     const journey = await this.repository.findById(scope, journeyId);
     if (!journey) throw new NotFoundException('Journey not found');
 
@@ -482,7 +492,7 @@ export class JourneysService {
     if (targetCount === 0) return { assigned: 0, skipped: 0 };
 
     // Two set-based statements, no `await` inside a loop (§7.1, acceptance 3).
-    const assigned = await this.repository.enrollLearners(
+    const enrolled = await this.repository.enrollLearners(
       scope,
       journeyId,
       match,
@@ -491,7 +501,53 @@ export class JourneysService {
     );
     await this.repository.assignJourneyCourses(scope, journeyId, match, adminId, dueDate);
 
-    return { assigned, skipped: targetCount - assigned };
+    // After both writes, so nobody is told about a path whose courses are not
+    // yet in their My Courses. Never awaited for its result: telling somebody
+    // is secondary to doing it (§8.4).
+    if (enrolled.length > 0) {
+      void this.announceAssigned(scope, journey, enrolled, dueDate, actor);
+    }
+
+    return { assigned: enrolled.length, skipped: targetCount - enrolled.length };
+  }
+
+  /**
+   * `journey_assigned` — in the catalogue since 0030 with no call site, so a
+   * learner put on a path heard about it from nothing but My Courses filling
+   * up with steps they could not yet open. Sent ONLY to the newly enrolled.
+   */
+  private async announceAssigned(
+    scope: OrgScope,
+    journey: { id: number; title: string },
+    userIds: number[],
+    dueDate: string | null,
+    actor?: AuthenticatedUser,
+  ): Promise<void> {
+    try {
+      const courses = await this.repository.countCourses(journey.id);
+      const facts: Array<{ label: string; value: string }> = [];
+      if (courses > 0) facts.push({ label: 'Courses', value: `${courses}, taken in order` });
+      if (dueDate) facts.push({ label: 'Complete by', value: longDate(dueDate) });
+
+      await this.notifications.notify({
+        userIds,
+        organizationId: scope.organizationId,
+        type: 'journey_assigned',
+        title: `New learning path: ${journey.title}`,
+        subjectName: journey.title,
+        body:
+          `${journey.title} has been added to your learning. Its courses are `
+          + 'taken in order, and each one unlocks the next.',
+        facts: facts.length ? facts : null,
+        link: '/learning-paths',
+        subjectType: 'journey',
+        subjectId: journey.id,
+        actorName: actorLabel(actor),
+        exceptUserId: actor?.userId ?? null,
+      });
+    } catch {
+      /* best-effort (§8.4) — the assignment itself has already happened */
+    }
   }
 
   async unassign(scope: OrgScope, journeyId: number, userId: number) {
@@ -801,8 +857,8 @@ export class JourneysService {
          * complete (§8.4).
          *
          * Points are NOT awarded here and there is no row to write for them —
-         * `LeaderboardRepository.standings()` sums `journeys.points_bonus`
-         * over completed enrollments, so stamping `completed_at` above IS the
+         * `LeaderboardRepository.pointEvents()` pays `journeys.points_bonus`
+         * for every completed enrollment, so stamping `completed_at` above IS the
          * award. That is what keeps one formula (§10.5).
          */
         await this.certificates.issueForJourney(scope, userId, journeyId);
@@ -823,4 +879,12 @@ export class JourneysService {
       );
     }
   }
+}
+
+/** "6 November 2026" from a YYYY-MM-DD (or any date-ish) value. */
+function longDate(value: string): string {
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
+  return Number.isNaN(d.getTime())
+    ? value
+    : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }

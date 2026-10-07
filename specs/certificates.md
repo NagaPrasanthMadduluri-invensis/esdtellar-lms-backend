@@ -112,3 +112,25 @@ All UI per TASTE.md: `page.js` stays a Server Component; `<Text>`/`<Box>`; Tailw
 - No PDF binary/e-sign in v1 (print view only). Revisit if formal certificates are required.
 - Verify endpoint is unauthenticated by design — keep it strictly PII-free; consider rate-limiting later.
 - Data residency: certificates contain learner PII at rest — note for the residency review, do not solve here.
+
+---
+
+## Since v1 (read before relying on the sections above)
+
+This spec is the v1 design and is kept as written. What has changed since:
+
+- **Code format.** New codes are `<PREFIX>-<12 hex>` (course or session) and
+  `<PREFIX>-J-<12 hex>` (learning path). The ids were removed from the code
+  because a document shown to strangers published internal row ids; `PREFIX`
+  is per organisation (`0038`, default `EDS`). Issued codes are never
+  rewritten, so `EDS-<courseId>-<userId>-<hash>` codes stay valid.
+- **Three kinds of certificate, three designs** — course (Completion),
+  learning path (Achievement), session (Participation), from the owner's
+  reference PDFs. See BACKEND_STRUCTURE §10.23.1.
+- **Per-organisation branding** — logo, signatory name and title (`0039`),
+  and the prefix, edited in the admin's Certificate branding panel under
+  `manage_organization`. The signatory is read at render time; the prefix
+  only at issue.
+- **Still true:** the final score is printed on no certificate, the verify
+  endpoint returns no PII, and the download is print-to-PDF from the HTML
+  document (one A4 landscape page) rather than a generated binary.

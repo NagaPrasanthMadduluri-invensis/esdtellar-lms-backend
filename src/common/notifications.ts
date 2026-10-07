@@ -164,7 +164,7 @@ export const NOTIFICATION_TYPES = {
     audience: ['learner'],
     email: 'announcement',
     cta: 'View the leaderboard',
-    aspiration: 'Points come from lessons finished and assessments passed.',
+    aspiration: 'Points come from courses completed, assessments passed, sessions attended and feedback given.',
   },
 
   /* ── Sessions ──
@@ -252,6 +252,19 @@ export const NOTIFICATION_TYPES = {
     audience: ['admin'],
     email: 'transactional',
     cta: 'Review the claim',
+  },
+  /* The MANAGER's yes — a step, not an outcome. It was sent as
+     `external_cert_approved`, whose closing line says the certification now
+     counts towards the learner's hours; at this point nothing has been added
+     to their record yet, so the email was telling them something untrue. */
+  external_cert_confirmed: {
+    label: 'External certification confirmed by your manager',
+    group: 'recognition',
+    icon: 'Award',
+    audience: ['learner'],
+    email: 'transactional',
+    cta: 'View the details',
+    aspiration: 'Nothing is added to your record until your L&D team gives the final approval.',
   },
   external_cert_approved: {
     label: 'External certification approved',

@@ -813,16 +813,27 @@ export class JourneysRepository {
     match: LearnerMatch,
     adminId: number,
     dueDate: string | null,
-  ): Promise<number> {
-    const rows = await this.db.all<{ id: number }>(sql`
+  ): Promise<number[]> {
+    // RETURNING past ON CONFLICT DO NOTHING: the insert itself reports who
+    // was NEWLY enrolled, so re-assigning a department notifies only the
+    // people it actually added (the same shape as SessionsService.addToRoster).
+    const rows = await this.db.all<{ user_id: number }>(sql`
       INSERT INTO journey_enrollments (organization_id, journey_id, user_id, assigned_by, due_date)
       SELECT u.organization_id, ${journeyId}, u.id, ${adminId}, ${dueDate}
       FROM users u
       WHERE ${this.matchCondition(match, scope)}
       ON CONFLICT (user_id, journey_id) DO NOTHING
-      RETURNING id
+      RETURNING user_id
     `);
-    return rows.length;
+    return rows.map((r) => Number(r.user_id));
+  }
+
+  /** How many courses a path holds — the one figure its assignment email states. */
+  async countCourses(journeyId: number): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM journey_courses WHERE journey_id = ${journeyId}
+    `);
+    return Number(rows[0]?.n ?? 0);
   }
 
   /**
