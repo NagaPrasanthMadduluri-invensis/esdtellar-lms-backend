@@ -44,6 +44,15 @@ const TOKEN_BYTES = 32;
  * to use it on Monday.
  */
 const WELCOME_TTL_MINUTES = 7 * 24 * 60;
+
+/**
+ * How many welcome emails go in one enqueue call.
+ *
+ * Under `EMAIL_MAX_RECIPIENTS_PER_NOTIFY` (200), which would otherwise
+ * SKIP the whole batch and log — see `sendWelcomeMany` for why chunking
+ * is the right answer here rather than raising that ceiling.
+ */
+const WELCOME_CHUNK = 100;
 const RATE_LIMIT_WINDOW_MINUTES = 15;
 const RATE_LIMIT_MAX = 3;
 
@@ -219,6 +228,115 @@ export class PasswordResetService {
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+  }
+
+  /**
+   * Welcome MANY people at once, for the bulk import.
+   *
+   * ## Why not just call `sendWelcome` in a loop
+   *
+   * That is two round trips per person — a token insert and an enqueue —
+   * so a 500-row import would be 1,000 of them inside one HTTP request,
+   * on the path that is already the slowest in the product because it runs
+   * `scryptSync` per row. This is a fixed handful regardless of size:
+   * `issueMany` is two statements, and each enqueue chunk is one recipient
+   * lookup plus one multi-row INSERT.
+   *
+   * ## Pacing is the WORKER's job, and that is the whole point
+   *
+   * Nothing here sends anything. It writes outbox rows, and the drain job
+   * releases them at `EMAIL_RATE_PER_SECOND` in batches of
+   * `EMAIL_BATCH_SIZE`, stopping at `EMAIL_MAX_PER_DAY`. So a 300-learner
+   * import returns as fast as a 3-learner one, and the mail leaves over
+   * the following minutes rather than in a burst that would trip Gmail's
+   * own limit — which is the failure mode the ceiling below cannot see.
+   *
+   * ## The chunking is not evading the fan-out ceiling
+   *
+   * `EMAIL_MAX_RECIPIENTS_PER_NOTIFY` (200) exists to stop ONE event
+   * reaching an unexpected crowd — an announcement fanning out to a whole
+   * tenant. These are not that: each row is an individually addressed
+   * message carrying its own one-time link, and the admin asked for
+   * exactly this many by uploading exactly this many rows. Chunking under
+   * the ceiling keeps that guard meaningful for the case it was written
+   * for instead of raising it for everybody.
+   *
+   * Best-effort throughout (§8.4). The accounts exist and work regardless;
+   * an email failure must not fail an import the admin already watched
+   * succeed, and the Email Delivery page (§10.32) is where a failure is
+   * visible afterwards.
+   */
+  async sendWelcomeMany(
+    users: {
+      id: number;
+      email: string;
+      organizationId: number;
+      firstName?: string | null;
+    }[],
+  ): Promise<number> {
+    if (users.length === 0) return 0;
+
+    try {
+      const expiresAt = new Date(Date.now() + WELCOME_TTL_MINUTES * 60_000);
+
+      /* One token per person, minted here so the hash is all the database
+       * ever sees — the plaintext exists only long enough to go in a link. */
+      const linkByUserId = new Map<number, string>();
+      const rows = users.map((user) => {
+        const token = randomBytes(TOKEN_BYTES).toString('base64url');
+        linkByUserId.set(
+          user.id,
+          `/reset-password?token=${encodeURIComponent(token)}`,
+        );
+        return { userId: user.id, tokenHash: hashToken(token), expiresAt };
+      });
+
+      await this.repository.issueMany(rows);
+
+      const organizationId = users[0].organizationId;
+      const days = Math.round(WELCOME_TTL_MINUTES / 60 / 24);
+      let queued = 0;
+
+      for (let i = 0; i < users.length; i += WELCOME_CHUNK) {
+        const chunk = users.slice(i, i + WELCOME_CHUNK);
+        queued += await this.email.enqueue({
+          organizationId,
+          userIds: chunk.map((u) => u.id),
+          type: 'welcome',
+          subject: 'Your Spectra LMS account is ready',
+          subjectName: null,
+          /*
+           * No first name, unlike the single-user version. One body is
+           * shared by the whole chunk, so personalising it would greet
+           * every learner in the batch by the first one's name — worse
+           * than not greeting them at all. The link IS per person; that is
+           * what `linkByUserId` exists for.
+           */
+          body:
+            'Your account has been created. Choose a password below and you '
+            + 'can start learning straight away.',
+          facts: [
+            {
+              label: 'This link lasts',
+              value: `${days} days — after that, use "Forgot password" on the sign-in page`,
+            },
+          ],
+          linkByUserId,
+        });
+      }
+
+      this.logger.log(
+        `Welcome links issued for ${users.length} imported user(s); ${queued} queued.`,
+      );
+      return queued;
+    } catch (error) {
+      this.logger.warn(
+        `Bulk welcome emails not sent (${users.length} user(s)): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return 0;
     }
   }
 

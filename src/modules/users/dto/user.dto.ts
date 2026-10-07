@@ -206,6 +206,30 @@ export class BulkUserRowDto {
  * be reported in the `failed` array rather than rejecting the whole upload.
  */
 export class BulkCreateUsersDto {
+  /**
+   * Email every learner the file creates their sign-in link. DEFAULT ON.
+   *
+   * On by default because the alternative is the gap that caused this: 300
+   * accounts holding a password nobody told anybody, which is not an
+   * onboarding at all. Omitting the field keeps the behaviour an admin
+   * expects, and the browser ticks it with the row count beside it.
+   *
+   * It exists at all because a bulk import is exactly where an accident
+   * becomes a fan-out. An admin importing the template's own sample rows —
+   * which has happened — must be able to create the accounts without
+   * mailing strangers, and an admin staging a tenant before go-live wants
+   * the accounts now and the invitations later. §10.30 makes the same
+   * argument for `email_announcements` defaulting to 0; this defaults the
+   * other way because these are individually addressed credentials rather
+   * than broadcast news, and the file names its own recipients.
+   */
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) =>
+    value === undefined || value === null ? true : value === true || value === 'true' || value === 1,
+  )
+  send_welcome_email?: boolean;
+
   @IsArray()
   @ArrayMinSize(1, { message: 'users must contain at least one row' })
   @ArrayMaxSize(500, { message: 'users must contain at most 500 rows' })

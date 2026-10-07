@@ -108,6 +108,38 @@ export class OrgOptionsService {
     return this.assertOneOf(organizationId, value, 'job_level');
   }
 
+  /**
+   * Both validators, resolved ONCE, for a caller with many rows to check.
+   *
+   * `assertLocation` and `assertJobLevel` each run a query, and each
+   * returns THE SAME LIST for every row of one import — so a 500-row bulk
+   * upload was fetching the identical two lists a thousand times between
+   * them. That is the N+1 §7.1 forbids, and `bulkCreate`'s "deliberately
+   * row-at-a-time" licence does not cover it: that licence is about
+   * REPORTING a bad row without rejecting the file, which costs nothing
+   * per-row here, and says nothing about re-reading a constant set.
+   *
+   * The returned functions apply exactly the same rule as the single-row
+   * asserters — same case-insensitive match, same list-casing on the way
+   * out, same `OptionNotOfferedError` with the same valid values — because
+   * they share `match()` below rather than restating it. A second copy of
+   * the matching rule in the importer is how a bulk upload comes to accept
+   * a spelling the form refuses.
+   */
+  async optionCheckers(organizationId: number): Promise<{
+    location: (value: string | null | undefined) => string | null;
+    jobLevel: (value: string | null | undefined) => string | null;
+  }> {
+    const [locations, jobLevels] = await Promise.all([
+      this.repository.listLocations(organizationId, true),
+      this.repository.listJobLevels(organizationId, true),
+    ]);
+    return {
+      location: (value) => match(value, locations, 'location'),
+      jobLevel: (value) => match(value, jobLevels, 'job_level'),
+    };
+  }
+
   private async assertOneOf(
     organizationId: number,
     value: string | null | undefined,
@@ -120,17 +152,33 @@ export class OrgOptionsService {
         ? await this.repository.listLocations(organizationId, true)
         : await this.repository.listJobLevels(organizationId, true);
 
-    // Matched case-insensitively but stored in the LIST's casing, so the
-    // column holds one spelling of each value no matter what a bulk import
-    // typed — that is the whole reason these are closed lists (§10.3.1.1).
-    const hit = rows.find(
-      (r) => r.name.toLowerCase() === String(value).trim().toLowerCase(),
-    );
-    if (hit) return hit.name;
-
-    const valid = rows.map((r) => r.name);
-    throw new OptionNotOfferedError(field, valid);
+    return match(value, rows, field);
   }
+}
+
+/**
+ * The matching rule itself, in ONE place.
+ *
+ * Shared by the single-row asserters and by the batched `optionCheckers`,
+ * so a bulk import can never accept a spelling the admin form refuses.
+ *
+ * Matched case-insensitively but returned in the LIST's casing, so the
+ * column holds one spelling of each value no matter what a bulk import
+ * typed — that is the whole reason these are closed lists (§10.3.1.1).
+ */
+function match(
+  value: string | null | undefined,
+  rows: { name: string }[],
+  field: 'location' | 'job_level',
+): string | null {
+  if (value === undefined || value === null || value === '') return null;
+
+  const hit = rows.find(
+    (r) => r.name.toLowerCase() === String(value).trim().toLowerCase(),
+  );
+  if (hit) return hit.name;
+
+  throw new OptionNotOfferedError(field, rows.map((r) => r.name));
 }
 
 /**

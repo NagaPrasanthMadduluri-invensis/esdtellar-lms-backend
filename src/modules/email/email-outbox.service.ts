@@ -18,6 +18,20 @@ import {
 
 /** What `notify()` hands over, plus what a direct email supplies itself. */
 export interface EnqueueInput {
+  /**
+   * A DIFFERENT link per recipient, keyed by user id.
+   *
+   * Exists for one shape the shared `link` cannot express: a welcome or a
+   * password reset carries a ONE-TIME TOKEN, so every recipient's URL is
+   * unique. Without this, a batch of 300 welcomes would be 300 separate
+   * `enqueue` calls — 300 recipient lookups and 300 INSERTs inside one HTTP
+   * request, the N+1 §7.1 forbids on the slowest path in the product.
+   *
+   * When a user id is absent from the map their row falls back to `link`.
+   * A map with an entry for everybody and no `link` at all is the normal
+   * case for a credential batch.
+   */
+  linkByUserId?: Map<number, string>;
   /** Display facts for the email's panel, frozen at enqueue (0041). */
   facts?: Array<{ label: string; value: string }> | null;
   /** The bare name of the subject, for the email's subheading (0042). */
@@ -162,7 +176,7 @@ export class EmailOutboxService {
         orgName: r.org_name,
         subject,
         body: input.body ?? null,
-        link: input.link ?? null,
+        link: input.linkByUserId?.get(r.user_id) ?? input.link ?? null,
         actorName: input.actorName ?? null,
         dedupeKey: this.dedupeKey(input, r.user_id),
       };

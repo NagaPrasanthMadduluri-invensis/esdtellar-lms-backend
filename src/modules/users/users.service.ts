@@ -525,6 +525,12 @@ export class UsersService {
   async bulkCreate(scope: OrgScope, dto: BulkCreateUsersDto) {
     let created = 0;
     const failed: { row: number; email: string; reason: string }[] = [];
+    const welcomeTargets: {
+      id: number;
+      email: string;
+      organizationId: number;
+      firstName: string;
+    }[] = [];
 
     // Resolved ONCE, outside the loop: a query per row would be an N+1 on the
     // one endpoint that is deliberately row-at-a-time (§7.1). If the
@@ -532,6 +538,38 @@ export class UsersService {
     // attempted, which is right — every row would otherwise land in `failed`
     // with a generic reason and the real cause never shown.
     const learnerRole = await this.roles.roleByKey(scope, 'learner');
+
+    /*
+     * The branch locations and job levels, fetched ONCE for the file.
+     *
+     * `assertLocation` / `assertJobLevel` each run a query and each returns
+     * the SAME list on every row, so a 500-row upload was re-reading two
+     * identical lists a thousand times between them — the N+1 §7.1 forbids.
+     * This endpoint's "deliberately row-at-a-time" licence is about
+     * REPORTING a bad row without rejecting the file; it never licensed
+     * re-reading a constant set. The returned checkers apply the identical
+     * rule and throw the identical `OptionNotOfferedError`, because they
+     * share one matcher with the single-row asserters.
+     */
+    const options = await this.orgOptions.optionCheckers(scope.organizationId);
+
+    /*
+     * Every address already registered, in ONE query rather than a probe
+     * per row.
+     *
+     * It is a mutable Set, not a snapshot, and that is load-bearing: a
+     * file containing the same address TWICE must fail the second row,
+     * and with a pre-fetched snapshot alone it would not — the first row
+     * inserts, the second checks a stale set, and the unique index throws
+     * a bare "Database error" instead of "Email already registered". So
+     * each successful insert adds to it, the same shape `managerByEmail`
+     * uses just below.
+     */
+    const taken = await this.repository.existingEmails(
+      dto.users
+        .map((row) => row.email?.trim().toLowerCase())
+        .filter((email): email is string => !!email),
+    );
 
     /*
      * THE MANAGER COLUMN, resolved ONCE for the whole file.
@@ -583,7 +621,7 @@ export class UsersService {
         failed.push({ row: rowNum, email, reason: 'Password must be at least 6 characters' });
         continue;
       }
-      if (await this.repository.emailExists(email)) {
+      if (taken.has(email)) {
         failed.push({ row: rowNum, email, reason: 'Email already registered' });
         continue;
       }
@@ -607,10 +645,7 @@ export class UsersService {
       let location: string | null;
       let jobLevel: string | null;
       try {
-        location = await this.orgOptions.assertLocation(
-          scope.organizationId,
-          row.location ?? null,
-        );
+        location = options.location(row.location ?? null);
       } catch (error) {
         failed.push({
           row: rowNum,
@@ -623,10 +658,7 @@ export class UsersService {
         continue;
       }
       try {
-        jobLevel = await this.orgOptions.assertJobLevel(
-          scope.organizationId,
-          row.job_level ?? null,
-        );
+        jobLevel = options.jobLevel(row.job_level ?? null);
       } catch (error) {
         failed.push({
           row: rowNum,
@@ -693,6 +725,23 @@ export class UsersService {
         });
         created++;
         /*
+         * Collected rather than emailed here. One `sendWelcome` per row is
+         * two round trips per person — 1,000 for a 500-row file, inside the
+         * request, on the path that already runs `scryptSync` per row. The
+         * batch after the loop is a fixed handful whatever the size (§7.1).
+         */
+        /* So a second row naming the same address fails on the line above
+         * rather than on the unique index. */
+        taken.add(email);
+        if (createdUser?.id) {
+          welcomeTargets.push({
+            id: createdUser.id,
+            email,
+            organizationId: scope.organizationId,
+            firstName: row.first_name,
+          });
+        }
+        /*
          * A person created by THIS file can be named as a manager by a row
          * BELOW them, which is how an admin onboards a team in one upload.
          *
@@ -707,7 +756,39 @@ export class UsersService {
       }
     }
 
-    return { created, failed, total: dto.users.length };
+    /*
+     * AFTER the loop, and AWAITED rather than voided.
+     *
+     * Awaiting costs one `issueMany` plus one enqueue per 100 — a handful
+     * of statements, not a send — and buys the admin a truthful number on
+     * the results screen. Voiding it would make `welcome_emails_queued` a
+     * guess, and the whole reason this exists is that the previous answer
+     * to "were they emailed?" was silence.
+     *
+     * `sendWelcomeMany` never throws (§8.4): the accounts are already
+     * created and committed, and an email failure must not turn a
+     * successful import into an error. A failure is visible afterwards on
+     * the Email Delivery page (§10.32), which is the other half of this.
+     */
+    const welcomeRequested = dto.send_welcome_email !== false;
+    const welcomeEmailsQueued =
+      welcomeRequested && welcomeTargets.length > 0
+        ? await this.passwordReset.sendWelcomeMany(welcomeTargets)
+        : 0;
+
+    return {
+      created,
+      failed,
+      total: dto.users.length,
+      /*
+       * Three fields rather than one, because "we did not try" and "we
+       * tried and nothing went out" are different facts with different
+       * next steps — the first is the admin's own checkbox, the second is
+       * a suppression, an allowlist or a broken transport.
+       */
+      welcome_emails_requested: welcomeRequested,
+      welcome_emails_queued: welcomeEmailsQueued,
+    };
   }
 
   /** Admin accounts are not editable or deletable through this API. */
