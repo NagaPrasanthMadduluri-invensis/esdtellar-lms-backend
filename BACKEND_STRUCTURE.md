@@ -611,6 +611,65 @@ Update this table with every module you move.
 | forgot password (request, check, reset) | 3 | `server/src/modules/auth` |
 | scheduled reminders (`course_due_soon`) — cron, no HTTP | 0 | `server/src/modules/reminders` |
 
+### 10.33 No bulk-created learner slips through the welcome email
+
+`0044_welcome_pending.sql`. The welcome-email feature (§10.31) had a gap that
+is the exact one the outbox pattern (§10.30) exists to prevent, reappearing
+because the bulk path cannot use it the way the pattern assumes.
+
+**The gap.** `bulkCreate` commits learners one per row, then enqueues their
+welcomes in a batch AFTER the loop (§7.1 — one `issueMany` and chunked
+`enqueue`, not 1,000 round trips). That batched enqueue is best-effort (§8.4):
+a restart in the window, or a failed chunk write, leaves a learner created
+with no welcome row and nothing to retry it — and the admin's Resend only
+recovers a FAILED row (§10.32), never a MISSING one. The outbox guarantees
+delivery only once the row EXISTS; nothing guaranteed the row came to exist.
+The reason it cannot just be fixed the §10.30 way — outbox row in the same
+transaction as the business row — is that there is no single transaction: N
+user inserts, then one enqueue.
+
+**The fix is a durable flag, written WITH the learner.**
+`users.welcome_pending_since` is set in the SAME INSERT that creates the
+learner, when the welcome was requested — so if the learner row exists, the
+intent is recorded, atomically, with no window. It is the one signal that
+distinguishes the three cases a reconciler must tell apart, and heuristics
+(a dangling token, a recent `created_at`) cannot:
+
+| State | flag | welcome row | meaning |
+|---|---|---|---|
+| opted out | never set | none | leave alone |
+| sent | cleared | exists | done |
+| **lost enqueue** | **set** | **none** | **re-queue** |
+| lost clear | set | exists | clear the flag, send nothing |
+
+**The happy path keeps it transient.** `sendWelcomeMany` clears the flag for
+everyone it queued, in the same request — so a flag still standing minutes
+later is a genuine straggler, which is all the sweep ever acts on.
+
+**The sweep reuses the ONE credential path.** `reconcileWelcomes` (in
+`PasswordResetService`, beside `sendWelcomeMany`) reads flags older than a
+grace window, asks the outbox which already have a welcome row (clear those,
+send nothing — idempotent against a lost clear), and sends the rest through
+`sendWelcomeMany` itself. There is no second place that mints a sign-in
+token. Verified across all three live branches: a simulated lost-enqueue was
+re-queued and only it; a lost-clear cleared the flag with no duplicate; a
+second run was a clean no-op.
+
+**It runs on the worker, every 10 minutes**, scheduled by pg-boss beside the
+drain and the sweeps. A learner who cannot sign in is more urgent than the
+hourly failure alert, hence 10 minutes; the grace window keeps it from
+racing a request about to clear the flag itself.
+
+**The cost, stated honestly: `WorkerModule` now imports `AuthModule`** — and
+through it Organizations, Activity and OrgOptions — which is heavier than the
+lean worker §10.30 describes. That is the price of REUSING `sendWelcomeMany`
+rather than writing a second token-minting path in a worker-local service;
+the codebase's standing rule is that one credential path beats two, and a
+worker that constructs an unrouted `AuthController` is a smaller cost than a
+duplicate way to create a sign-in link. `idList` was also lifted to
+`src/database/id-list.ts` (§10.15 foretold the fourth copy); the local copy
+in `email-outbox.repository.ts` is gone.
+
 ### 10.32 An audit log, and an admin who can see their own email
 
 Two features from one complaint: an admin bulk-imported 300 learners and

@@ -320,4 +320,16 @@ export class EmailOutboxService {
     return this.repository.recentFailures(withinHours);
   }
 
+  /**
+   * Of these users, which already have a welcome outbox row.
+   *
+   * The reconcile sweep's idempotency guard (§10.33): a learner whose flag
+   * lingered but whose welcome WAS queued must have the flag cleared, not a
+   * second welcome enqueued. Exposed on the service because
+   * `EmailOutboxRepository` is not exported (§3.2).
+   */
+  async usersWithWelcome(userIds: number[]): Promise<Set<number>> {
+    return this.repository.usersWithWelcome(userIds);
+  }
+
 }

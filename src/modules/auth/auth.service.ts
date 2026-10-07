@@ -243,7 +243,7 @@ export class AuthService {
     await this.repository.updateOwnPassword(
       userId,
       organizationId,
-      hashPassword(dto.newPassword),
+      await hashPassword(dto.newPassword),
     );
     return { message: 'Password updated successfully' };
   }

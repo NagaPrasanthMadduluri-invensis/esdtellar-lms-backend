@@ -236,7 +236,7 @@ export class UsersService {
       firstName: dto.first_name,
       lastName: dto.last_name,
       email: dto.email,
-      passwordHash: hashPassword(dto.password),
+      passwordHash: await hashPassword(dto.password),
       department: dto.department ?? null,
       location: workforce.location,
       jobRole: dto.job_role ?? null,
@@ -709,12 +709,23 @@ export class UsersService {
       }
 
       try {
+        /*
+         * `await`, and that await is the whole fix. `hashPassword` now runs
+         * scrypt on libuv's thread pool, so awaiting it per row yields the
+         * event loop between rows — the single API process serves other
+         * requests WHILE a 300-row import hashes, instead of freezing for
+         * ~11 seconds (BACKEND_STRUCTURE §10.30 risk 7). Sequential rather
+         * than Promise.all on purpose: hashing all rows at once would seize
+         * every thread-pool slot and starve the very requests this is meant
+         * to keep flowing.
+         */
+        const passwordHash = await hashPassword(password);
         const createdUser = await this.repository.createLearner(scope, {
           employeeId: row.employee_id ?? null,
           firstName: row.first_name,
           lastName: row.last_name,
           email,
-          passwordHash: hashPassword(password),
+          passwordHash,
           department: row.department ?? null,
           location,
           jobRole: row.job_role ?? null,
@@ -722,6 +733,14 @@ export class UsersService {
           managerId,
           roleId: learnerRole.id,
           role: learnerRole.portal,
+          /*
+           * The welcome marker, set in THIS insert so it is atomic with the
+           * learner — if the row exists, the intent is recorded, and the
+           * reconcile sweep can never miss one (§10.33). Only when the admin
+           * asked for it; an opt-out never sets the flag, so the sweep leaves
+           * those learners alone.
+           */
+          welcomePending: dto.send_welcome_email !== false,
         });
         created++;
         /*

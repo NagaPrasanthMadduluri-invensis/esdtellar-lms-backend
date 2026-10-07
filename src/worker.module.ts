@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import configuration from './config/configuration';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { EmailModule } from './modules/email/email.module';
 import { PgBossService } from './modules/email/queue/pg-boss.service';
 import { RemindersModule } from './modules/reminders/reminders.module';
@@ -41,6 +42,17 @@ import { RemindersModule } from './modules/reminders/reminders.module';
     DatabaseModule,
     EmailModule,
     RemindersModule,
+    /*
+     * For the welcome-reconcile job (§10.33). It pulls PasswordResetService
+     * (and, through AuthModule, Organizations/Activity/OrgOptions) into the
+     * worker — heavier than this module's usual lean diet, and the honest
+     * cost of REUSING the one credential-minting path instead of writing a
+     * second: sendWelcomeMany mints the token the API also mints, and two
+     * implementations would be two ways to create a sign-in credential.
+     * No HTTP server runs here, so AuthController is constructed and never
+     * routed.
+     */
+    AuthModule,
   ],
   providers: [PgBossService],
 })

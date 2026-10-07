@@ -2,21 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { sql, type SQL } from 'drizzle-orm';
 
 import { DatabaseService } from '@/database/database.service';
-
-/**
- * `id IN ${idList(ids)}`, because Drizzle expands a bare JS array into a ROW
- * constructor — `IN ((1,2,3))` — which Postgres rejects, and `ANY(${ids})`
- * fails the same way with "malformed array literal". The fourth copy of this
- * helper in the codebase (courses, journeys, sessions); §10.15 already said
- * it should be lifted into `database/` when a fourth appeared, and this is
- * that fourth. Left here to keep this change to one concern.
- */
-function idList(ids: number[]): SQL {
-  return sql`(${sql.join(
-    ids.map((id) => sql`${id}::int`),
-    sql`, `,
-  )})`;
-}
+import { idList } from '@/database/id-list';
 
 /**
  * Everything the email module reads or writes.
@@ -562,6 +548,22 @@ export class EmailOutboxRepository {
    * §10.18 uses for a leaderboard rank, so a sweep that runs twice cannot
    * ring the bell twice and no new column is needed to remember.
    */
+  /**
+   * Which of these user ids already have a `welcome` outbox row.
+   *
+   * Any status counts — pending, sent, even failed: all mean "a welcome was
+   * queued", which is what the reconcile sweep (§10.33) must not duplicate.
+   * A failed one is the admin's to resend, not the sweep's to re-create.
+   */
+  async usersWithWelcome(userIds: number[]): Promise<Set<number>> {
+    if (userIds.length === 0) return new Set();
+    const rows = await this.db.execute(sql`
+      SELECT DISTINCT o.user_id FROM email_outbox o
+       WHERE o.type = 'welcome' AND o.user_id IN ${idList(userIds)}
+    `);
+    return new Set((rows.rows as { user_id: number }[]).map((r) => r.user_id));
+  }
+
   async recentFailures(withinHours: number, limit = 200) {
     const rows = await this.db.execute(sql`
       SELECT o.id, o.organization_id, o.user_id, o.to_email, o.to_name,
