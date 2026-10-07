@@ -7,8 +7,7 @@ import { OrganizationsModule } from '../organizations/organizations.module';
 import { AuthController } from './auth.controller';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
-import { PasswordResetRepository } from './password-reset.repository';
-import { PasswordResetService } from './password-reset.service';
+import { PasswordResetModule } from './password-reset.module';
 import { TokenService } from './token.service';
 
 /**
@@ -16,18 +15,18 @@ import { TokenService } from './token.service';
  * incoming requests.
  */
 @Module({
-  imports: [OrganizationsModule, ActivityModule, OrgOptionsModule, EmailModule],
+  imports: [OrganizationsModule, ActivityModule, OrgOptionsModule, EmailModule, PasswordResetModule],
   controllers: [AuthController],
   providers: [
     AuthService,
     AuthRepository,
     TokenService,
-    PasswordResetService,
-    PasswordResetRepository,
   ],
   // PasswordResetService is exported so UsersService can send the welcome
   // email: it mints the same one-time token, and a second implementation
   // would be a second way to create a credential.
-  exports: [TokenService, AuthRepository, PasswordResetService],
+  // PasswordResetModule is RE-exported so existing importers of AuthModule
+  // (UsersModule, the worker) keep receiving PasswordResetService unchanged.
+  exports: [TokenService, AuthRepository, PasswordResetModule],
 })
 export class AuthModule {}

@@ -3,6 +3,8 @@ import { Module } from '@nestjs/common';
 import { BillingModule } from '@/modules/billing/billing.module';
 import { SeatsModule } from '@/modules/seats/seats.module';
 import { OrgOptionsModule } from '@/modules/org-options/org-options.module';
+import { PasswordResetModule } from '@/modules/auth/password-reset.module';
+import { SurveysModule } from '@/modules/surveys/surveys.module';
 
 import { AdminOrganizationController } from './admin-organization.controller';
 import { OrganizationsRepository } from './organizations.repository';
@@ -26,7 +28,9 @@ import { PlatformOrganizationsController } from './platform-organizations.contro
  * is guaranteed to have already run.
  */
 @Module({
-  imports: [BillingModule, SeatsModule, OrgOptionsModule],
+  // PasswordResetModule and SurveysModule depend on nothing that reaches
+  // back here, so neither can form a cycle (see each module's docblock).
+  imports: [BillingModule, SeatsModule, OrgOptionsModule, PasswordResetModule, SurveysModule],
   controllers: [
     PlatformOrganizationsController,
     PlatformAnalyticsController,

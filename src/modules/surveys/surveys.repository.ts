@@ -546,4 +546,56 @@ export class SurveysRepository {
     const [table, col] = column.split('.');
     return sql` AND ${sql.identifier(table)}.${sql.identifier(col)} = ${value}`;
   }
+
+  /**
+   * 0034's two seed statements, narrowed to one organization. KEEP IN STEP
+   * WITH 0034 — that migration still seeds on boot, and the two must produce
+   * the same forms. Idempotent by UNIQUE (organization_id, key) and the
+   * NOT EXISTS on questions, exactly as the migration is.
+   */
+  async seedSystemTemplates(organizationId: number): Promise<void> {
+    await this.db.run(sql`
+      INSERT INTO feedback_templates (organization_id, key, name, description, is_system)
+      SELECT ${organizationId}, t.key, t.name, t.description, 1
+        FROM (VALUES
+          ('standard',   'Standard course feedback',
+           'The default for every category that has no template of its own, and for any course an admin points at it.'),
+          ('technical',  'Technical course feedback',
+           'Attached automatically to courses in the Technical category.'),
+          ('compliance', 'Compliance course feedback',
+           'Attached automatically to courses in the Compliance category.')
+        ) AS t(key, name, description)
+      ON CONFLICT (organization_id, key) DO NOTHING
+    `);
+    await this.db.run(sql`
+      INSERT INTO feedback_template_questions (template_id, sort_order, question_type, prompt, options, is_required)
+      SELECT ft.id, q.sort_order, q.question_type, q.prompt, q.options::jsonb, q.is_required
+        FROM feedback_templates ft
+        JOIN (VALUES
+          ('standard',   1, 'rating', 'Overall, how would you rate this course?',                NULL, 1),
+          ('standard',   2, 'rating', 'How would you rate the quality of the content?',          NULL, 1),
+          ('standard',   3, 'yesno',  'Would you recommend this course to a colleague?',         NULL, 0),
+          ('standard',   4, 'text',   'What did you find most valuable?',                        NULL, 0),
+          ('standard',   5, 'text',   'What could be improved?',                                 NULL, 0),
+          ('technical',  1, 'rating', 'Overall, how would you rate this course?',                NULL, 1),
+          ('technical',  2, 'rating', 'How would you rate the depth of the technical content?',  NULL, 1),
+          ('technical',  3, 'likert', 'The examples and exercises reflected real work.',         NULL, 0),
+          ('technical',  4, 'choice', 'Was the level right for you?',
+             '["Too basic","About right","Too advanced"]', 0),
+          ('technical',  5, 'text',   'Which topic would you like covered in more depth?',       NULL, 0),
+          ('compliance', 1, 'rating', 'Overall, how would you rate this training?',              NULL, 1),
+          ('compliance', 2, 'likert', 'The training made my responsibilities clear.',            NULL, 1),
+          ('compliance', 3, 'choice', 'Do you know who to contact if you need to raise a concern?',
+             '["Yes","I think so","No"]', 1),
+          ('compliance', 4, 'yesno',  'Do you need any further support on this topic?',          NULL, 0),
+          ('compliance', 5, 'text',   'Anything you would like to add?',                         NULL, 0)
+        ) AS q(key, sort_order, question_type, prompt, options, is_required)
+          ON q.key = ft.key
+       WHERE ft.organization_id = ${organizationId}
+         AND ft.is_system = 1
+         AND NOT EXISTS (
+           SELECT 1 FROM feedback_template_questions x WHERE x.template_id = ft.id
+         )
+    `);
+  }
 }

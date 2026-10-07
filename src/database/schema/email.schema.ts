@@ -133,6 +133,8 @@ export const passwordResetTokens = pgTable(
     /** Set rather than deleted, so "already used" is a distinct answer. */
     usedAt: timestamp('used_at', { withTimezone: true }),
     requestedIp: text('requested_ip'),
+    /** 'welcome' or 'reset' (0045). A welcome link sends no "password changed" alert. */
+    purpose: text('purpose').notNull().default('reset'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

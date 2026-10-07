@@ -12,6 +12,8 @@ export interface ResetTokenRow {
   first_name: string | null;
   expires_at: string;
   used_at: string | null;
+  /** 'welcome' | 'reset' — 0045. */
+  purpose: string;
 }
 
 /**
@@ -146,13 +148,14 @@ export class PasswordResetRepository {
 
     const values = sql.join(
       rows.map(
-        (r) => sql`(${r.userId}, ${r.tokenHash}, ${r.expiresAt.toISOString()}, NULL)`,
+        // issueMany is the welcome path only (sendWelcomeMany), hence the literal.
+        (r) => sql`(${r.userId}, ${r.tokenHash}, ${r.expiresAt.toISOString()}, NULL, 'welcome')`,
       ),
       sql`, `,
     );
     await this.db.run(sql`
       INSERT INTO password_reset_tokens
-        (user_id, token_hash, expires_at, requested_ip)
+        (user_id, token_hash, expires_at, requested_ip, purpose)
       VALUES ${values}
     `);
   }
@@ -162,6 +165,7 @@ export class PasswordResetRepository {
     tokenHash: string,
     expiresAt: Date,
     requestedIp: string | null,
+    purpose: 'welcome' | 'reset' = 'reset',
   ): Promise<void> {
     await this.db.run(sql`
       UPDATE password_reset_tokens
@@ -170,8 +174,8 @@ export class PasswordResetRepository {
     `);
     await this.db.run(sql`
       INSERT INTO password_reset_tokens
-        (user_id, token_hash, expires_at, requested_ip)
-      VALUES (${userId}, ${tokenHash}, ${expiresAt.toISOString()}, ${requestedIp})
+        (user_id, token_hash, expires_at, requested_ip, purpose)
+      VALUES (${userId}, ${tokenHash}, ${expiresAt.toISOString()}, ${requestedIp}, ${purpose})
     `);
   }
 
@@ -195,7 +199,7 @@ export class PasswordResetRepository {
    */
   async findByHash(tokenHash: string): Promise<ResetTokenRow | null> {
     const [row] = await this.db.all<ResetTokenRow>(sql`
-      SELECT t.id, t.user_id, t.expires_at, t.used_at,
+      SELECT t.id, t.user_id, t.expires_at, t.used_at, t.purpose,
              u.organization_id, u.email, u.first_name
         FROM password_reset_tokens t
         JOIN users u ON u.id = t.user_id

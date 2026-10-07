@@ -199,19 +199,28 @@ export class PasswordResetService {
    * account works regardless — the admin has the temporary password on
    * screen.
    */
-  async sendWelcome(user: {
-    id: number;
-    email: string;
-    organizationId: number;
-    firstName?: string | null;
-  }): Promise<void> {
+  async sendWelcome(
+    user: {
+      id: number;
+      email: string;
+      organizationId: number;
+      firstName?: string | null;
+    },
+    /**
+     * 'admin' for an organization's first admin, provisioned by the platform:
+     * they are not there to start learning, they are there to set the
+     * organization up, and the email says so.
+     */
+    audience: 'learner' | 'admin' = 'learner',
+  ): Promise<void> {
     try {
       const token = randomBytes(TOKEN_BYTES).toString('base64url');
       const expiresAt = new Date(
         Date.now() + WELCOME_TTL_MINUTES * 60_000,
       );
-      await this.repository.issue(user.id, hashToken(token), expiresAt, null);
+      await this.repository.issue(user.id, hashToken(token), expiresAt, null, 'welcome');
 
+      const greeting = user.firstName ? `${user.firstName}, your` : 'Your';
       await this.email.enqueue({
         organizationId: user.organizationId,
         userIds: [user.id],
@@ -219,9 +228,12 @@ export class PasswordResetService {
         subject: 'Your Spectra LMS account is ready',
         subjectName: null,
         body:
-          `${user.firstName ? `${user.firstName}, your` : 'Your'} account has `
-          + 'been created. Choose a password below and you can start learning '
-          + 'straight away.',
+          audience === 'admin'
+            ? `${greeting} administrator account for your organisation has been `
+              + 'created. Choose a password below, then sign in to complete your '
+              + "organisation's details and add your learners."
+            : `${greeting} account has been created. Choose a password below and `
+              + 'you can start learning straight away.',
         facts: [
           { label: 'Sign in with', value: user.email },
           {
@@ -443,14 +455,17 @@ export class PasswordResetService {
    * Worth a round trip: a learner who types a new password twice and only
    * then hears the link expired has to start over having wasted the effort.
    */
-  async check(token: string): Promise<{ valid: boolean; reason?: string }> {
+  async check(
+    token: string,
+  ): Promise<{ valid: boolean; reason?: string; purpose?: string }> {
     const row = await this.repository.findByHash(hashToken(token));
     if (!row) return { valid: false, reason: 'not_found' };
     if (row.used_at) return { valid: false, reason: 'used' };
     if (new Date(row.expires_at).getTime() < Date.now()) {
       return { valid: false, reason: 'expired' };
     }
-    return { valid: true };
+    // Lets the page word a first-time welcome as "set", not "changed".
+    return { valid: true, purpose: row.purpose };
   }
 
   async reset(
@@ -503,6 +518,13 @@ export class PasswordResetService {
       row.user_id,
       await hashPassword(newPassword),
     );
+
+    // A WELCOME link sets a first password. Alerting "your password was
+    // changed - somebody else may have access" to somebody who has just
+    // chosen it is a false alarm on their first day (0045).
+    if (row.purpose === 'welcome') {
+      return { message: 'Your password is set. You can sign in with it now.' };
+    }
 
     /**
      * Tell them it happened, and do not wait for it.

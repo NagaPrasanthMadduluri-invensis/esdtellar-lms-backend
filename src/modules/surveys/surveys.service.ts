@@ -773,6 +773,15 @@ export class SurveysService {
       exceptUserId: user.userId,
     });
   }
+
+  /**
+   * Seeds ONE organization's three built-in forms — called at provisioning,
+   * so a new tenant has them at once rather than at the next API restart
+   * (0034 seeds them on boot, for every organization). Idempotent.
+   */
+  async seedSystemTemplates(organizationId: number): Promise<void> {
+    await this.repository.seedSystemTemplates(organizationId);
+  }
 }
 
 /**
