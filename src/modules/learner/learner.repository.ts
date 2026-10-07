@@ -283,6 +283,8 @@ export class LearnerRepository {
       assessment_count: number;
       certificate_id: number | null;
       passed_assessments: number;
+      /** Best PASSING score per passed assessment — what `courseReward` tiers. */
+      best_passed_scores: number[] | null;
       session_id: number | null;
       session_type: string | null;
       trainer: string | null;
@@ -362,7 +364,15 @@ export class LearnerRepository {
         (SELECT COUNT(DISTINCT t.assessment_id) FROM user_assessment_attempts t
          JOIN assessments a ON a.id = t.assessment_id
          WHERE a.course_id = c.id AND t.user_id = ${userId}
-           AND t.is_passed = 1) AS passed_assessments
+           AND t.is_passed = 1) AS passed_assessments,
+        -- One best passing score per assessment, so the card can price each
+        -- with the same tier rule the leaderboard pays (points.ts).
+        (SELECT array_agg(bp.best) FROM (
+           SELECT MAX(t.percentage) AS best FROM user_assessment_attempts t
+           JOIN assessments a ON a.id = t.assessment_id
+           WHERE a.course_id = c.id AND t.user_id = ${userId}
+             AND t.is_passed = 1
+           GROUP BY t.assessment_id) bp) AS best_passed_scores
       FROM user_course_assignments uca
       JOIN courses c ON c.id = uca.course_id AND c.is_active = 1
       LEFT JOIN sessions s ON s.id = c.session_id
