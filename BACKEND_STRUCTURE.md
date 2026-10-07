@@ -1334,6 +1334,14 @@ never move. The manager is resolved at submission and STORED: a reporting
 line that changes mid-flight must not move somebody else's decision to a new
 desk.
 
+**The manager's confirmation has its OWN notification type,
+`external_cert_confirmed`.** It was sent as `external_cert_approved`, whose
+email closes with "It now counts towards your learning hours" — false at that
+step, since nothing exists until the final approval. Three outcomes, three
+types: confirmed (a step), approved (the record changes), rejected. The bell
+reads icon and group from the catalogue, so the new type needed no client
+change.
+
 **An admin cannot skip the manager.** `decideAsAdmin` refuses a
 `pending_manager` row with a 422 naming who has it. A two-step approval an
 admin can short-circuit is a one-step approval with extra words.
@@ -1779,6 +1787,59 @@ learner's.
 zero platform-owned courses, so the gap would have bitten the first time
 Edstellar published a global course to its tenants.
 
+### 10.23.1 Three kinds of certificate, three designs
+
+A certificate is one of three things, and `CertificatesService.certificateKind`
+decides which ONCE, from the row:
+
+| Kind | Decided by | Design | Details |
+|---|---|---|---|
+| `course` | neither of the below | blue · Certificate of Completion | category, issue date, duration |
+| `path` | `certificates.journey_id` set | purple · Certificate of Achievement | the path's tag, its courses in order, count, total duration, completion date |
+| `session` | the course is a session's companion (`courses.session_id`) | teal · Certificate of Participation | delivery mode, trainer, date, duration, venue |
+
+The designs follow the owner's reference PDFs (`Edstellar-Course-`,
+`-LearningPath-`, `-Session-Certificate.pdf`). `kind` rides on both the list
+and the detail, so the list chip and the document cannot disagree; the
+detail adds a `path` or a `session` block, null for the other kinds, read in
+the same single query (§7.1).
+
+**A virtual session's venue prints as "Online", never its meeting link.**
+`sessions.venue_url` holds a room for ILT and a URL for Virtual, and a call
+link on a document somebody keeps is a stale credential that reads as an
+address.
+
+**The signature is a person the ORGANISATION names** —
+`organizations.certificate_signatory_name` / `_title` (`0039`), edited in the
+admin's Certificate branding panel under `manage_organization`. The reference
+PDFs are signed by Edstellar's CEO; printing him on another tenant's
+certificate would put Edstellar's name on a document their employer issued
+(§10.23), so each tenant enters its own. NULL is the default and signs with
+the organisation's name and "Issuing organisation", which is what every
+certificate said before. It is read when a certificate is OPENED, unlike the
+prefix, which is frozen into the code at issue: a code is what verify looks
+up, a signature is presentation.
+
+**Kept although the reference omits it: the certificate ID**, small at the
+foot. It is the only thing `GET /api/certificates/verify/:code` takes. The
+final score stays off all three, on the owner's earlier instruction.
+
+A session certificate is still issued only by hand (`issueManually`),
+because auto-issue refuses session trainings (§10.7).
+
+#### A new migration is not copied into dist by watch mode
+
+`nest-cli.json` has `watchAssets: true`, and a `.sql` file CREATED while
+`nest start --watch` is running was still never copied to
+`dist/database/migrations/`, so the boot-time runner never saw it — while the
+code reading its columns had already reloaded and answered 500. Touching the
+file did not help, and nor did touching a `.ts` file (the compiler reacts to
+content, not mtime). What worked: copy the file into `dist/` and make a real
+edit to any `.ts` file. Then confirm the log says `Applied migration 00NN`,
+never just that the server restarted. A fresh `npm run build` or process start
+copies it normally — this only bites a migration added to a running dev
+server.
+
 ### 10.22 A reporting line, and Team Learning built on it
 
 `0033_user_manager.sql` adds `users.manager_id` and changes what a team means.
@@ -2016,6 +2077,39 @@ predicate over its own joins.
 over `GET /api/trainer/sessions`, which already returns date, times, venue and
 attendance counts. A calendar endpoint beside it would be a second definition
 of "my sessions" free to disagree with the first.
+
+### 10.18.1 Two catalogue types that had no trigger
+
+`journey_assigned` and `session_cancelled` sat in `common/notifications.ts`
+from 0030 with ZERO call sites — so a learner put on a learning path heard
+nothing, and a cancelled session told nobody: people found out by turning up.
+§5.2.1's screen-that-lies, seen from the inbox.
+
+**`journey_assigned` goes only to the NEWLY enrolled.**
+`JourneysRepository.enrollLearners` now returns `RETURNING user_id` past its
+`ON CONFLICT DO NOTHING` — §10.25's fix for `addToRoster`, applied again — so
+re-assigning a department tells only the people it actually added. Sent after
+BOTH writes, so nobody is told about a path whose courses are not yet in My
+Courses.
+
+**`session_cancelled` fires on BOTH routes to cancelled** — the edit form and
+the bulk Cancel action. §10.25 lets a bulk publish stay silent; a cancel may
+not, because it is the one change that sends somebody to an empty room. It
+fires on the TRANSITION only: `setCancelled` now excludes sessions already
+cancelled and returns the ids that moved, and the edit path compares before
+and after, so re-saving a cancelled session re-announces nothing. Two
+sentences — the roster loses a booking, the trainer loses work.
+
+Verified on a separate API copy against the shared database: one email per
+person per route, none on a repeat, and the outbox's 5-minute dedupe correctly
+swallowed a second cancel of the same session inside one window.
+
+**Known and NOT fixed here:** the bulk Cancel does not deactivate the
+session's companion training the way the edit form does (`trainingValues`
+sets `is_active = 0`), so a bulk-cancelled session's card stays in My
+Sessions. And un-cancelling a self-enrol session re-announces it to the whole
+organization, by §10.25's open-transition rule — arguably right, but worth
+knowing before reopening one.
 
 ### 10.19 Branch locations and job levels became per-tenant data
 
@@ -3248,8 +3342,8 @@ complete, assessment submitted, SCORM commit — beside `autoIssue`, never on a
 schedule. `JourneysService.onCourseProgress()` is best-effort throughout (§8.4):
 a badge or certificate failure must not break marking a lesson complete.
 
-**Points are not written anywhere.** `LeaderboardRepository.standings()` sums
-`journeys.points_bonus` over completed enrollments as one subquery, so stamping
+**Points are not written anywhere.** `LeaderboardRepository.pointEvents()` pays
+`journeys.points_bonus` for every completed enrollment, so stamping
 `completed_at` IS the award. That is what keeps §10.5's single formula true —
 do not add a `points` column to an enrollment. Each journey carries its own
 bonus because a 3-course path and a 12-course path are not worth the same.
@@ -3489,40 +3583,75 @@ outlive a database wipe and must be cleared separately.
 
 ### 10.5 Leaderboard
 
-`modules/leaderboard` owns the single ranking, read by both portals. Points are
-`lessons x 10 + DISTINCT assessments passed x 50`, over active learners only.
+`modules/leaderboard` owns the single ranking, read by both portals. Points
+are a SUM over `LeaderboardRepository.pointEvents()`, over active learners
+only — see §10.5.1 for what an event is.
 
-Two things are load-bearing and were previously wrong: passes are counted
-`DISTINCT` (counting rows let a learner farm points by re-taking an assessment
-they had already passed), and `is_active = 1` is filtered (deactivated learners
-kept competing, while the dashboard's own user count already excluded them).
+`is_active = 1` is filtered (deactivated learners kept competing, while the
+dashboard's own user count already excluded them).
 
 The admin board shows hours and completion as columns but does NOT rank on them
 — it used to rank on a 60/40 blend, so the two boards could disagree about who
 was first. Do not add a second points calculation.
 
-### 10.5.1 The points model is now readable, from the same file
+### 10.5.1 The points model: the reference's rules, minus community
 
-`GET /learner/leaderboard` returns `pointRules` and `pointNotes`, and the
-learner portal renders them as a "How Points Work" tab. The catalogue lives
-in `modules/leaderboard/points.ts` **beside the constants the board pays out
-with** — the values in it are `POINTS_PER_LESSON` and
-`POINTS_PER_PASSED_ASSESSMENT`, never re-typed numbers, so changing a
-constant moves the explanation and the payment together.
+`modules/leaderboard/points.ts` holds the numbers and the readable catalogue
+(`POINT_RULES`, served as `pointRules` on `GET /learner/leaderboard` and
+rendered as the "How Points Work" tab). Nothing in the browser holds a rate.
 
-That is the whole reason it is served rather than mirrored in the browser. A
-hardcoded table beside a live formula is §5.2.1's screen that lies, and this
-is the worst place for it: a learner who reads a value they never receive
-stops trusting the board.
+| Rule | Points | Paid when |
+|---|---|---|
+| Course completed | 100 | every active lesson of a course done |
+| Assessment passed | 50 | best PASSING score below 90% |
+| Top score | 150 | best passing score 90–99% |
+| Perfect score | 200 | best passing score 100% |
+| Feedback submitted | 15 | each `course_feedback` / `session_feedback` row |
+| Finished early | 75 | course completed on or before assigned_at + `DUE_DAYS` |
+| Session attended | 40 | present / late / partial on a session marked completed |
+| Learning path completed | the path's `points_bonus` | `journey_enrollments.completed_at` set |
 
-**Three rules, because there are three.** Lessons, distinct assessment
-passes, and a completed path's own `points_bonus`. The reference design
-lists eleven — top score, perfect score, finished early, session attended,
-four community actions — and this product awards none of them. They are
-omitted rather than listed at zero.
+Changed 2026-10-06 at the owner's request, to match the reference design. It
+replaced `lessons x 10 + DISTINCT passes x 50 + path bonus`, which reshuffled
+the board. The four community rules (post, answer, marked helpful, accepted
+answer) are left out because there is no community feature — add each in the
+change that builds what triggers it.
 
-`points: null` with a `pointsLabel` covers the path bonus, which varies per
-path; naming a number there would be wrong for every path but one.
+**`pointEvents()` is the one definition, and it has two readers.** The
+standings SUM it, in the same round trip as the rest of the row; the
+Achievements points history LISTS it (`LeaderboardService.history`). A
+history written as its own query would stop adding up to the board the first
+time a rule moved. Every branch carries `orgScope` on its ACTIVITY table, not
+on the content — §10.12's rule.
+
+Decisions worth knowing before changing one:
+
+- **The three score rules are tiers, not a stack.** One per assessment, from
+  the best PASSING score, so re-sitting from 72% to 95% upgrades 50 to 150
+  and re-sitting within a band pays nothing — the farming DISTINCT used to
+  prevent stays prevented. The reference stacks them (a 100% earns
+  50+150+200); the owner specified bands. "Passing" is the assessment's own
+  `is_passed`, not a fixed 60%.
+- **Lessons no longer pay on their own.** The reference pays for finishing a
+  course; paying per lesson as well would let a course with many short
+  lessons outscore a harder one with few.
+- **"Early" is the Quick Learner badge's own test** (`BadgesRepository`), so
+  the bonus and the badge cannot disagree. It uses `DUE_DAYS`, not
+  `user_course_assignments.due_date`, because that is the date every learner
+  screen prints.
+- **A session's companion course pays attendance, never completion** — the
+  sitting is the thing done. Attendance needs the session marked COMPLETED,
+  which is also when it credits the training (§10.7), so the 40 and the card
+  move together.
+- **An approved external certification pays nothing.** It counts as a
+  completed course for hours and analytics (§10.26), but 175 points for
+  training this platform did not deliver would put it on a board learners
+  compete on. Stated in `POINTS_NOTES` so nobody has to guess.
+
+The course cards price themselves with `courseReward()` from the same file:
+`totalPoints` is the guaranteed figure (completion, the early bonus while it
+is winnable, the pass rate per assessment) and `maxPoints` what perfect
+scores would pay.
 
 ### 10.4 Learning hours
 

@@ -131,16 +131,21 @@ export class SessionsRepository {
    * completions are real learning history (§10.7). The count reports how many
    * were actually cancelled rather than erroring on the first that was not.
    */
-  async setCancelled(scope: OrgScope, ids: number[]): Promise<number> {
-    if (ids.length === 0) return 0;
+  /**
+   * Returns the ids that MOVED into cancelled. An already-cancelled session is
+   * excluded by the predicate, so a second bulk cancel neither counts it as
+   * affected nor tells its roster a second time.
+   */
+  async setCancelled(scope: OrgScope, ids: number[]): Promise<number[]> {
+    if (ids.length === 0) return [];
     const rows = await this.db.all<{ id: number }>(sql`
       UPDATE sessions s
          SET status = 'cancelled'
        WHERE s.id IN ${idList(ids)} AND ${orgScope('s', scope)}
-         AND s.status <> 'completed'
+         AND s.status NOT IN ('completed', 'cancelled')
       RETURNING s.id
     `);
-    return rows.length;
+    return rows.map((r) => Number(r.id));
   }
 
   /* ── Batches ───────────────────────────────────────────────────────────

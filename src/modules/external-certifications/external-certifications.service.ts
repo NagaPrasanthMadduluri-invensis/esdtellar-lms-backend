@@ -492,7 +492,13 @@ export class ExternalCertificationsService {
     await this.notifications.notify({
       userIds: [row.user_id],
       organizationId: scope.organizationId,
-      type: input.approved ? 'external_cert_approved' : 'external_cert_rejected',
+      // Three outcomes, three types: the manager's confirmation is a step and
+      // must not borrow the approval's "it now counts" closing line.
+      type: !input.approved
+        ? 'external_cert_rejected'
+        : input.finalStep
+          ? 'external_cert_approved'
+          : 'external_cert_confirmed',
       title,
       body,
       link: '/certifications',

@@ -355,8 +355,13 @@ rather than assumed.
    duration. The cheap fix is async `scrypt`, which yields between rows and
    changes no UX. Out of scope, worth knowing.
 8. **"All 25 types" means the mapping covers 25, not that 25 will send.**
-   `journey_assigned`, `course_due_soon` and `session_cancelled` have zero call
-   sites today.
+   `journey_assigned`, `course_due_soon` and `session_cancelled` had zero call
+   sites when this was written. **All three now fire** — `course_due_soon`
+   from the reminders sweep (BACKEND_STRUCTURE §10.30), and the other two
+   since 2026-10-07: a path assignment emails the newly enrolled only, and a
+   cancellation (edit form or bulk) emails the roster and the trainer once
+   (§10.18.1). `email_delivery_failed` is the one type that is deliberately
+   `email: 'none'`.
 
 ---
 

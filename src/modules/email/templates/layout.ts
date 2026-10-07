@@ -290,10 +290,17 @@ export function renderLayout(parts: LayoutParts): {
    * cost here is near zero precisely BECAUSE the content is a title, some
    * paragraphs and a URL rather than a bespoke layout.
    */
+  /*
+   * Same parts, same order as the HTML — including the two that used to be
+   * HTML-only. Without the subtitle "Your certificate is ready" named no
+   * course; without the closing line the text part dropped the one sentence
+   * that differs between, say, a manager's confirmation and a final approval.
+   */
   const textLines: string[] = [
     g.label.toUpperCase(),
     '',
     parts.title,
+    ...(parts.subtitle ? [parts.subtitle] : []),
     '',
     ...parts.paragraphs.flatMap((p) => [p, '']),
   ];
@@ -303,6 +310,7 @@ export function renderLayout(parts: LayoutParts): {
     textLines.push('');
   }
   if (parts.cta) textLines.push(parts.cta.label, parts.cta.url, '');
+  if (parts.aspiration) textLines.push(parts.aspiration, '');
   textLines.push('—', orgLine.replace(/&amp;/g, '&'), PRODUCT_FULL_TEXT);
 
   return { html, text: textLines.join('\n') };

@@ -1,10 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
-import {
-  POINTS_PER_LESSON,
-  POINTS_PER_PASSED_ASSESSMENT,
-} from '@/modules/leaderboard/points';
+import { POINT_RULES } from '@/modules/leaderboard/points';
 import { thisMonth } from '@/modules/learning-hours/periods';
 
 import { LeaderboardRepository } from './leaderboard.repository';
@@ -67,14 +64,9 @@ export class LeaderboardService {
         firstName: row.first_name,
         lastName: row.last_name,
         dept: row.department || 'Unknown',
-        points:
-          Number(row.lessons) * POINTS_PER_LESSON +
-          passed * POINTS_PER_PASSED_ASSESSMENT +
-          Number(row.journey_points),
-        monthPoints:
-          Number(row.lessons_month) * POINTS_PER_LESSON +
-          Number(row.passed_month) * POINTS_PER_PASSED_ASSESSMENT +
-          Number(row.journey_points_month),
+        // Summed in SQL from `pointEvents` — never recomputed here.
+        points: Number(row.points),
+        monthPoints: Number(row.month_points),
         badges: passed,
         attempts,
         avgScore: row.avg_score !== null ? Math.round(Number(row.avg_score)) : null,
@@ -96,6 +88,24 @@ export class LeaderboardService {
     byMonth.forEach((entry, index) => { entry.monthRank = index + 1; });
 
     return { entries, byPoints, byMonth, recognition: this.recognise(entries, byMonth) };
+  }
+
+  /**
+   * One learner's points, itemised, newest first. Read from the same
+   * `pointEvents` the standings sum, so the list always adds up to the board.
+   * Labels come from `POINT_RULES`, the catalogue the How Points Work tab
+   * shows, so a history row and the rule that paid it use the same words.
+   */
+  async history(scope: OrgScope, userId: number, limit = 20) {
+    const label = new Map(POINT_RULES.map((r) => [r.key, r.activity]));
+    const rows = await this.repository.history(scope, userId, limit);
+    return rows.map((row) => ({
+      rule: row.rule,
+      activity: label.get(row.rule) ?? row.rule,
+      detail: row.detail,
+      earnedAt: row.earned_at,
+      points: Number(row.points),
+    }));
   }
 
   /**

@@ -114,7 +114,7 @@ export class AdminJourneysController {
     @CurrentUser() admin: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
-    return this.journeys.assign(scope, id, dto, admin.userId);
+    return this.journeys.assign(scope, id, dto, admin.userId, admin);
   }
 
   @Delete(':id/assign/:userId')

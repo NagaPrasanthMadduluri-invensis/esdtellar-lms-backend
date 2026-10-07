@@ -298,8 +298,6 @@ import {
   MONTHLY_GOAL_HOURS,
   parseScormDuration,
   parseTimestamp,
-  POINTS_PER_LESSON,
-  POINTS_PER_PASSED_ASSESSMENT,
   relativeTime,
   round1,
   skillTags,
@@ -403,15 +401,27 @@ export class LearnerService {
     const now = today();
 
     return (row) => {
-      const reward = courseReward({
-        totalLessons: Number(row.total_lessons),
-        completedLessons: Number(row.completed_lessons),
-        assessmentCount: Number(row.assessment_count),
-        passedAssessments: Number(row.passed_assessments),
-      });
-
       const complete = isComplete(row);
       const due = addDays(row.assigned_at, DUE_DAYS);
+      const isSession = row.session_id !== null;
+      const isExternal = row.external_certification_id !== null;
+
+      // "Early" is the Quick Learner test above, per course — the same window
+      // `LeaderboardRepository.pointEvents` pays `finished_early` on.
+      const earnedEarly =
+        complete &&
+        row.last_activity !== null &&
+        row.last_activity.slice(0, 10) <= due;
+
+      const reward = courseReward({
+        isSession,
+        isExternal,
+        complete,
+        assessmentCount: Number(row.assessment_count),
+        bestPassedScores: (row.best_passed_scores ?? []).map(Number),
+        earnedEarly,
+        earlyWinnable: !complete && !isSession && !isExternal && due >= now,
+      });
 
       return {
         ...reward,
@@ -1337,10 +1347,9 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async achievements(scope: OrgScope, userId: number) {
-    const [standings, lessonEvents, passedEvents] = await Promise.all([
+    const [standings, history] = await Promise.all([
       this.leaderboard_.standings(scope),
-      this.repository.lessonEvents(scope, userId, 10),
-      this.repository.assessmentEvents(scope, userId, 100, true),
+      this.leaderboard_.history(scope, userId, 20),
     ]);
 
     const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
@@ -1368,26 +1377,15 @@ export class LearnerService {
     );
     const next = badges.find((b) => !b.earned) ?? null;
 
-    const pointsHistory = [
-      ...lessonEvents.map((e) => ({
-        activity: 'Lesson Completed',
-        detail: e.title,
-        course: e.course_name,
-        date: formatDate(e.event_time),
-        points: POINTS_PER_LESSON,
-        type: 'lesson',
-      })),
-      ...passedEvents.map((e) => ({
-        activity: 'Assessment Passed',
-        detail: e.title,
-        course: e.course_name,
-        date: formatDate(e.event_time),
-        points: POINTS_PER_PASSED_ASSESSMENT,
-        type: 'assessment',
-      })),
-    ]
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 20);
+    // The ledger the board is summed from (`LeaderboardService.history`), so
+    // every row here is a payment the board actually made, at its real value.
+    const pointsHistory = history.map((e) => ({
+      activity: e.activity,
+      detail: e.detail,
+      date: formatDate(e.earnedAt),
+      points: e.points,
+      type: e.rule,
+    }));
 
     return {
       summary: {

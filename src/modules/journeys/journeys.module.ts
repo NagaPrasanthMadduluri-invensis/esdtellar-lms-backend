@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
+
 import { BadgesModule } from '@/modules/badges/badges.module';
 import { CertificatesModule } from '@/modules/certificates/certificates.module';
 import { MediaModule } from '@/modules/media/media.module';
@@ -20,7 +22,7 @@ import { LearnerJourneysController } from './learner-journeys.controller';
 @Module({
   // Certificates and badges are what a finished journey pays out; the journey
   // owns the moment of completion, so it calls them rather than being polled.
-  imports: [MediaModule, CertificatesModule, BadgesModule, JourneyGateModule],
+  imports: [MediaModule, CertificatesModule, BadgesModule, JourneyGateModule, NotificationsModule],
   controllers: [AdminJourneysController, LearnerJourneysController],
   providers: [JourneysService, JourneysRepository],
   exports: [JourneysService],
