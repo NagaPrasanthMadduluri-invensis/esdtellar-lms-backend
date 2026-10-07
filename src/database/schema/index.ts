@@ -43,3 +43,4 @@ export * from './external-certifications.schema';
 
 /** The email outbox, suppressions, preferences and reset tokens (0037). */
 export * from './email.schema';
+export * from './audit.schema';

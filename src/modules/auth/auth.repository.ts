@@ -115,6 +115,36 @@ export class AuthRepository {
       : null;
   }
 
+  /**
+   * Who an address belongs to — identity columns only, no credential.
+   *
+   * Deliberately NOT `findActiveByEmailWithSecret`, which would do the job
+   * and is the wrong call. That method is named `...WithSecret` precisely
+   * so the one place a scrypt hash enters scope is obvious at the call site
+   * (§3.1), and pulling a password hash in to write a log line would make
+   * that naming a lie the next reader has to check.
+   *
+   * It does NOT filter on `is_active`, unlike its neighbour: a deactivated
+   * account attempting to sign in is a thing an admin wants recorded under
+   * that person's name, not filed as an anonymous stranger.
+   */
+  async findIdentityByEmail(email: string) {
+    const rows = await this.db
+      .select({
+        id: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        email: users.email,
+        role: users.role,
+        organizationId: users.organizationId,
+      })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    return rows[0] ?? null;
+  }
+
   async findActiveByEmailWithSecret(email: string) {
     const rows = await this.db
       .select({

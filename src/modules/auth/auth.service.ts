@@ -578,4 +578,38 @@ export class AuthService {
       maxAgeSeconds: support?.ttlSeconds,
     };
   }
+  /**
+   * Who an email address belongs to, for the audit log only.
+   *
+   * Called by the login route BEFORE the attempt, so a wrong password is
+   * still attributed to the right person and the right organization — see
+   * the comment at that call site for why that matters more than it looks.
+   *
+   * **It changes nothing the caller can observe.** The login response is
+   * untouched and still refuses to distinguish "no such user" from "wrong
+   * password" (§5.3); this result never reaches a response body, only the
+   * `audit_log` row. An address that matches nobody returns null, which is
+   * the honest attribution for a sign-in attempt at an account that does
+   * not exist.
+   *
+   * Swallows its own errors: a lookup for a log line must never be the
+   * reason somebody cannot sign in.
+   */
+  async auditActorFor(email?: string | null) {
+    if (!email) return null;
+    try {
+      const user = await this.repository.findIdentityByEmail(email.trim().toLowerCase());
+      if (!user) return null;
+      return {
+        userId: user.id,
+        organizationId: user.organizationId ?? null,
+        name: `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim() || user.email,
+        email: user.email,
+        portal: user.role ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
 }

@@ -12,7 +12,7 @@ import {
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 import { CurrentUser, PlatformAdmin, Public } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
@@ -30,6 +30,7 @@ import {
 import { RegisterDto } from './dto/register.dto';
 import { PasswordResetService } from './password-reset.service';
 import { TokenService } from './token.service';
+import { AUDIT_ACTOR } from '@/modules/audit/audit.middleware';
 
 @Controller('auth')
 export class AuthController {
@@ -53,8 +54,28 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() dto: LoginDto,
+    @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ user: PublicUser }> {
+    /*
+     * ATTRIBUTE THE SIGN-IN, succeeded or refused.
+     *
+     * This route is `@Public()`, so `AuthGuard` populates no `request.user`
+     * and the audit middleware had nothing to record but "Unauthenticated"
+     * with a NULL organization — which the org-scoped read then excluded,
+     * so a tenant could not see its own sign-ins at all. A login is the
+     * single event an admin most expects in an activity log.
+     *
+     * Declared BEFORE the attempt and from the ADDRESS, so a WRONG PASSWORD
+     * is attributed too: "somebody tried to sign in as Priya and failed" is
+     * the row that matters, and it is lost if only successes are named. The
+     * lookup is by email alone and reveals nothing to the caller — the
+     * response is unchanged and still cannot distinguish "no such user"
+     * from "wrong password" (§5.3).
+     */
+    (request as unknown as Record<symbol, unknown>)[AUDIT_ACTOR] =
+      await this.authService.auditActorFor(dto.email);
+
     const { user, token } = await this.authService.login(dto);
     this.setAuthCookie(response, token);
     // The token is deliberately NOT in the body — it lives only in the

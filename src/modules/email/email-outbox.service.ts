@@ -294,4 +294,16 @@ export class EmailOutboxService {
     )[type];
     return def?.label ?? 'Spectra LMS';
   }
+  /**
+   * Recent give-ups, for the sweep that tells each organization's admins.
+   *
+   * Exposed on the SERVICE because `EmailOutboxRepository` is not exported
+   * (§3.2) and must not be — a module reaching into this table directly
+   * would bypass the enqueue gate that the whole preference and suppression
+   * model depends on. A read is the safe half to hand out.
+   */
+  async recentFailures(withinHours = 48) {
+    return this.repository.recentFailures(withinHours);
+  }
+
 }

@@ -325,6 +325,29 @@ export const NOTIFICATION_TYPES = {
     email: 'transactional',
     cta: 'View seats',
   },
+  /**
+   * An email to somebody in this organization gave up after its retries.
+   *
+   * **`email: 'none'`, and that is not a preference — it is the loop
+   * guard.** This type fires precisely when sending is broken, so emailing
+   * it would enqueue a message through the machinery that has just failed;
+   * if the cause is the transport rather than one address, every failure
+   * notification fails and notifies, which is an outbox that fills itself.
+   * The bell is the right channel for news about the inbox.
+   *
+   * It names the recipient and the reason rather than saying "an email
+   * failed", because the admin's next step depends entirely on which: a
+   * mistyped address is theirs to fix on the person's record, and a refused
+   * credential is not.
+   */
+  email_delivery_failed: {
+    label: 'Email could not be delivered',
+    group: 'people',
+    icon: 'MailWarning',
+    audience: ['admin'],
+    email: 'none',
+    cta: 'Open email delivery',
+  },
 } as const satisfies Record<string, NotificationTypeDef>;
 
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;

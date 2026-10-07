@@ -446,6 +446,139 @@ export class EmailOutboxRepository {
   }
 
   /** Status counts over a window — the verifier and the platform screen. */
+  /**
+   * ONE organization's outbox, for the tenant admin's Email delivery page.
+   *
+   * Separate from `listForPlatform` rather than that method gaining an
+   * optional org id, because the two answer different questions and the
+   * difference is a tenancy boundary: the platform read deliberately spans
+   * tenants, and an optional parameter is one `undefined` away from doing
+   * that here. §10.17's shape — a second method beside, never instead of.
+   *
+   * `organization_id` is frozen on the row at enqueue, so this needs no join
+   * and cannot drift if somebody is later moved between organizations.
+   */
+  async listForOrganization(filters: {
+    organizationId: number;
+    status?: string;
+    type?: string;
+    q?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ rows: Record<string, unknown>[]; total: number }> {
+    const parts = [sql`o.organization_id = ${filters.organizationId}`];
+    if (filters.status) parts.push(sql`o.status = ${filters.status}`);
+    if (filters.type)   parts.push(sql`o.type = ${filters.type}`);
+    if (filters.q) {
+      const like = `%${filters.q}%`;
+      parts.push(sql`(o.to_email ILIKE ${like} OR o.to_name ILIKE ${like} OR o.subject ILIKE ${like})`);
+    }
+    const predicate = sql.join(parts, sql` AND `);
+
+    const [rows, total] = await Promise.all([
+      this.db.execute(sql`
+        SELECT o.id, o.type, o.policy, o.to_email, o.to_name, o.subject,
+               o.status, o.attempts, o.last_error, o.provider_message_id,
+               o.enqueued_at, o.sent_at, o.next_attempt_at, o.user_id
+          FROM email_outbox o
+         WHERE ${predicate}
+         ORDER BY o.enqueued_at DESC, o.id DESC
+         LIMIT ${filters.limit} OFFSET ${filters.offset}
+      `),
+      this.db.execute(sql`
+        SELECT count(*)::int AS n FROM email_outbox o WHERE ${predicate}
+      `),
+    ]);
+
+    return {
+      rows: rows.rows as Record<string, unknown>[],
+      total: Number((total.rows[0] as { n: number })?.n ?? 0),
+    };
+  }
+
+  /** The tiles above that table, from one statement over the same rows. */
+  async organizationStatusCounts(organizationId: number) {
+    const rows = await this.db.execute(sql`
+      SELECT o.status, count(*)::int AS n
+        FROM email_outbox o
+       WHERE o.organization_id = ${organizationId}
+       GROUP BY o.status
+    `);
+    return rows.rows as { status: string; n: number }[];
+  }
+
+  /** The types present, so the filter offers only what exists. */
+  async organizationTypes(organizationId: number): Promise<string[]> {
+    const rows = await this.db.execute(sql`
+      SELECT DISTINCT o.type FROM email_outbox o
+       WHERE o.organization_id = ${organizationId} ORDER BY o.type
+    `);
+    return (rows.rows as { type: string }[]).map((r) => r.type);
+  }
+
+  /**
+   * Put a given-up row back in the queue, scoped to one organization.
+   *
+   * `status = 'failed'` is in the predicate, so this can never re-send
+   * something that is already `sent` — a resend button that could duplicate
+   * a delivered message is worse than no button. `suppressed` is excluded
+   * too: that row was withheld on purpose, and re-queuing it would walk past
+   * a suppression or an unsubscribe.
+   *
+   * `attempts` is RESET, because the five tries were spent on a condition a
+   * human has since looked at. Leaving them would mean the retry gives up
+   * immediately and the button appears to do nothing.
+   */
+  async requeue(organizationId: number, id: number): Promise<boolean> {
+    const result = await this.db.execute(sql`
+      UPDATE email_outbox
+         SET status = 'pending', attempts = 0, next_attempt_at = now(),
+             last_error = NULL, claimed_at = NULL
+       WHERE id = ${id}
+         AND organization_id = ${organizationId}
+         AND status = 'failed'
+    `);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** The row as it stands, for deciding 404 vs 409 in the service (§5.3). */
+  async findForOrganization(
+    organizationId: number, id: number,
+  ): Promise<{ id: number; status: string; to_email: string } | null> {
+    const rows = await this.db.execute(sql`
+      SELECT o.id, o.status, o.to_email FROM email_outbox o
+       WHERE o.id = ${id} AND o.organization_id = ${organizationId}
+    `);
+    return (rows.rows[0] as { id: number; status: string; to_email: string }) ?? null;
+  }
+
+  /**
+   * Failed messages recent enough to still be worth telling somebody about.
+   *
+   * Deliberately NOT "all failures ever": the sweep that reads this runs on
+   * a clock, and an unbounded read would re-announce a six-month-old
+   * failure the first time somebody fixes the worker. The DEDUPE is not
+   * here — it is `notifyOnce()` keyed on the outbox row id, the same shape
+   * §10.18 uses for a leaderboard rank, so a sweep that runs twice cannot
+   * ring the bell twice and no new column is needed to remember.
+   */
+  async recentFailures(withinHours: number, limit = 200) {
+    const rows = await this.db.execute(sql`
+      SELECT o.id, o.organization_id, o.user_id, o.to_email, o.to_name,
+             o.type, o.subject, o.last_error, o.attempts, o.enqueued_at
+        FROM email_outbox o
+       WHERE o.status = 'failed'
+         AND o.enqueued_at >= now() - (${withinHours} || ' hours')::interval
+       ORDER BY o.enqueued_at DESC
+       LIMIT ${limit}
+    `);
+    return rows.rows as {
+      id: number; organization_id: number; user_id: number | null;
+      to_email: string; to_name: string | null; type: string;
+      subject: string; last_error: string | null; attempts: number;
+    }[];
+  }
+
   async statusCounts(hours: number) {
     return this.db.all<{ status: string; n: string }>(sql`
       SELECT status, COUNT(*) AS n

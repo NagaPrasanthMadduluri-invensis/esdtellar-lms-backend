@@ -5,6 +5,7 @@ import { EmailController } from './email.controller';
 import { EmailOutboxRepository } from './email-outbox.repository';
 import { EmailOutboxService } from './email-outbox.service';
 import { OutboxDrainJob } from './queue/outbox-drain.job';
+import { AdminEmailController } from './admin-email.controller';
 import { PlatformEmailController } from './platform-email.controller';
 import { SesEventsController } from './ses-events.controller';
 import { EmailRenderService } from './email-render.service';
@@ -42,7 +43,7 @@ import { GmailMailerService } from './mailer/gmail-mailer.service';
  * stay private.
  */
 @Module({
-  controllers: [EmailController, SesEventsController, PlatformEmailController],
+  controllers: [AdminEmailController, EmailController, SesEventsController, PlatformEmailController],
   providers: [
     EmailOutboxRepository,
     EmailOutboxService,
