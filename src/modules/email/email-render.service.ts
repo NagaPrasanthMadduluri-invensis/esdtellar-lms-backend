@@ -12,15 +12,6 @@ import { escapeHtml, renderLayout } from './templates/layout';
  * (password reset and friends) which are not notifications and have no
  * entry. Every caller falls back rather than assuming one exists.
  */
-/** "New course assigned: X", without repeating a label the caller used. */
-function subjectLine(label: string | undefined, stored: string): string {
-  if (!label) return stored;
-  const a = label.trim().toLowerCase();
-  const b = stored.trim().toLowerCase();
-  if (b.startsWith(a) || b === a) return stored;
-  return `${label}: ${stored}`;
-}
-
 function typeDef(type: string) {
   return (NOTIFICATION_TYPES as Record<string, {
     label: string; cta: string; aspiration?: string;
@@ -165,9 +156,18 @@ export class EmailRenderService {
 
     const { html, text } = renderLayout({
       group,
-      title: def?.label ?? row.subject,
-      // The specific thing this is about, under the action.
-      subtitle: def?.label && def.label !== row.subject ? row.subject : undefined,
+      /*
+       * ACTION as the heading, NAME beneath — but only when the caller
+       * supplied a name. Without one the stored subject is a full
+       * sentence and stays the heading, exactly as before.
+       *
+       * The first attempt inferred this instead and produced "You are
+       * running a session: You are running "Isolation Suite Session"" on
+       * every call site that had not been updated. 0042 made the caller
+       * say it rather than the renderer guess.
+       */
+      title: row.subjectName ? (def?.label ?? row.subject) : row.subject,
+      subtitle: row.subjectName ?? undefined,
       facts,
       aspiration: def?.aspiration,
       paragraphs,
@@ -203,7 +203,9 @@ export class EmailRenderService {
        * Skipped when the stored subject already opens with the label, so
        * a caller that composed its own full sentence is not doubled up.
        */
-      subject: subjectLine(def?.label, row.subject),
+      subject: row.subjectName && def?.label
+        ? `${def.label}: ${row.subjectName}`
+        : row.subject,
       html,
       text,
       headers,

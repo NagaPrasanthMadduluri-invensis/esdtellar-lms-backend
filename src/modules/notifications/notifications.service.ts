@@ -49,6 +49,20 @@ export interface NotifyInput {
    */
   facts?: Array<{ label: string; value: string }> | null;
   /**
+   * The bare NAME of the thing this is about — "AI for Banking" — when the
+   * caller has one.
+   *
+   * Separate from `title` because the two surfaces want different shapes:
+   * the bell needs one self-contained line ("New course: AI for Banking"),
+   * the email wants the action as its heading and the name beneath. Serving
+   * both from one string meant one of them read badly.
+   *
+   * Null is the honest default. A call site that has not been updated keeps
+   * the behaviour it had — heading from the title, no subheading, no
+   * prefixed subject.
+   */
+  subjectName?: string | null;
+  /**
    * `never` writes the bell row and skips the inbox entirely.
    *
    * Nothing passes it yet, and the hook exists rather than being added
@@ -164,6 +178,7 @@ export class NotificationsService {
       link: input.link ?? null,
       actorName: input.actorName ?? null,
       facts: input.facts ?? null,
+      subjectName: input.subjectName ?? null,
       subjectType: input.subjectType ?? null,
       subjectId: input.subjectId ?? null,
       notificationIds:
