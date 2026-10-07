@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { PgBoss } from 'pg-boss';
 
 import { RemindersService } from '@/modules/reminders/reminders.service';
+import { EmailFailureAlertsService } from '@/modules/reminders/email-failure-alerts.service';
 
 import { OutboxDrainJob } from './outbox-drain.job';
 
@@ -54,6 +55,7 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     private readonly config: ConfigService,
     private readonly drain: OutboxDrainJob,
     private readonly reminders: RemindersService,
+    private readonly failureAlerts: EmailFailureAlertsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -83,6 +85,7 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     await this.registerDrain();
     await this.registerPrune();
     await this.registerDueSoon();
+    await this.registerFailureAlerts();
 
     this.logger.log(
       'Worker started — email drain every minute, due-soon reminders at ' +
@@ -139,6 +142,32 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     });
     await boss.schedule(queue, '0 9 * * *', undefined, {
       singletonKey: 'due-soon',
+    });
+  }
+
+  /**
+   * Tell each organization's admins about emails that gave up.
+   *
+   * HOURLY, not per-failure and not daily. Per-failure is impossible from
+   * here (the cycle `EmailFailureAlertsService` documents) and daily is too
+   * slow for the thing an admin actually wants to catch — a misconfigured
+   * credential that is failing everything. An hour is short enough to act
+   * on and long enough that a transport blip has usually resolved itself
+   * into retries rather than alerts.
+   *
+   * At :20 past, deliberately off the hour: the drain runs every minute and
+   * the prune at 03:00, and stacking a third job on a round number on a
+   * 2-vCPU box shared with two other applications buys nothing.
+   */
+  private async registerFailureAlerts(): Promise<void> {
+    const boss = this.boss!;
+    const queue = 'email-failure-alerts';
+    await boss.createQueue(queue);
+    await boss.work(queue, async () => {
+      await this.failureAlerts.sweep();
+    });
+    await boss.schedule(queue, '20 * * * *', undefined, {
+      singletonKey: 'failure-alerts',
     });
   }
 

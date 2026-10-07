@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 
@@ -38,9 +38,12 @@ import { RolesModule } from './modules/roles/roles.module';
 import { ScormModule } from './modules/scorm/scorm.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
 import { UsersModule } from './modules/users/users.module';
+import { AuditModule } from '@/modules/audit/audit.module';
+import { AuditMiddleware } from '@/modules/audit/audit.middleware';
 
 @Module({
   imports: [
+    AuditModule,
     RolesModule,
     ConfigModule.forRoot({
       isGlobal: true,
@@ -96,4 +99,23 @@ import { UsersModule } from './modules/users/users.module';
     { provide: APP_GUARD, useClass: TenantContextGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  /**
+   * The audit middleware, applied to EVERY route.
+   *
+   * Middleware rather than an interceptor, and the difference is not
+   * stylistic — Nest runs guards BEFORE interceptors, so an interceptor
+   * never sees a request refused by `RolesGuard`, `PermissionsGuard` or
+   * `PlatformAdminGuard`. That was the first version and testing caught it:
+   * a tenant admin POSTing to a `@PlatformAdmin()` route got its 403 and
+   * wrote no audit row at all. "Who tried to reach billing" is precisely
+   * what an audit log is opened for.
+   *
+   * Middleware runs ahead of every guard and records on `res.on('finish')`,
+   * so it sees the response whatever produced it — handler, guard, filter,
+   * or the router's own 404. `audit.middleware.ts` carries the rest.
+   */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(AuditMiddleware).forRoutes('*');
+  }
+}

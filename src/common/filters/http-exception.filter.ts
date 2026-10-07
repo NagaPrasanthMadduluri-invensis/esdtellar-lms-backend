@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
+import { AUDIT_ERROR } from '@/modules/audit/audit.middleware';
+
 interface ErrorBody {
   message: string;
   errors?: Record<string, string[]>;
@@ -36,6 +38,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
     const body = this.toBody(exception);
+
+    /*
+     * Leave the message where the audit middleware can find it.
+     *
+     * That middleware records on `res.on('finish')`, by which point the
+     * exception is long gone — it only has a status code. A row saying
+     * "403" without saying what was refused sends whoever reads it back to
+     * the application logs, which is the trip the audit log exists to save.
+     *
+     * A symbol key, so it cannot collide with anything Express or a library
+     * puts on the request, and the middleware is the only reader.
+     */
+    (request as unknown as Record<symbol, unknown>)[AUDIT_ERROR] =
+      typeof body?.message === 'string' ? body.message : undefined;
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       // Log the cause server-side; never leak internals to the caller.

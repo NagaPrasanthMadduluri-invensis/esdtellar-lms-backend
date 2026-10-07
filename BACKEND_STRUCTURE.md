@@ -600,6 +600,163 @@ Update this table with every module you move.
 | forgot password (request, check, reset) | 3 | `server/src/modules/auth` |
 | scheduled reminders (`course_due_soon`) — cron, no HTTP | 0 | `server/src/modules/reminders` |
 
+### 10.32 An audit log, and an admin who can see their own email
+
+Two features from one complaint: an admin bulk-imported 300 learners and
+had no way to find out whether any of them had been emailed. None had
+(§10.31 records that gap). Neither half of the answer existed — nothing
+recorded what people did, and the only delivery read in the product was
+`@PlatformAdmin()` with no UI.
+
+#### `audit_log`, and why it is not `activity_log`
+
+`0043_audit_log.sql`. Read its header first; the summary:
+
+**§10.12 told us to.** It says, of `activity_log`: *"this is a product
+feature, not an audit trail — the entries that are missing are precisely
+the ones whose write failed. If a real audit trail is needed it is a
+different table with different guarantees; do not quietly promote this
+one."* This is that sentence being acted on rather than argued with.
+`activity_log` keeps its job — 21 curated types, hand-written where a
+service has something a human wants to read, feeding the dashboard panel.
+Pouring every CRUD request into it would bury "Course published" under ten
+thousand rows.
+
+**ONE middleware writes it, and that is the whole design.** Not 200 call
+sites. §5.2.1's rule — a permission with no guard behind it is a screen
+that lies — has an exact analogue here and it is worse, because a missing
+audit row is invisible: the thing absent is a row nobody wrote. An endpoint
+added next year is covered the day it is written, with nobody remembering
+anything.
+
+**It is MIDDLEWARE, not an interceptor, and testing is what caught that.**
+The first version was a `NestInterceptor`, which is the obvious choice and
+wrong: **Nest runs guards BEFORE interceptors**, so a request refused by
+`RolesGuard`, `PermissionsGuard` or `PlatformAdminGuard` never reaches one.
+Measured — a tenant admin POSTing to a `@PlatformAdmin()` route got its 403
+and wrote no row at all, and a 404 from the router was invisible for the
+same reason. That is not an edge, it is half the point: *"who tried to
+reach billing"* is exactly what an audit log is opened for, and a log of
+successes cannot answer it. Middleware runs ahead of every guard and
+records on `res.on('finish')`, so it sees the response whatever produced
+it. By then `request.user` and `request.route` are populated, so the late
+read costs nothing and gains the refusals.
+
+**What it does not promise.** The row is written after the response, not
+inside the handler's transaction — an interceptor cannot enlist in a
+transaction a service has already committed, and neither can this. A crash
+in that gap loses the entry. Far narrower than best-effort (the write is
+retried once and a failure logs at `error`, not `warn`), and NOT
+"transactionally guaranteed". Anybody relying on this in a dispute should
+know which of those two sentences is true.
+
+**The body is captured BEFORE the handler runs**, because the global
+ValidationPipe transforms `request.body` in place and a service may mutate
+it further — reading it in the finish handler can record something the
+caller never sent, which is the one thing an audit log must not do.
+
+**Credentials are never stored.** Three routes carry a password, the bulk
+import carries up to 500, and two more carry a reset token. The redaction
+is a SUBSTRING test on the lower-cased key, so `newPassword`,
+`current_password` and `passwordHash` are all caught without being listed.
+Arrays are truncated with the COUNT kept — "500 rows" is precisely the fact
+somebody auditing an import wants, and a copy of the spreadsheet is not.
+
+**A LOGIN is attributed, succeeded or refused**, and getting there needed
+one deliberate addition. The route is `@Public()`, so `AuthGuard` populates
+no user and the first rows read "Unauthenticated" with a NULL
+organization — which the org-scoped read then excluded, so a tenant could
+not see its own sign-ins at all. `AuthService.auditActorFor()` resolves the
+address BEFORE the attempt, so a WRONG PASSWORD is attributed to the right
+person and the right org: *"somebody tried to sign in as Priya and failed"*
+is the row that matters. **The response is unchanged** — all three outcomes
+still return one indistinguishable 401 (§5.3), and the lookup reaches only
+`audit_log`. It uses a new `findIdentityByEmail`, deliberately not
+`findActiveByEmailWithSecret`: that method is named `...WithSecret` so the
+one place a scrypt hash enters scope is obvious (§3.1), and pulling a
+credential in to write a log line would make the naming a lie.
+
+**`entity` is anchored on the ID, not the last segment.** The first version
+took the last non-numeric segment and filed `/lessons/1/complete` under an
+entity called "complete" — a verb, which groups nothing. The rule is now:
+find the last numeric segment, that is the id, and the one before it is the
+collection. The verb is not lost; `route` still carries the pattern.
+
+**`view_reports`, not a new `view_activity`.** §10.24 states the rule this
+follows: a dedicated permission needs a grant migration, and every one of
+those bumps `perm_version` and signs every user in every organization out
+once. Nobody has asked for an admin who may read reports but not the
+activity log, and `view_reports` already gates "the evidence". When an
+organization wants that separation, that is the moment to pay for it.
+
+Two controllers, per §2.2 and §10.17 — a second one ADDED, never the
+tenant's widened:
+
+```
+GET /api/admin/activity[/options]      the caller's own org   (view_reports)
+GET /api/platform/activity[/options]   every tenant           (@PlatformAdmin)
+```
+
+Cross-tenant reach is a property of **which class answered**: the tenant
+controller hands `scope.organizationId` to the service and the platform one
+hands `null`. `organization_id` on the query narrows the platform read and
+is ignored entirely by the admin one, so the same query string against the
+tenant route changes nothing.
+
+Two high-volume telemetry writes are skipped on purpose — the SCORM
+data-model log (§10.9 calls it the hottest write path in the system) and
+video progress. One row per batch would bury every human action, which is a
+worse outcome than not recording a telemetry write. **The page says so in
+words**, because an audit log that quietly omits a class of event is worse
+than one that states what it omits.
+
+#### The tenant can finally see its own email
+
+```
+GET  /api/admin/email/outbox              (view_employees)
+POST /api/admin/email/outbox/:id/resend   (manage_users), 200 not 201
+```
+
+A second repository method beside `listForPlatform`, never that one gaining
+an optional org id: the two answer different questions and the difference
+is a tenancy boundary, which an `undefined` away is not a boundary at all.
+
+**`sent` means Gmail ACCEPTED it, and the UI says "Handed to Gmail".** The
+bounce and complaint loop (`POST /api/email/ses-events`) is SES-specific
+and is not wired for Gmail, so nothing after acceptance reaches this table.
+Printing "Delivered" would be the screen that lies about the one subject
+where an admin has no other way to check. Wiring Gmail's own bounce
+handling is the change that would let this say more.
+
+**Resend is offered only for a `failed` row**, and the predicate enforces
+it rather than the button: a `sent` row would deliver a duplicate nobody
+can recall, and a `suppressed` one was withheld on purpose — re-queuing it
+walks past an unsubscribe or a bounce. `attempts` is reset, because the
+five tries were spent on a condition a human has since looked at; leaving
+them would make the button appear to do nothing. A row belonging to another
+tenant 404s exactly as a non-existent one does, or the id becomes a probe
+for how much mail another organization sends.
+
+**`email_delivery_failed` is `email: 'none'`, and that is the loop guard
+rather than a preference.** It fires precisely when sending is broken; if
+the cause is the transport rather than one address, emailing the alert
+enqueues a message through the machinery that has just failed — which
+fails, and alerts, and enqueues. An outbox that fills itself is worse than
+the failure it reports.
+
+**The alert is a SWEEP, not a line in the drain job**, and the reason is
+the module graph: `NotificationsModule` imports `EmailModule` (that is what
+gave `notify()` its second channel, §10.30), so `EmailModule` importing
+notifications back is a cycle. `forwardRef` would compile and would make
+the two permanently inseparable for a feature that does not need it.
+`EmailFailureAlertsService` lives in `RemindersModule` — already the home
+of scheduled, controller-less, worker-only work — which keeps the graph a
+DAG: `Worker -> Reminders -> { Notifications, Email }`. Hourly at :20, off
+the hour because the drain runs every minute on a 2-vCPU box shared with
+two other applications. Dedupe is `notifyOnce()` keyed on the outbox row
+id, §10.18's shape for anything recomputed — so the sweep may re-read its
+window freely and no new column was needed to remember.
+
 ### 10.31 The bulk import learned a reporting line
 
 `users.manager_id` has existed since `0033`, and the only way to set it was
