@@ -35,6 +35,8 @@ export class CatalogueService {
     return {
       courses: courses.map((row) => ({
         id: row.id,
+        // Public uuid so an "already yours" card links to /my-courses/<uuid> (0046).
+        public_id: row.public_id ?? null,
         name: row.name,
         description: row.description,
         thumbnail_url: row.thumbnail_url,

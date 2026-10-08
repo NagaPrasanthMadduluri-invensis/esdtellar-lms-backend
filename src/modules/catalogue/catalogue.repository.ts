@@ -27,6 +27,7 @@ import { orgScope, type OrgScope } from '@/database/org-scope';
 
 export interface CatalogueCourseRow {
   id: number;
+  public_id: string | null;
   name: string;
   description: string | null;
   thumbnail_url: string | null;
@@ -85,6 +86,7 @@ export class CatalogueRepository {
   ): Promise<CatalogueCourseRow[]> {
     return this.db.all<CatalogueCourseRow>(sql`
       SELECT c.id,
+             c.public_id,
              c.name,
              c.description,
              c.thumbnail_url,
