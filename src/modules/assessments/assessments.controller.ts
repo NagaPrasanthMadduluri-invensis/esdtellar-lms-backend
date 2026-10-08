@@ -20,7 +20,6 @@ import {
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
-import { CourseIdPipe } from '@/database/public-id.pipe';
 
 import { AssessmentsService } from './assessments.service';
 import {
@@ -44,13 +43,20 @@ export class AllAssessmentsController {
 @Controller('admin/courses/:courseId/assessments')
 @Roles('admin')
 export class CourseAssessmentsController {
-  constructor(private readonly assessments: AssessmentsService) {}
+  constructor(
+    private readonly assessments: AssessmentsService,
+    // :courseId is the course's public UUID (0046); resolve inline with a
+    // STRING param (a number-typed param is coerced to NaN by the global
+    // ValidationPipe before any param pipe runs).
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get()
   async list(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.assessments.listByCourse(scope, courseId);
   }
 
@@ -58,11 +64,12 @@ export class CourseAssessmentsController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('build_assessments')
   async create(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @Body() dto: AssessmentDto,
     @CurrentScope() scope: OrgScope,
     @CurrentUser() admin: AuthenticatedUser,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.assessments.create(scope, courseId, dto, admin);
   }
 }

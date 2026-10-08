@@ -23,7 +23,7 @@ import {
 } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
-import { CourseIdPipe } from '@/database/public-id.pipe';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { CoursesService } from './courses.service';
 import {
@@ -42,7 +42,17 @@ import {
 @Controller('admin/courses')
 @Roles('admin')
 export class CoursesController {
-  constructor(private readonly courses: CoursesService) {}
+  constructor(
+    private readonly courses: CoursesService,
+    /*
+     * Resolves the :courseId public UUID (0046) to the integer id. Done inline
+     * with the param typed STRING, NOT via a pipe on a number-typed param: the
+     * global ValidationPipe coerces a Number-typed param to NaN BEFORE any
+     * param pipe runs, so a `@Param('courseId', CourseIdPipe) courseId: number`
+     * fed the resolver NaN and every UUID 404'd. A string param is left alone.
+     */
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get()
   async list(
@@ -69,9 +79,10 @@ export class CoursesController {
    */
   @Get(':courseId/lessons')
   async courseLessons(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.listCourseLessons(scope, courseId);
   }
 
@@ -83,10 +94,11 @@ export class CoursesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_courses')
   async createCourseLesson(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @Body() dto: CreateLessonDto,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.createCourseLesson(scope, courseId, dto);
   }
 
@@ -114,36 +126,40 @@ export class CoursesController {
 
   @Get(':courseId')
   async get(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.get(scope, courseId);
   }
 
   @Put(':courseId')
   @Permissions('manage_courses')
   async update(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @Body() dto: CourseDto,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.update(scope, courseId, dto);
   }
 
   @Delete(':courseId')
   @Permissions('manage_courses')
   async remove(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.remove(scope, courseId);
   }
 
   @Get(':courseId/modules')
   async listModules(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.listModules(scope, courseId);
   }
 
@@ -151,18 +167,20 @@ export class CoursesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_courses')
   async createModule(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @Body() dto: ModuleDto,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.createModule(scope, courseId, dto);
   }
 
   @Get(':courseId/assignments')
   async listAssignments(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.listAssignments(scope, courseId);
   }
 
@@ -171,23 +189,25 @@ export class CoursesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('assign_learning')
   async createAssignments(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @Body() dto: BulkAssignmentDto,
     @CurrentUser() admin: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.courses.createAssignments(scope, courseId, dto, admin.userId, admin);
   }
 
   @Post(':courseId/assignments')
   @Permissions('assign_learning')
   async assign(
-    @Param('courseId', CourseIdPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @Body() dto: CreateAssignmentDto,
     @CurrentUser() admin: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
     @Res() response: Response,
   ): Promise<void> {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     const result = await this.courses.assign(scope, courseId, admin.userId, dto);
     // 201 for a new assignment, 200 when an existing one was updated.
     response
