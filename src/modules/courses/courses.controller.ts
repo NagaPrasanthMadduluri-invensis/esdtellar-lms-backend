@@ -23,6 +23,7 @@ import {
 } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
+import { CourseIdPipe } from '@/database/public-id.pipe';
 
 import { CoursesService } from './courses.service';
 import {
@@ -68,7 +69,7 @@ export class CoursesController {
    */
   @Get(':courseId/lessons')
   async courseLessons(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @CurrentScope() scope: OrgScope,
   ) {
     return this.courses.listCourseLessons(scope, courseId);
@@ -82,7 +83,7 @@ export class CoursesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_courses')
   async createCourseLesson(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @Body() dto: CreateLessonDto,
     @CurrentScope() scope: OrgScope,
   ) {
@@ -113,7 +114,7 @@ export class CoursesController {
 
   @Get(':courseId')
   async get(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @CurrentScope() scope: OrgScope,
   ) {
     return this.courses.get(scope, courseId);
@@ -122,7 +123,7 @@ export class CoursesController {
   @Put(':courseId')
   @Permissions('manage_courses')
   async update(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @Body() dto: CourseDto,
     @CurrentScope() scope: OrgScope,
   ) {
@@ -132,7 +133,7 @@ export class CoursesController {
   @Delete(':courseId')
   @Permissions('manage_courses')
   async remove(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @CurrentScope() scope: OrgScope,
   ) {
     return this.courses.remove(scope, courseId);
@@ -140,7 +141,7 @@ export class CoursesController {
 
   @Get(':courseId/modules')
   async listModules(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @CurrentScope() scope: OrgScope,
   ) {
     return this.courses.listModules(scope, courseId);
@@ -150,7 +151,7 @@ export class CoursesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_courses')
   async createModule(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @Body() dto: ModuleDto,
     @CurrentScope() scope: OrgScope,
   ) {
@@ -159,7 +160,7 @@ export class CoursesController {
 
   @Get(':courseId/assignments')
   async listAssignments(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @CurrentScope() scope: OrgScope,
   ) {
     return this.courses.listAssignments(scope, courseId);
@@ -170,7 +171,7 @@ export class CoursesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('assign_learning')
   async createAssignments(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @Body() dto: BulkAssignmentDto,
     @CurrentUser() admin: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
@@ -181,7 +182,7 @@ export class CoursesController {
   @Post(':courseId/assignments')
   @Permissions('assign_learning')
   async assign(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @Body() dto: CreateAssignmentDto,
     @CurrentUser() admin: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,

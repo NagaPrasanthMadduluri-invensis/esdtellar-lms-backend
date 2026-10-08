@@ -20,6 +20,7 @@ import {
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
+import { CourseIdPipe } from '@/database/public-id.pipe';
 
 import { AssessmentsService } from './assessments.service';
 import {
@@ -47,7 +48,7 @@ export class CourseAssessmentsController {
 
   @Get()
   async list(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @CurrentScope() scope: OrgScope,
   ) {
     return this.assessments.listByCourse(scope, courseId);
@@ -57,7 +58,7 @@ export class CourseAssessmentsController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('build_assessments')
   async create(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId', CourseIdPipe) courseId: number,
     @Body() dto: AssessmentDto,
     @CurrentScope() scope: OrgScope,
     @CurrentUser() admin: AuthenticatedUser,

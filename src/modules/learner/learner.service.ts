@@ -652,6 +652,8 @@ export class LearnerService {
         reward: rewardOf(row),
         course: {
           id: row.course_id,
+          // Public uuid so dashboard links point at /my-courses/<uuid> (0046).
+          public_id: row.course_public_id ?? null,
           name: row.name,
           description: row.description,
           thumbnail_url: row.thumbnail_url,
@@ -708,6 +710,7 @@ export class LearnerService {
       .sort((a, b) => (a.assigned_at || '').localeCompare(b.assigned_at || ''))
       .map((c) => ({
         course_id: c.course.id,
+        course_public_id: c.course.public_id ?? null,
         name: c.course.name,
         status: c.status,
         progress_percentage: c.progress_percentage,
@@ -749,6 +752,7 @@ export class LearnerService {
         .slice(0, 4)
         .map((c) => ({
           course_id: c.course.id,
+          course_public_id: c.course.public_id ?? null,
           name: c.course.name,
           due_date: c.due_date,
           status: c.status,
