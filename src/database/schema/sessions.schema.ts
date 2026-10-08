@@ -1,4 +1,4 @@
-import { index, integer, pgTable, serial, text, timestamp, unique, uniqueIndex } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
@@ -57,6 +57,8 @@ export const sessions = pgTable(
      * to deleting one (§10.7 — a delete cascades into learning history).
      */
     archivedAt: timestamp('archived_at', { mode: 'string', withTimezone: true }),
+    /** Non-sequential PUBLIC id for URLs (/trainer/sessions/:publicId). 0046. */
+    publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -64,6 +66,7 @@ export const sessions = pgTable(
   (table) => [
     // Calendar views scan by date; the sessions list filters by status.
     index('idx_sessions_date').on(table.date),
+    uniqueIndex('sessions_public_id_key').on(table.publicId),
     index('idx_sessions_status').on(table.status),
     index('idx_sessions_org_date').on(table.organizationId, table.date),
     index('idx_sessions_org_archived').on(

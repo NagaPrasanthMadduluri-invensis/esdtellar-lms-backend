@@ -6,6 +6,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from 'drizzle-orm/pg-core';
 
 import { scormPackages } from './scorm.schema';
@@ -108,6 +109,14 @@ export const courses = pgTable(
      * lives in migration 0036.
      */
     externalCertificationId: integer('external_certification_id'),
+    /**
+     * Non-sequential PUBLIC id for URLs (/my-courses/:publicId), so a browser
+     * URL never exposes the sequential primary key. Internal joins and tenancy
+     * predicates still run on `id`; this is only how the outside world names a
+     * course. Nullable for now — migration 0046 adds it with a DEFAULT and
+     * backfills; a later migration sets NOT NULL once every read/write uses it.
+     */
+    publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -117,6 +126,7 @@ export const courses = pgTable(
   },
   (table) => [
     index('idx_courses_active').on(table.isActive),
+    uniqueIndex('courses_public_id_key').on(table.publicId),
     // One training course per session, and the lookup for "is this course a
     // session training?" that the admin list and certificate guard both make.
     uniqueIndex('courses_session_unique').on(table.sessionId),
@@ -213,12 +223,15 @@ export const lessons = pgTable(
       () => scormPackages.id,
       { onDelete: 'set null' },
     ),
+    /** Non-sequential PUBLIC id for URLs (see courses.publicId). 0046. */
+    publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
     index('idx_lessons_module').on(table.moduleId, table.isActive),
+    uniqueIndex('lessons_public_id_key').on(table.publicId),
     // Joined by ScormRepository.hasAccess, findAccessiblePackage and the
     // content middleware's entitlement UNION — the last of which runs on every
     // package launch (§7.4).

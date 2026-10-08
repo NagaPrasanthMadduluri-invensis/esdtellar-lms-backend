@@ -15,6 +15,7 @@ import type { Response } from 'express';
 import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { VideoProgressDto } from './dto/media.dto';
 import { MediaService } from './media.service';
@@ -30,14 +31,20 @@ import { MediaService } from './media.service';
 @Controller('learner/lessons')
 @Roles('learner')
 export class LearnerMediaController {
-  constructor(private readonly media: MediaService) {}
+  constructor(
+    private readonly media: MediaService,
+    // :lessonId is now the lesson's public UUID (0046); resolve it to the
+    // integer id, still accepting a bare integer during the transition.
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get(':lessonId/media')
   async media_(
-    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Param('lessonId') lessonIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const lessonId = await this.publicId.resolveIdOrThrow('lessons', lessonIdParam);
     return this.media.learnerLessonMedia(scope, lessonId, user.userId);
   }
 
@@ -73,11 +80,12 @@ export class LearnerMediaController {
    */
   @Get(':lessonId/document')
   async document(
-    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Param('lessonId') lessonIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
     @Res() res: Response,
   ) {
+    const lessonId = await this.publicId.resolveIdOrThrow('lessons', lessonIdParam);
     const doc = await this.media.openLearnerDocument(scope, lessonId, user.userId);
     if (!doc) throw new NotFoundException('This lesson has no document.');
 
@@ -103,11 +111,12 @@ export class LearnerMediaController {
   @Post(':lessonId/video-progress')
   @HttpCode(HttpStatus.OK)
   async saveProgress(
-    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Param('lessonId') lessonIdParam: string,
     @Body() dto: VideoProgressDto,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const lessonId = await this.publicId.resolveIdOrThrow('lessons', lessonIdParam);
     return this.media.saveVideoProgress(scope, lessonId, user.userId, dto);
   }
 }

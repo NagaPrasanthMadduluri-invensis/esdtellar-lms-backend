@@ -1,4 +1,4 @@
-import { index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { journeys } from './journeys.schema';
@@ -47,9 +47,12 @@ export const certificates = pgTable(
     isRevoked: integer('is_revoked').notNull().default(0),
     revokedAt: timestamp('revoked_at', { mode: 'string', withTimezone: true }),
     revokedBy: integer('revoked_by').references(() => users.id),
+    /** Non-sequential PUBLIC id for the in-app deep link (see courses.publicId). 0046. */
+    publicId: uuid('public_id').defaultRandom(),
   },
   (table) => [
     unique('certificates_user_course_unique').on(table.userId, table.courseId),
+    uniqueIndex('certificates_public_id_key').on(table.publicId),
     // Admin list filters by course; the (user_id, course_id) UNIQUE already
     // covers the learner-side lookup.
     index('idx_certificates_course').on(table.courseId),

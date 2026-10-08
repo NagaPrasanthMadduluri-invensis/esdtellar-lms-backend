@@ -30,6 +30,7 @@ import {
 } from './dto/scorm.dto';
 import type { OrgScope } from '@/database/org-scope';
 import { ListDatamodelQueryDto } from './dto/scorm.dto';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { ScormService } from './scorm.service';
 
@@ -134,7 +135,13 @@ export class AdminScormController {
  */
 @Controller('learner/scorm')
 export class LearnerScormController {
-  constructor(private readonly scorm: ScormService) {}
+  constructor(
+    private readonly scorm: ScormService,
+    // Resolves the URL's :packageId, which is now the package's public UUID, to
+    // the integer id the service works in. Still accepts a bare integer during
+    // the transition (0046), so an old link keeps working.
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get()
   async list(
@@ -147,18 +154,20 @@ export class LearnerScormController {
   @Get(':packageId')
   async detail(
     @CurrentScope() scope: OrgScope,
-    @Param('packageId', ParseIntPipe) packageId: number,
+    @Param('packageId') packageIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const packageId = await this.publicId.resolveIdOrThrow('scorm_packages', packageIdParam);
     return this.scorm.packageForLearner(scope, user.userId, packageId);
   }
 
   @Get(':packageId/tracking')
   async tracking(
     @CurrentScope() scope: OrgScope,
-    @Param('packageId', ParseIntPipe) packageId: number,
+    @Param('packageId') packageIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const packageId = await this.publicId.resolveIdOrThrow('scorm_packages', packageIdParam);
     return this.scorm.tracking(scope, user.userId, packageId);
   }
 
@@ -166,10 +175,11 @@ export class LearnerScormController {
   @HttpCode(HttpStatus.OK)
   async saveTracking(
     @CurrentScope() scope: OrgScope,
-    @Param('packageId', ParseIntPipe) packageId: number,
+    @Param('packageId') packageIdParam: string,
     @Body() dto: SaveTrackingDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const packageId = await this.publicId.resolveIdOrThrow('scorm_packages', packageIdParam);
     return this.scorm.saveTracking(scope, user.userId, packageId, dto);
   }
   /**
@@ -193,10 +203,11 @@ export class LearnerScormController {
   @HttpCode(HttpStatus.OK)
   async trackDatamodel(
     @CurrentScope() scope: OrgScope,
-    @Param('packageId', ParseIntPipe) packageId: number,
+    @Param('packageId') packageIdParam: string,
     @Body() dto: TrackDatamodelDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const packageId = await this.publicId.resolveIdOrThrow('scorm_packages', packageIdParam);
     return this.scorm.trackDatamodel(scope, user.userId, packageId, dto);
   }
 
@@ -204,10 +215,11 @@ export class LearnerScormController {
   @Get(':packageId/datamodel')
   async datamodel(
     @CurrentScope() scope: OrgScope,
-    @Param('packageId', ParseIntPipe) packageId: number,
+    @Param('packageId') packageIdParam: string,
     @Query() query: ListDatamodelQueryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const packageId = await this.publicId.resolveIdOrThrow('scorm_packages', packageIdParam);
     return this.scorm.datamodelForLearner(
       scope,
       user.userId,

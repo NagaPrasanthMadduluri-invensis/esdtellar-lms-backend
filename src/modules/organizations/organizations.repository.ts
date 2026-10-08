@@ -17,6 +17,8 @@ export interface OrganizationRow {
 
 const ORGANIZATION_COLUMNS = {
   id: organizations.id,
+  // Public UUID for URLs (/platform/organizations/:publicId), 0046.
+  publicId: organizations.publicId,
   name: organizations.name,
   slug: organizations.slug,
   logoUrl: organizations.logoUrl,

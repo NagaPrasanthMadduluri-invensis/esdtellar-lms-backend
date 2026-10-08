@@ -8,6 +8,8 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
+  uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
 
@@ -68,6 +70,8 @@ export const scormPackages = pgTable(
     claimedAt: timestamp('claimed_at', { mode: 'string', withTimezone: true }),
     createdBy: integer('created_by').references(() => users.id),
     isActive: integer('is_active').notNull().default(1),
+    /** Non-sequential PUBLIC id for URLs (/scorm-player/:publicId). 0046. */
+    publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -76,6 +80,7 @@ export const scormPackages = pgTable(
     index('idx_scorm_packages_org_active').on(table.organizationId, table.isActive),
     index('idx_scorm_packages_active').on(table.isActive),
     index('idx_scorm_packages_unclaimed').on(table.createdAt),
+    uniqueIndex('scorm_packages_public_id_key').on(table.publicId),
   ],
 );
 

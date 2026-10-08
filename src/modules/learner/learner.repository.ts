@@ -266,6 +266,7 @@ export class LearnerRepository {
       enrollment_id: number;
       assigned_at: string;
       course_id: number;
+      course_public_id: string | null;
       name: string;
       description: string | null;
       thumbnail_url: string | null;
@@ -282,6 +283,7 @@ export class LearnerRepository {
       has_passed: number | null;
       assessment_count: number;
       certificate_id: number | null;
+      certificate_public_id: string | null;
       passed_assessments: number;
       /** Best PASSING score per passed assessment — what `courseReward` tiers. */
       best_passed_scores: number[] | null;
@@ -298,7 +300,8 @@ export class LearnerRepository {
       source_journey_id: number | null;
     }>(sql`
       SELECT uca.id AS enrollment_id, uca.assigned_at,
-        c.id AS course_id, c.name, c.description, c.thumbnail_url,
+        c.id AS course_id, c.public_id AS course_public_id,
+        c.name, c.description, c.thumbnail_url,
         c.category, c.is_mandatory,
         c.session_id,
         -- WHAT KIND of learning this row is, for the caller that splits them.
@@ -358,6 +361,13 @@ export class LearnerRepository {
             AND ct.organization_id = ${scope.organizationId}
             AND ct.is_revoked = 0
           ORDER BY ct.issued_at DESC LIMIT 1) AS certificate_id,
+        -- The same certificate's PUBLIC uuid, for the deep link on the card
+        -- (?certificate=<uuid>) so it never names the sequential id (0046).
+        (SELECT ct.public_id FROM certificates ct
+          WHERE ct.course_id = c.id AND ct.user_id = ${userId}
+            AND ct.organization_id = ${scope.organizationId}
+            AND ct.is_revoked = 0
+          ORDER BY ct.issued_at DESC LIMIT 1) AS certificate_public_id,
         -- DISTINCT, matching LeaderboardRepository.standings: re-passing an
         -- assessment already passed pays nothing, so the card must not count
         -- it as progress toward the course's total either.
@@ -561,16 +571,20 @@ export class LearnerRepository {
       start_time: string | null;
       end_time: string | null;
       session_status: string | null;
+      scorm_package_public_id: string | null;
+      public_id: string | null;
     }>(sql`
       SELECT l.*, cm.title AS module_title, cm.course_id,
              cm.sort_order AS module_sort_order,
              s.id AS session_id, s.session_type, s.trainer, s.venue_url,
              s.date AS session_date, s.start_time, s.end_time,
-             s.status AS session_status
+             s.status AS session_status,
+             sp.public_id AS scorm_package_public_id
       FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       LEFT JOIN courses c ON c.id = cm.course_id
       LEFT JOIN sessions s ON s.id = c.session_id
+      LEFT JOIN scorm_packages sp ON sp.id = l.scorm_package_id
       WHERE l.id = ${lessonId} AND l.is_active = 1 AND ${contentScope('l', scope)}
     `);
     return rows[0] ?? null;

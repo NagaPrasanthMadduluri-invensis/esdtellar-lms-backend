@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, date, integer, numeric, pgTable, serial, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { boolean, date, integer, numeric, pgTable, serial, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 /**
  * A tenant. Every other table's `organization_id` points here, plus one
@@ -89,6 +89,8 @@ export const organizations = pgTable(
      * learner population; transactional mail is unaffected by this column.
      */
     emailAnnouncements: integer('email_announcements').notNull().default(0),
+    /** Non-sequential PUBLIC id for URLs (/platform/organizations/:publicId). 0046. */
+    publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -97,6 +99,7 @@ export const organizations = pgTable(
     uniqueIndex('organizations_one_platform')
       .on(table.isPlatform)
       .where(sql`${table.isPlatform}`),
+    uniqueIndex('organizations_public_id_key').on(table.publicId),
   ],
 );
 

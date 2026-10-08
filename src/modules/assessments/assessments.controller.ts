@@ -19,6 +19,7 @@ import {
 } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { AssessmentsService } from './assessments.service';
 import {
@@ -161,7 +162,12 @@ export class QuestionsController {
 @Controller('learner/assessments')
 @Roles('learner')
 export class LearnerAssessmentsController {
-  constructor(private readonly assessments: AssessmentsService) {}
+  constructor(
+    private readonly assessments: AssessmentsService,
+    // :assessmentId is now the public UUID (0046); resolve to the integer id,
+    // still accepting a bare integer during the transition.
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get()
   async list(
@@ -173,30 +179,33 @@ export class LearnerAssessmentsController {
 
   @Get(':assessmentId')
   async get(
-    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @Param('assessmentId') assessmentIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const assessmentId = await this.publicId.resolveIdOrThrow('assessments', assessmentIdParam);
     return this.assessments.getForLearner(scope, assessmentId, user.userId);
   }
 
   @Get(':assessmentId/attempts')
   async attempts(
-    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @Param('assessmentId') assessmentIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const assessmentId = await this.publicId.resolveIdOrThrow('assessments', assessmentIdParam);
     return this.assessments.listAttempts(scope, assessmentId, user.userId);
   }
 
   @Post(':assessmentId/attempt')
   @HttpCode(HttpStatus.OK)
   async submit(
-    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @Param('assessmentId') assessmentIdParam: string,
     @Body() dto: SubmitAttemptDto,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const assessmentId = await this.publicId.resolveIdOrThrow('assessments', assessmentIdParam);
     return this.assessments.submitAttempt(scope, assessmentId, user.userId, dto);
   }
 }

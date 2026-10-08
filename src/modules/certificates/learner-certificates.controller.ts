@@ -1,8 +1,9 @@
-import { Controller, Get, Param, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 
 import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { CertificatesService } from './certificates.service';
 
@@ -14,7 +15,12 @@ import { CertificatesService } from './certificates.service';
 @Controller('learner/certificates')
 @Roles('learner')
 export class LearnerCertificatesController {
-  constructor(private readonly certificates: CertificatesService) {}
+  constructor(
+    private readonly certificates: CertificatesService,
+    // :id is now the certificate's public UUID (0046); resolve to the integer
+    // id, still accepting a bare integer during the transition.
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get()
   async list(
@@ -29,10 +35,11 @@ export class LearnerCertificatesController {
   /** 403 when the certificate belongs to another learner, 404 when missing. */
   @Get(':id')
   async detail(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') idParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const id = await this.publicId.resolveIdOrThrow('certificates', idParam);
     return {
       certificate: await this.certificates.getForLearner(
         scope,

@@ -170,6 +170,7 @@ export class PlatformAnalyticsRepository {
       )
       SELECT
         o.id         AS organization_id,
+        o.public_id  AS public_id,
         o.name       AS name,
         o.slug       AS slug,
         o.logo_url   AS logo_url,
@@ -257,6 +258,7 @@ export class PlatformAnalyticsRepository {
 
 export interface OrganizationStatsRow {
   organization_id: number;
+  public_id: string | null;
   name: string;
   slug: string;
   logo_url: string | null;

@@ -1,4 +1,4 @@
-import { index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, serial, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 import { courses } from './courses.schema';
 import { users } from './users.schema';
@@ -29,6 +29,8 @@ export const assessments = pgTable(
     /** Set only when linkType is 'lesson'. SET NULL if the lesson goes. */
     lessonId: integer('lesson_id'),
     isActive: integer('is_active').notNull().default(1),
+    /** Non-sequential PUBLIC id for URLs (see courses.publicId). 0046. */
+    publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -37,6 +39,7 @@ export const assessments = pgTable(
     index('idx_assessments_course').on(table.courseId, table.isActive),
     index('idx_assessments_module').on(table.moduleId),
     index('idx_assessments_lesson').on(table.lessonId),
+    uniqueIndex('assessments_public_id_key').on(table.publicId),
   ],
 );
 

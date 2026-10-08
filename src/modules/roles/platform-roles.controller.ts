@@ -13,6 +13,7 @@ import {
 
 import { CurrentUser, Permissions, PlatformAdmin } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { CreateOrganizationUserDto } from './dto/platform-user.dto';
 import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
@@ -44,11 +45,18 @@ import { PlatformRolesService } from './platform-roles.service';
 @Controller('platform/organizations/:organizationId')
 @PlatformAdmin()
 export class PlatformRolesController {
-  constructor(private readonly platformRoles: PlatformRolesService) {}
+  constructor(
+    private readonly platformRoles: PlatformRolesService,
+    // :organizationId is now the org's public UUID (0046); resolve to the
+    // integer id before it is handed to scopeFor(). roleId stays an integer —
+    // it comes from the page's own data, not a browser URL.
+    private readonly publicId: PublicIdService,
+  ) {}
 
   /** That org's roles with full `permissions[]`, plus the code catalogue. */
   @Get('roles')
-  async list(@Param('organizationId', ParseIntPipe) organizationId: number) {
+  async list(@Param('organizationId') organizationIdParam: string) {
+    const organizationId = await this.publicId.resolveIdOrThrow('organizations', organizationIdParam);
     return this.platformRoles.list(organizationId);
   }
 
@@ -56,20 +64,22 @@ export class PlatformRolesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_roles')
   async create(
-    @Param('organizationId', ParseIntPipe) organizationId: number,
+    @Param('organizationId') organizationIdParam: string,
     @Body() dto: CreateRoleDto,
   ) {
+    const organizationId = await this.publicId.resolveIdOrThrow('organizations', organizationIdParam);
     return this.platformRoles.create(organizationId, dto);
   }
 
   @Patch('roles/:roleId')
   @Permissions('manage_roles')
   async update(
-    @Param('organizationId', ParseIntPipe) organizationId: number,
+    @Param('organizationId') organizationIdParam: string,
     @Param('roleId', ParseIntPipe) roleId: number,
     @Body() dto: UpdateRoleDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const organizationId = await this.publicId.resolveIdOrThrow('organizations', organizationIdParam);
     // The actor's own role id comes from the verified token, never the body —
     // see PlatformRolesService.update for why it is passed through unchanged
     // rather than nulled for a cross-org edit.
@@ -79,9 +89,10 @@ export class PlatformRolesController {
   @Delete('roles/:roleId')
   @Permissions('manage_roles')
   async remove(
-    @Param('organizationId', ParseIntPipe) organizationId: number,
+    @Param('organizationId') organizationIdParam: string,
     @Param('roleId', ParseIntPipe) roleId: number,
   ) {
+    const organizationId = await this.publicId.resolveIdOrThrow('organizations', organizationIdParam);
     return this.platformRoles.remove(organizationId, roleId);
   }
 
@@ -98,9 +109,10 @@ export class PlatformRolesController {
   @HttpCode(HttpStatus.CREATED)
   @Permissions('manage_users')
   async createUser(
-    @Param('organizationId', ParseIntPipe) organizationId: number,
+    @Param('organizationId') organizationIdParam: string,
     @Body() dto: CreateOrganizationUserDto,
   ) {
+    const organizationId = await this.publicId.resolveIdOrThrow('organizations', organizationIdParam);
     return this.platformRoles.createUser(organizationId, dto);
   }
 }

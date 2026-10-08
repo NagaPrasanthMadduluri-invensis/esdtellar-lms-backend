@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Put } from '@nestjs/common';
+import { Body, Controller, Get, Param, Put } from '@nestjs/common';
 
 import {
   CurrentScope,
@@ -11,6 +11,7 @@ import type { OrgScope } from '@/database/org-scope';
 
 import { SaveAttendanceDto } from './dto/session.dto';
 import { SessionsService } from './sessions.service';
+import { PublicIdService } from '@/database/public-id.service';
 
 /**
  * The trainer's view of sessions — `specs/rbac.md` §3.6.1.
@@ -36,7 +37,12 @@ import { SessionsService } from './sessions.service';
 @Controller('trainer/sessions')
 @Roles('trainer')
 export class TrainerSessionsController {
-  constructor(private readonly sessions: SessionsService) {}
+  constructor(
+    private readonly sessions: SessionsService,
+    // :id is now the session's public UUID (0046); resolve to the integer id,
+    // still accepting a bare integer during the transition.
+    private readonly publicId: PublicIdService,
+  ) {}
 
   /** His own sessions, newest first. */
   @Get()
@@ -52,10 +58,11 @@ export class TrainerSessionsController {
   @Get(':id')
   @Permissions('view_own_sessions')
   async get(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') idParam: string,
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const id = await this.publicId.resolveIdOrThrow('sessions', idParam);
     return this.sessions.trainerSession(scope, id, user.userId);
   }
 
@@ -63,10 +70,11 @@ export class TrainerSessionsController {
   @Get(':id/participants')
   @Permissions('view_session_participants')
   async participants(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') idParam: string,
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const id = await this.publicId.resolveIdOrThrow('sessions', idParam);
     return this.sessions.trainerParticipants(scope, id, user.userId);
   }
 
@@ -74,11 +82,12 @@ export class TrainerSessionsController {
   @Put(':id/attendance')
   @Permissions('mark_attendance')
   async saveAttendance(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') idParam: string,
     @Body() dto: SaveAttendanceDto,
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    const id = await this.publicId.resolveIdOrThrow('sessions', idParam);
     return this.sessions.trainerSaveAttendance(scope, id, user.userId, dto);
   }
 }

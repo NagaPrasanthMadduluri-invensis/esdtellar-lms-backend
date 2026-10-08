@@ -344,6 +344,9 @@ export class CertificatesRepository {
     return this.db
       .select({
         id: certificates.id,
+        // Public UUID for the deep link (?certificate=<uuid>) and the detail
+        // fetch, so neither names the sequential id (0046).
+        publicId: certificates.publicId,
         certificateCode: certificates.certificateCode,
         courseName: courses.name,
         journeyName: journeys.title,

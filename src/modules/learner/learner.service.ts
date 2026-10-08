@@ -562,8 +562,13 @@ export class LearnerService {
          */
         certificateId:
           row.certificate_id !== null ? Number(row.certificate_id) : null,
+        // Public UUID for the certificate deep link (0046); null when none.
+        certificatePublicId: row.certificate_public_id ?? null,
         course: {
           id: row.course_id,
+          // PUBLIC uuid for the card's link, so My Courses points at
+          // /my-courses/<uuid> rather than the sequential id (0046).
+          public_id: row.course_public_id ?? null,
           name: row.name,
           description: row.description,
           // The list cards show course art too, so the thumbnail has to reach
@@ -934,6 +939,8 @@ export class LearnerService {
     return {
       lesson: {
         id: lesson.id,
+        // The lesson's own PUBLIC uuid, so the URL names it by UUID (0046).
+        public_id: lesson.public_id ?? null,
         title: lesson.title,
         description: lesson.description,
         content_type: lesson.content_type,
@@ -943,6 +950,9 @@ export class LearnerService {
         has_video: Boolean(lesson.video_key),
         has_captions: Boolean(lesson.caption_key),
         scorm_package_id: lesson.scorm_package_id ?? null,
+        // The package's PUBLIC uuid, so the player is launched by UUID rather
+        // than the sequential id (0046). Null for a non-SCORM lesson.
+        scorm_package_public_id: lesson.scorm_package_public_id ?? null,
         duration_minutes: lesson.duration_minutes,
         // Present when the lesson IS a document. The file itself is fetched
         // from GET /learner/lessons/:id/media, which signs it per request —
@@ -988,7 +998,9 @@ export class LearnerService {
         url: resource.source === 'link' ? resource.url : null,
       })),
       progress_status: current?.progress_status ?? 'not_started',
-      next_lesson_id: next ? Number(next.id) : null,
+      // The NEXT lesson's public uuid (0046), so "Next lesson" navigates by
+      // UUID. Falls back to the integer id if a row somehow lacks one.
+      next_lesson_id: next ? (next.public_id ?? Number(next.id)) : null,
     };
   }
 

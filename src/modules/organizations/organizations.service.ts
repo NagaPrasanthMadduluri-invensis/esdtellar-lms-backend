@@ -34,6 +34,12 @@ import {
 /** Camel-cased, boolean-normalised shape every endpoint returns for an org. */
 export interface OrganizationDto {
   id: number;
+  /**
+   * Public UUID for URLs (0046). Optional on the type because only the tenant
+   * LIST paths need to surface it to build links; other endpoints that return
+   * an organization may omit it. Null only for a row that predates the backfill.
+   */
+  publicId?: string | null;
   name: string;
   slug: string;
   logoUrl: string | null;
@@ -573,6 +579,8 @@ export class OrganizationsService implements OnModuleInit {
         };
         return {
           id: row.organization_id,
+          // Public UUID for the tenant card's link (/platform/organizations/:publicId), 0046.
+          public_id: row.public_id ?? null,
           name: row.name,
           slug: row.slug,
           logo_url: row.logo_url,
@@ -768,6 +776,7 @@ export class OrganizationsService implements OnModuleInit {
     return {
       organization: {
         id: row.organization_id,
+        publicId: row.public_id ?? null,
         name: row.name,
         slug: row.slug,
         logoUrl: row.logo_url,

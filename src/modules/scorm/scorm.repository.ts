@@ -434,7 +434,7 @@ export class ScormRepository {
 
   async listForLearner(scope: OrgScope, userId: number) {
     return this.db.all(sql`
-      SELECT sp.id, sp.title, sp.version, sp.entry_point, sp.package_dir,
+      SELECT sp.id, sp.public_id, sp.title, sp.version, sp.entry_point, sp.package_dir,
              sp.created_at, c.name AS course_name, usa.assigned_at,
              st.lesson_status, st.completion_status, st.success_status,
              st.score_raw, st.score_max, st.total_time,
@@ -495,7 +495,7 @@ export class ScormRepository {
     packageId: number,
   ) {
     const rows = await this.db.all(sql`
-      SELECT sp.id, sp.title, sp.version, sp.entry_point, sp.package_dir,
+      SELECT sp.id, sp.public_id, sp.title, sp.version, sp.entry_point, sp.package_dir,
              c.name AS course_name
       FROM scorm_packages sp
       LEFT JOIN courses c ON c.id = sp.course_id

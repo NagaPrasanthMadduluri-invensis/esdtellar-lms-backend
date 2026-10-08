@@ -3794,6 +3794,83 @@ you compare old and new behaviour:
 - Rate-limit the public verify endpoint (`@nestjs/throttler`).
 - Add `helmet` for security headers.
 
+### 10.34 Public UUIDs in URLs, without touching the primary keys
+
+`0046_public_ids.sql`. A sequential integer primary key in a browser URL
+(`/my-courses/47`, `/scorm-player/30`) leaks two things: roughly how many
+records exist, and a guessable neighbour to probe. Authorization already closes
+the door on reaching another tenant's row — every handler is org-scoped and
+ownership is checked in the service, so a guessed id 404s (§5.3) — so this is
+**enumeration hardening, not an open IDOR fix**. The severity is moderate; the
+public identifier simply should not be guessable, and the integer one is.
+
+**The fix is ADDITIVE, and that is the whole decision.** The integer primary
+keys and every foreign key stay exactly as they are — they are what joins and
+tenancy predicates run on, and converting them would rewrite every table and
+every one of the 85 handlers. Instead each table whose id appears in a URL gains
+a second, non-sequential `public_id uuid`. The URL and the public API name a
+record by it; the database still joins on the integer underneath.
+
+**Seven tables carry it**, the ones whose id appears in a browser URL: `courses`,
+`lessons`, `assessments`, `scorm_packages`, `sessions`, `organizations`,
+`certificates`. (`scorm_packages.package_dir` is a SEPARATE on-disk UUID — do
+not conflate the two.) The column is declared in the Drizzle schema with
+`.defaultRandom()` plus a `*_public_id_key` unique index, and in the migration
+with `DEFAULT gen_random_uuid()` (core in pg 13+, so no extension).
+
+**The migration is the first two of a THREE-step rollout** (the shape to repeat
+for any column that must become NOT NULL on a live table):
+
+1. add the column NULLABLE, with a DEFAULT so every new row is born with one;
+2. backfill every existing row (idempotent — only rows still NULL);
+3. **a LATER migration**, after the app reads and writes `public_id`
+   everywhere, runs `SET NOT NULL`. Deferred so the migration can never fail on
+   a row the app has not learned to populate, and so rolling the app back does
+   not strand a NOT NULL column it cannot fill. **That enforce migration is not
+   written yet.**
+
+**`PublicIdService` (`src/database/public-id.service.ts`) is the one bridge, and
+it accepts EITHER form.** `resolveIdOrThrow(table, param)` passes an integer
+straight through and looks a UUID up; a controller takes the URL param as a
+`string` and asks it for the integer id. Accepting both is what makes the
+rollout non-breaking: every existing integer caller keeps working the instant
+this ships and before the client has switched, and a client link that still
+emits an integer is wrong only cosmetically, not functionally. It is provided
+by `DatabaseModule` (global), so any controller injects it like
+`DatabaseService`.
+
+- **Resolution is deliberately UNSCOPED.** `public_id` is globally unique, and
+  the downstream service still applies its own org-scope and ownership checks —
+  so a guessed UUID that resolves to another tenant's row is refused there
+  exactly as a guessed integer already is. Resolving an id does not grant access
+  to it.
+- **The table name is a WHITELIST**, never caller input, so naming the table
+  dynamically in the query has no injection surface.
+
+**Which routes resolve it: only the ones a browser URL reaches.** The learner
+course/lesson/assessment/SCORM routes, the learner media routes (a lesson's
+media is fetched with the lesson's URL id), the trainer session routes, the
+platform organization routes **and** the delegated `:organizationId` roles/users
+routes (they mint an `OrgScope` via `scopeFor`, so the id is resolved before
+that), and the learner certificate detail route. The admin surfaces
+(`/admin/courses`, `/admin/sessions`, `/admin/scorm`, …) are left on integers on
+purpose — their pages carry no id in the browser URL, so hiding it there would
+be cost without benefit.
+
+**Responses expose `public_id` so the client can build the next link.** Where a
+read already does `SELECT *` / `l.*` / `a.*` the column rides along for free
+(the course detail's course, lessons and assessments); elsewhere it is added to
+the column list (the My Courses list, the SCORM list/detail, the lesson payload's
+own and next-lesson ids, the SCORM package id on a lesson, the org lists, the
+certificate list and the My Courses certificate deep-link id). Watch the casing
+trap §10.10 records: a Drizzle `.select()` returns `publicId`, a raw-SQL read
+returns `public_id`, and the client reads whichever that endpoint already uses.
+
+**Production rollout** is the standard one and is NOT done ad-hoc over SSH: a
+`pg_dump` first (`/home/ubuntu/db-backups/`), then the backend deploys and 0046
+backfills on boot, then the client. The `SET NOT NULL` enforce migration is a
+later, separate deploy once the client emits only UUIDs.
+
 ---
 
 ## 11. Adding a new module — checklist

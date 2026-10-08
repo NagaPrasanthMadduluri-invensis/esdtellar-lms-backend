@@ -16,6 +16,7 @@ import { SpreadsheetService } from '@/modules/reports/spreadsheet.service';
 import { CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LearnerService } from './learner.service';
@@ -25,6 +26,9 @@ import { LearnerService } from './learner.service';
 export class LearnerController {
   constructor(private readonly learner: LearnerService,
     private readonly spreadsheets: SpreadsheetService,
+    // Resolves the public UUID in the URL (/my-courses/:courseId,
+    // .../lessons/:lessonId) to the integer id (0046); still accepts an integer.
+    private readonly publicId: PublicIdService,
   ) {}
 
   @Get('dashboard')
@@ -45,29 +49,32 @@ export class LearnerController {
 
   @Get('courses/:courseId')
   async courseDetail(
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.learner.courseDetail(scope, user.userId, courseId);
   }
 
   @Get('lessons/:lessonId')
   async lesson(
-    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Param('lessonId') lessonIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const lessonId = await this.publicId.resolveIdOrThrow('lessons', lessonIdParam);
     return this.learner.lesson(scope, user.userId, lessonId);
   }
 
   @Post('lessons/:lessonId/complete')
   @HttpCode(HttpStatus.OK)
   async complete(
-    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @Param('lessonId') lessonIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
     @CurrentScope() scope: OrgScope,
   ) {
+    const lessonId = await this.publicId.resolveIdOrThrow('lessons', lessonIdParam);
     return this.learner.completeLesson(scope, user.userId, lessonId);
   }
 
