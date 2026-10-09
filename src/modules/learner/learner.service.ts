@@ -1005,6 +1005,9 @@ export class LearnerService {
       // The NEXT lesson's public uuid (0046), so "Next lesson" navigates by
       // UUID. Falls back to the integer id if a row somehow lacks one.
       next_lesson_id: next ? (next.public_id ?? Number(next.id)) : null,
+      // Its title, so the completion button can name where the learner goes
+      // next ("Save & move to next lesson" → that lesson).
+      next_lesson_title: next ? (next.title ?? null) : null,
     };
   }
 
