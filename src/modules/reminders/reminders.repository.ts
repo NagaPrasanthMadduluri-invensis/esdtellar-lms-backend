@@ -12,6 +12,16 @@ export interface DueSoonRow {
   days_left: number;
 }
 
+export interface DueTodayRow {
+  user_id: number;
+  organization_id: number;
+  course_id: number;
+  course_name: string;
+  /** Total declared length of the course's active lessons, for the "finish it
+   *  in {hours}" line. 0 when no lesson declares one. */
+  duration_minutes: number;
+}
+
 /**
  * The queries behind the scheduled reminders.
  *
@@ -93,17 +103,74 @@ export class RemindersRepository {
   }
 
   /**
+   * Assignments due TODAY that the learner has NOT STARTED.
+   *
+   * "Not started" is stricter than the `dueSoon` "not finished": zero lesson
+   * completions for this course, so this is the last-day push to someone who
+   * has not opened it at all (its own notification type and wording). Same
+   * exclusions as `dueSoon` — a session training, an external certification,
+   * and a course with no deliverable lessons are all things the learner cannot
+   * act on. Not org-scoped: the daily sweep fans out per recipient, and the
+   * organization travels on the row.
+   */
+  async dueTodayNotStarted(): Promise<DueTodayRow[]> {
+    return this.db.all<DueTodayRow>(sql`
+      SELECT a.user_id,
+             a.organization_id,
+             a.course_id,
+             c.name AS course_name,
+             COALESCE((
+               SELECT SUM(l.duration_minutes)
+                 FROM lessons l
+                 JOIN course_modules cm ON cm.id = l.module_id
+                WHERE cm.course_id = c.id AND l.is_active = 1 AND cm.is_active = 1
+             ), 0) AS duration_minutes
+        FROM user_course_assignments a
+        JOIN courses c ON c.id = a.course_id
+        JOIN users   u ON u.id = a.user_id
+        JOIN organizations o ON o.id = a.organization_id
+       WHERE a.due_date IS NOT NULL
+         AND a.due_date <> ''
+         AND a.due_date::date = CURRENT_DATE
+         AND u.is_active = 1
+         AND o.is_active = 1
+         AND c.is_active = 1
+         AND c.session_id IS NULL
+         AND c.external_certification_id IS NULL
+         -- Has at least one deliverable lesson.
+         AND EXISTS (
+           SELECT 1 FROM lessons l
+             JOIN course_modules cm ON cm.id = l.module_id
+            WHERE cm.course_id = c.id AND l.is_active = 1 AND cm.is_active = 1
+         )
+         -- NOT STARTED: no completion for this learner on any lesson of it.
+         AND NOT EXISTS (
+           SELECT 1 FROM user_lesson_completions ulc
+             JOIN lessons l ON l.id = ulc.lesson_id
+             JOIN course_modules cm ON cm.id = l.module_id
+            WHERE cm.course_id = c.id AND ulc.user_id = a.user_id
+         )
+       ORDER BY a.user_id
+    `);
+  }
+
+  /**
    * Who has already been reminded about this course recently.
    *
    * Reads `notifications` rather than a table of its own. The bell row is
    * written by the same call that sends the email, so it is an accurate
    * record of "we already told them" — and one fewer table to keep in step.
+   * The type is a parameter so the due-soon and due-today sweeps dedupe
+   * against their own history, never each other's.
    */
-  async recentlyReminded(sinceDays: number): Promise<Set<string>> {
+  async recentlyReminded(
+    sinceDays: number,
+    type: 'course_due_soon' | 'course_due_today' = 'course_due_soon',
+  ): Promise<Set<string>> {
     const rows = await this.db.all<{ user_id: number; subject_id: number }>(sql`
       SELECT DISTINCT user_id, subject_id
         FROM notifications
-       WHERE type = 'course_due_soon'
+       WHERE type = ${type}
          AND subject_id IS NOT NULL
          AND created_at > NOW() - (${sinceDays} * INTERVAL '1 day')
     `);

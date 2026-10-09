@@ -15,6 +15,7 @@ import {
   ComparisonReportDto,
   GroupReportDto,
   IndividualReportDto,
+  NudgeDto,
 } from './dto/insights.dto';
 import type { Granularity } from './periods.util';
 
@@ -53,6 +54,19 @@ export class ReportsController {
   @Permissions('view_dashboard')
   async actionRequired(@CurrentScope() scope: OrgScope) {
     return { items: await this.insights.actionRequired(scope) };
+  }
+
+  /**
+   * Nudge one learner to finish one course, from the Action Required panel.
+   * 200, not 201 — nothing is created; it sends a reminder. Guarded by
+   * `view_dashboard`, the same permission as the panel it sits in, so the
+   * button is never offered to someone the API would then refuse (§5.2.1).
+   */
+  @Post('dashboard/nudge')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('view_dashboard')
+  async nudge(@CurrentScope() scope: OrgScope, @Body() dto: NudgeDto) {
+    return this.insights.nudge(scope, dto.user_id, dto.course_id);
   }
 
   /** The dashboard's Recent Activity panel. */

@@ -2,7 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 
-import { RemindersRepository, type DueSoonRow } from './reminders.repository';
+import {
+  RemindersRepository,
+  type DueSoonRow,
+  type DueTodayRow,
+} from './reminders.repository';
 
 /**
  * `course_due_soon`, finally firing.
@@ -117,5 +121,87 @@ export class RemindersService {
       `You have not finished this course yet and it is due on ${when}. ` +
       'Pick up where you left off — your progress is saved.'
     );
+  }
+
+  /**
+   * The due-TODAY push, to learners who have not started.
+   *
+   * Separate from `sendDueSoon` because the audience and the message both
+   * differ: this is someone who has opened nothing, on the last day, so the
+   * wording is one aspirational sitting with the certificate at the end rather
+   * than "pick up where you left off". Its own notification type, so its bell
+   * row and its dedupe never cross the due-soon sweep's. Never throws (§8.4).
+   */
+  async sendDueToday(): Promise<{ sent: number; skipped: number }> {
+    const result = { sent: 0, skipped: 0 };
+    try {
+      const rows = await this.repository.dueTodayNotStarted();
+      if (rows.length === 0) return result;
+
+      const already = await this.repository.recentlyReminded(
+        DEDUPE_DAYS,
+        'course_due_today',
+      );
+
+      for (const row of rows) {
+        if (already.has(`${row.user_id}:${row.course_id}`)) {
+          result.skipped += 1;
+          continue;
+        }
+        await this.notifications.notify({
+          organizationId: row.organization_id,
+          userIds: [row.user_id],
+          type: 'course_due_today',
+          title: `"${row.course_name}" is due today`,
+          body: this.dueTodayBody(row),
+          link: `/my-courses/${row.course_id}`,
+          subjectType: 'course',
+          subjectId: row.course_id,
+        });
+        result.sent += 1;
+      }
+
+      if (result.sent > 0) {
+        this.logger.log(
+          `Due-today reminders: ${result.sent} sent, ${result.skipped} skipped.`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Due-today sweep failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Aspirational, and honest about the time: it names the course's declared
+   * length when there is one so "finish it today" has a number behind it, and
+   * drops that clause rather than inventing a figure when no lesson declares a
+   * duration. No em dashes, per the product's copy rule.
+   */
+  private dueTodayBody(row: DueTodayRow): string {
+    const minutes = Number(row.duration_minutes) || 0;
+    const howLong = this.friendlyLength(minutes);
+    const open = howLong
+      ? `Your course "${row.course_name}" is due today, and it is about ${howLong} of learning.`
+      : `Your course "${row.course_name}" is due today.`;
+    return (
+      `${open} You have not started it yet. Set aside one focused sitting now, ` +
+      'finish it before the day is out, and the certificate is yours to keep.'
+    );
+  }
+
+  /** "45 minutes" / "2 hours" / "1 hour 30 minutes", or '' when unknown. */
+  private friendlyLength(minutes: number): string {
+    if (minutes <= 0) return '';
+    if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+    const hours = Math.floor(minutes / 60);
+    const rem = minutes % 60;
+    const h = `${hours} hour${hours === 1 ? '' : 's'}`;
+    if (rem === 0) return h;
+    return `${h} ${rem} minute${rem === 1 ? '' : 's'}`;
   }
 }

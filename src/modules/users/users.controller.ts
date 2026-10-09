@@ -60,8 +60,14 @@ export class UsersController {
    */
   @Get('template')
   @Permissions('view_employees')
-  template(@Res() response: Response): void {
-    const buffer = this.spreadsheets.buildLearnerUploadTemplate();
+  async template(
+    @CurrentScope() scope: OrgScope,
+    @Res() response: Response,
+  ): Promise<void> {
+    // Built per-tenant so its Location and Job Level columns, and the second
+    // "Valid Values" sheet, carry the exact spellings this org's import accepts.
+    const options = await this.users.uploadTemplateOptions(scope);
+    const buffer = this.spreadsheets.buildLearnerUploadTemplate(options);
     this.spreadsheets.send(response, buffer, 'Learner_Upload_Template.xlsx');
   }
 

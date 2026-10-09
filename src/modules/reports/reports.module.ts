@@ -5,6 +5,7 @@ import { OrgOptionsModule } from '@/modules/org-options/org-options.module';
 import { ActivityModule } from '@/modules/activity/activity.module';
 import { LeaderboardModule } from '@/modules/leaderboard/leaderboard.module';
 import { LearningHoursModule } from '@/modules/learning-hours/learning-hours.module';
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
 
 import { AnalyticsRepository } from './analytics.repository';
 import { AnalyticsService } from './analytics.service';
@@ -18,7 +19,7 @@ import { SpreadsheetService } from './spreadsheet.service';
  * bulk-upload template download.
  */
 @Module({
-  imports: [ActivityModule, LearningHoursModule, LeaderboardModule, OrgOptionsModule],
+  imports: [ActivityModule, LearningHoursModule, LeaderboardModule, OrgOptionsModule, NotificationsModule],
   controllers: [ReportsController],
   providers: [
     AnalyticsService,

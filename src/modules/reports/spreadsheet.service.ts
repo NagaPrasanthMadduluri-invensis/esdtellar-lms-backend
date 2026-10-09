@@ -48,42 +48,73 @@ export class SpreadsheetService {
       .send(buffer);
   }
 
-  buildLearnerUploadTemplate(): Buffer {
+  /**
+   * The bulk-learner template, built for ONE organization so its Location and
+   * Job Level columns can be filled with values the import will actually accept.
+   *
+   * Location and Job Level are a CLOSED, per-tenant list (0031): the import
+   * refuses any value not on it, matching case-insensitively but storing the
+   * list's own spelling. So the template carries a second "Valid Values" sheet
+   * listing every option exactly as it must be typed, the instruction row points
+   * at it, and the sample rows use the org's real first values rather than a
+   * guessed "Bangalore" that may not be how this tenant spells it.
+   *
+   * MANAGER EMAIL, not manager name: a name is ambiguous the moment an org has
+   * two people called Priya, and a spreadsheet cannot carry a user id. The admin
+   * types the unambiguous address; the upload preview resolves it to a name
+   * before anything is written. Optional, like Password.
+   */
+  buildLearnerUploadTemplate(options?: {
+    locations?: string[];
+    jobLevels?: string[];
+  }): Buffer {
+    const locations = options?.locations ?? [];
+    const jobLevels = options?.jobLevels ?? [];
     const workbook = XLSX.utils.book_new();
 
-    /*
-     * MANAGER EMAIL, not manager name — and the instruction row says so,
-     * because this is the one column whose heading does not explain itself.
-     *
-     * A name is ambiguous the moment an organization has two people called
-     * Priya, and a spreadsheet cannot carry a user id. The address is the
-     * login identity and therefore unique. The admin types the unambiguous
-     * thing; the upload preview resolves it back to the NAME before anything
-     * is written, which is where a wrong address is actually noticed.
-     *
-     * Optional, like Password: the third sample row leaves it blank on
-     * purpose, so the template demonstrates that a learner with no manager
-     * is a legitimate row rather than an omission.
-     */
+    const sampleLocation = locations[0] ?? '';
+    const sampleJobLevel = jobLevels[0] ?? '';
+    const altLocation = locations[1] ?? locations[0] ?? '';
+    const altJobLevel = jobLevels[1] ?? jobLevels[0] ?? '';
+
     const sheet = XLSX.utils.aoa_to_sheet([
       [
-        '⚠ Instructions: Fill in one learner per row. Password is optional — leave blank for the default: Edstellar@123. '
-        + 'Manager Email is optional too — enter the EMAIL ADDRESS of an existing active user (not their name), or leave it blank.',
-        '', '', '', '', '', '', '', '',
+        'Instructions: one learner per row. Password is optional (blank uses the default Edstellar@123). '
+        + 'Manager Email is optional: enter the EMAIL ADDRESS of an existing active user, not their name, or leave it blank. '
+        + 'Location and Job Level must match the "Valid Values" sheet exactly (see the second tab).',
+        '', '', '', '', '', '', '', '', '',
       ],
-      ['Employee ID', 'First Name', 'Last Name', 'Email', 'Department', 'Location', 'Job Role', 'Manager Email', 'Password'],
-      ['EMP-001', 'Alice', 'Johnson', 'alice@company.com', 'Engineering', 'Bangalore', 'Software Engineer', 'priya.n@company.com', ''],
-      ['EMP-002', 'Bob', 'Smith', 'bob@company.com', 'Sales', 'Mumbai', 'Sales Manager', 'priya.n@company.com', ''],
-      ['EMP-003', 'Carol', 'Williams', 'carol@company.com', 'HR', 'Delhi', 'HR Coordinator', '', ''],
+      ['Employee ID', 'First Name', 'Last Name', 'Email', 'Department', 'Location', 'Job Role', 'Job Level', 'Manager Email', 'Password'],
+      ['EMP-001', 'Alice', 'Johnson', 'alice@company.com', 'Engineering', sampleLocation, 'Software Engineer', sampleJobLevel, 'priya.n@company.com', ''],
+      ['EMP-002', 'Bob', 'Smith', 'bob@company.com', 'Sales', altLocation, 'Sales Manager', altJobLevel, 'priya.n@company.com', ''],
+      ['EMP-003', 'Carol', 'Williams', 'carol@company.com', 'HR', sampleLocation, 'HR Coordinator', sampleJobLevel, '', ''],
     ]);
 
     sheet['!cols'] = [
-      { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 32 },
-      { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 32 }, { wch: 20 },
+      { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 32 }, { wch: 18 },
+      { wch: 18 }, { wch: 24 }, { wch: 18 }, { wch: 32 }, { wch: 20 },
     ];
-    sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
-
+    sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }];
     XLSX.utils.book_append_sheet(workbook, sheet, 'Learner Upload');
+
+    /*
+     * A second sheet listing the exact spellings. Two independent columns, so
+     * the longer list is not padded against the shorter one. An empty list says
+     * so in words rather than leaving a blank column that reads as a glitch:
+     * a tenant Edstellar has not given branch locations genuinely has none.
+     */
+    const rows = Math.max(locations.length, jobLevels.length, 1);
+    const validValues: string[][] = [['Valid Locations', 'Valid Job Levels']];
+    for (let i = 0; i < rows; i++) {
+      validValues.push([
+        locations[i] ?? (i === 0 && locations.length === 0 ? '(none set up yet)' : ''),
+        jobLevels[i] ?? (i === 0 && jobLevels.length === 0 ? '(none set up yet)' : ''),
+      ]);
+    }
+    const ref = XLSX.utils.aoa_to_sheet(validValues);
+    ref['!cols'] = [{ wch: 28 }, { wch: 28 }];
+    XLSX.utils.book_append_sheet(workbook, ref, 'Valid Values');
+
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
   }
 

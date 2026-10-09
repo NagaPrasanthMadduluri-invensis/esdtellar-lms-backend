@@ -111,6 +111,35 @@ export class InsightsRepository {
   }
 
   /**
+   * Verify a (learner, course) the admin wants to nudge really is an assignment
+   * in this org, and return the course name for the message. Returns null when
+   * it is not, which the service turns into a 404 — the id in the request body
+   * cannot be used to probe another tenant's courses or learners.
+   *
+   * The assignment ACTIVITY is `orgScope`'d to the admin's org; the course may
+   * be the org's own or a shared platform course, which is why the course row
+   * itself is not org-scoped (the assignment already confines it).
+   */
+  async findNudgeTarget(
+    scope: OrgScope,
+    userId: number,
+    courseId: number,
+  ): Promise<{ course_name: string } | null> {
+    const rows = await this.db.all<{ course_name: string }>(sql`
+      SELECT c.name AS course_name
+        FROM user_course_assignments a
+        JOIN courses c ON c.id = a.course_id
+        JOIN users   u ON u.id = a.user_id
+       WHERE a.user_id = ${userId}
+         AND a.course_id = ${courseId}
+         AND u.is_active = 1
+         AND ${orgScope('a', scope)}
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
    * The audience predicate, written once.
    *
    * Every filter is an equality on a `users` column, and every one of them is

@@ -1,8 +1,11 @@
 import { Injectable } from '@nestjs/common';
 
+import { NotFoundException } from '@nestjs/common';
+
 import type { OrgScope } from '@/database/org-scope';
 import { OrgOptionsService } from '@/modules/org-options/org-options.service';
 import { LearningHoursService } from '@/modules/learning-hours/learning-hours.service';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
 
 import {
   InsightsRepository,
@@ -122,6 +125,8 @@ export class InsightsService {
     private readonly hours: LearningHoursService,
     /** Branch locations and job levels, per tenant (`0031`). */
     private readonly orgOptions: OrgOptionsService,
+    /** The Action Required panel's Nudge button sends through here (§10.30). */
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ═══════════════════════════ ANALYTICS ═══════════════════════════════
@@ -774,6 +779,40 @@ export class InsightsService {
         action: failed ? 'Reassign' : notStarted ? 'Send nudge' : 'Remind',
       };
     });
+  }
+
+  /**
+   * The Action Required panel's Nudge button: remind ONE learner to finish ONE
+   * course, by notification and email (`course_nudge`, transactional — §10.30).
+   *
+   * The (learner, course) is verified to be a real assignment in the admin's
+   * own org first, so the body ids cannot reach another tenant's people. The
+   * notify is best-effort by contract, but a 404 for a bad target IS surfaced,
+   * because the button needs to tell the admin whether it landed.
+   */
+  async nudge(
+    scope: OrgScope,
+    userId: number,
+    courseId: number,
+  ): Promise<{ ok: true }> {
+    const target = await this.repository.findNudgeTarget(scope, userId, courseId);
+    if (!target) {
+      throw new NotFoundException('No such course assignment for this learner');
+    }
+    void this.notifications.notify({
+      organizationId: scope.organizationId,
+      userIds: [userId],
+      type: 'course_nudge',
+      title: `A reminder to finish "${target.course_name}"`,
+      body:
+        `Your admin is checking in on "${target.course_name}". `
+        + 'When you have a moment, open it and pick up where you left off: '
+        + 'finishing it adds to your learning hours and your record.',
+      link: `/my-courses/${courseId}`,
+      subjectType: 'course',
+      subjectId: courseId,
+    });
+    return { ok: true };
   }
 }
 

@@ -112,6 +112,33 @@ export const NOTIFICATION_TYPES = {
     cta: 'Continue the course',
     aspiration: 'A short sitting now is easier than a long one on the deadline.',
   },
+  /* Due TODAY, and the learner has not started. A separate type from
+     course_due_soon (which fires 7/3/1 days out, for anyone not finished):
+     this one is the last-day push to someone who has not opened the course at
+     all, so its wording is a single aspirational sitting with the certificate
+     at the end rather than "pick up where you left off". Transactional: it is
+     about the learner's own deadline, not broadcast news. */
+  course_due_today: {
+    label: 'Course due today',
+    group: 'learning',
+    icon: 'CalendarClock',
+    audience: ['learner'],
+    email: 'transactional',
+    cta: 'Start now and finish today',
+    aspiration: 'One focused sitting today and the certificate is yours.',
+  },
+  /* An admin asked this learner to finish a specific course, from the
+     dashboard's Action Required panel. Transactional (an obligation addressed
+     to one person), unlike manager_nudge which is an announcement. */
+  course_nudge: {
+    label: 'A reminder to finish your course',
+    group: 'learning',
+    icon: 'BellRing',
+    audience: ['learner'],
+    email: 'transactional',
+    cta: 'Open the course',
+    aspiration: 'Finishing it adds to your learning hours and your record.',
+  },
 
   /* Self-enrolment opened (0035). TWO types rather than one "something is
      open", because the two are different invitations: a course can be

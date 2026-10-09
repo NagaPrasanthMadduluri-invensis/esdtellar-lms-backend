@@ -108,6 +108,19 @@ export class IndividualReportDto {
   window?: string;
 }
 
+/** The dashboard Action Required panel's Nudge button. */
+export class NudgeDto {
+  @Type(() => Number)
+  @IsInt({ message: 'user_id must be an integer' })
+  @Min(1)
+  user_id!: number;
+
+  @Type(() => Number)
+  @IsInt({ message: 'course_id must be an integer' })
+  @Min(1)
+  course_id!: number;
+}
+
 export class ComparisonReportDto {
   @IsIn(DIMENSION_KEYS, { message: `dimension must be one of: ${DIMENSION_KEYS.join(', ')}` })
   dimension!: string;

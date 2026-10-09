@@ -87,12 +87,13 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     await this.registerDrain();
     await this.registerPrune();
     await this.registerDueSoon();
+    await this.registerDueToday();
     await this.registerFailureAlerts();
     await this.registerWelcomeReconcile();
 
     this.logger.log(
-      'Worker started — email drain every minute, due-soon reminders at ' +
-        '09:00 UTC, prune at 03:00 UTC.',
+      'Worker started — email drain every minute, due-today at 08:00 and ' +
+        'due-soon at 09:00 UTC, prune at 03:00 UTC.',
     );
   }
 
@@ -145,6 +146,22 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     });
     await boss.schedule(queue, '0 9 * * *', undefined, {
       singletonKey: 'due-soon',
+    });
+  }
+
+  /**
+   * The due-TODAY, not-started push. At 08:00 UTC, an hour before the due-soon
+   * sweep, so a learner who gets both on the last day reads "due today" first.
+   */
+  private async registerDueToday(): Promise<void> {
+    const boss = this.boss!;
+    const queue = 'course-due-today';
+    await boss.createQueue(queue);
+    await boss.work(queue, async () => {
+      await this.reminders.sendDueToday();
+    });
+    await boss.schedule(queue, '0 8 * * *', undefined, {
+      singletonKey: 'due-today',
     });
   }
 

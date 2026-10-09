@@ -67,6 +67,22 @@ export class UsersService {
     private readonly orgOptions: OrgOptionsService,
   ) {}
 
+  /**
+   * The exact Location and Job Level spellings this tenant accepts, for the
+   * bulk-upload template. Active only, matching what `optionCheckers` enforces
+   * on import, so the "Valid Values" sheet can never offer a value the upload
+   * would then reject.
+   */
+  async uploadTemplateOptions(
+    scope: OrgScope,
+  ): Promise<{ locations: string[]; jobLevels: string[] }> {
+    const options = await this.orgOptions.optionsFor(scope.organizationId);
+    return {
+      locations: options.locations.map((l) => l.name),
+      jobLevels: options.job_levels.map((j) => j.name),
+    };
+  }
+
   async listLearners(scope: OrgScope) {
     return { users: await this.repository.listLearners(scope) };
   }
@@ -519,6 +535,65 @@ export class UsersService {
   }
 
   /**
+   * Order the file so a manager is CREATED BEFORE anyone who reports to them,
+   * whatever order the rows are in. This is what lets a manager sit at the
+   * BOTTOM of the file and still resolve for the reports listed above them:
+   * the import no longer depends on the admin ordering managers first.
+   *
+   * Kahn's algorithm over report -> manager edges that point INSIDE the file.
+   * A manager who is an existing user, or blank, is no in-file dependency and
+   * resolves the way it always did. Any rows left unordered are a reporting
+   * cycle in the file (A manages B, B manages A), or hang off one; they come
+   * back in `cycle` to be failed with a clear reason rather than written as a
+   * loop the database cannot represent. Existing users can never be part of
+   * such a cycle, because their manager was set before this import and cannot
+   * point at a user this import has not created yet.
+   */
+  private orderByManager(
+    users: { email?: string | null; manager?: string | null }[],
+  ): { order: number[]; cycle: number[] } {
+    const emailToIndex = new Map<string, number>();
+    users.forEach((u, i) => {
+      const e = u.email?.trim().toLowerCase();
+      if (e && !emailToIndex.has(e)) emailToIndex.set(e, i);
+    });
+
+    // dep[i] = the file row that must be created before row i, or -1.
+    const dep = users.map((u, i) => {
+      const m = u.manager?.trim().toLowerCase();
+      if (!m) return -1;
+      const j = emailToIndex.get(m);
+      // -1 for blank, an existing/other-tenant manager not in the file, or
+      // self (self is refused later with its own message).
+      return j === undefined || j === i ? -1 : j;
+    });
+
+    const children: number[][] = users.map(() => []);
+    const indeg = users.map((_u, i) => (dep[i] >= 0 ? 1 : 0));
+    dep.forEach((j, i) => {
+      if (j >= 0) children[j].push(i);
+    });
+
+    const queue: number[] = [];
+    indeg.forEach((d, i) => {
+      if (d === 0) queue.push(i);
+    });
+    const order: number[] = [];
+    while (queue.length > 0) {
+      const i = queue.shift() as number;
+      order.push(i);
+      for (const c of children[i]) {
+        indeg[c] -= 1;
+        if (indeg[c] === 0) queue.push(c);
+      }
+    }
+
+    const ordered = new Set(order);
+    const cycle = users.map((_u, i) => i).filter((i) => !ordered.has(i));
+    return { order, cycle };
+  }
+
+  /**
    * Per-row validation, so one bad row never rejects the whole upload —
    * the caller gets a `failed` array naming the row number and reason.
    */
@@ -600,7 +675,12 @@ export class UsersService {
       managerByEmail.set(found.email.toLowerCase(), found.id);
     }
 
-    for (const [index, row] of dto.users.entries()) {
+    // Managers before their reports, so a manager anywhere in the file (even
+    // the last row) is already created when a report that names them is reached.
+    const { order, cycle } = this.orderByManager(dto.users);
+
+    for (const index of order) {
+      const row = dto.users[index];
       const rowNum = index + 1;
       const email = row.email ?? '';
       const password = row.password?.trim() || DEFAULT_BULK_PASSWORD;
@@ -701,8 +781,8 @@ export class UsersService {
             email,
             reason:
               `No active user with the email ${managerEmail} in this `
-              + 'organization. Add the manager first, or list them higher up '
-              + 'in this file, or leave the column blank.',
+              + 'organization. Add the manager as a row in this file (any '
+              + 'position) or create them first, or leave the column blank.',
           });
           continue;
         }
@@ -761,18 +841,33 @@ export class UsersService {
           });
         }
         /*
-         * A person created by THIS file can be named as a manager by a row
-         * BELOW them, which is how an admin onboards a team in one upload.
-         *
-         * A cycle is impossible by construction rather than by a check: a
-         * manager has to already exist at the moment their report's row is
-         * processed, and rows are processed in order. A pair that names each
-         * other simply fails the first row, and then the second.
+         * A person created by THIS file can be named as a manager by ANY other
+         * row, above or below, because `orderByManager` has sorted the file so
+         * a manager is always created before their reports. A cycle cannot slip
+         * through: it would have no valid order, so both rows land in `cycle`
+         * and are failed below rather than reaching this loop.
          */
         if (createdUser?.id) managerByEmail.set(email, createdUser.id);
       } catch {
         failed.push({ row: rowNum, email, reason: 'Database error — could not insert' });
       }
+    }
+
+    /*
+     * Rows that could not be ordered: a reporting cycle in the file, or a row
+     * hanging off one. Reported by their ORIGINAL row number (even though they
+     * were set aside), so the admin can find and fix the manager column.
+     */
+    for (const index of cycle) {
+      const row = dto.users[index];
+      failed.push({
+        row: index + 1,
+        email: row.email?.trim() || '—',
+        reason:
+          'Could not place this row: its manager forms a reporting cycle in '
+          + 'the file (two people cannot each be the other’s manager). Fix '
+          + 'the manager column and re-upload.',
+      });
     }
 
     /*
