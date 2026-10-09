@@ -22,14 +22,18 @@ import type {
   CreateUserDto,
   UpdateUserDto,
 } from './dto/user.dto';
+import type { ListDirectoryQueryDto } from './dto/list-directory-query.dto';
 import type { OrgScope } from '@/database/org-scope';
 
-import { UsersRepository } from './users.repository';
+import { UsersRepository, type DirectoryQuery } from './users.repository';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 import { actorLabel } from '@/common/notifications';
 
 /** Applied to bulk-imported learners who arrive without a password column. */
 const DEFAULT_BULK_PASSWORD = 'Edstellar@123';
+
+/** The Manage Users table page size when the client names no `limit`. */
+const DIRECTORY_PAGE_SIZE = 25;
 
 @Injectable()
 export class UsersService {
@@ -142,8 +146,31 @@ export class UsersService {
    * BACKEND_STRUCTURE §5.2.1 exists to prevent. The API is still what enforces
    * it; this only stops the UI offering what it knows will be refused.
    */
-  async directory(scope: OrgScope) {
-    const rows = await this.repository.listDirectory(scope);
+  async directory(scope: OrgScope, query: ListDirectoryQueryDto = {}) {
+    // The DTO is turned into the repository's query shape here: blanks become
+    // `undefined` so an empty filter never matches nothing, and the page
+    // bounds are defaulted. `limit`/`offset` are already validated (1–100, ≥0).
+    const q: DirectoryQuery = {
+      limit: query.limit ?? DIRECTORY_PAGE_SIZE,
+      offset: query.offset ?? 0,
+      search: query.search?.trim() || undefined,
+      status: query.status,
+      progress: query.progress,
+      department: query.department?.trim() || undefined,
+      location: query.location?.trim() || undefined,
+      jobRole: query.job_role?.trim() || undefined,
+      jobLevel: query.job_level?.trim() || undefined,
+      role: query.role?.trim() || undefined,
+    };
+
+    const [rows, total, statsRow, facetsRow] = await Promise.all([
+      this.repository.listDirectoryPage(scope, q),
+      this.repository.countDirectory(scope, q),
+      // Org-wide, independent of the filters: the KPI strip summarises the
+      // organization, not the page.
+      this.repository.directoryStats(scope),
+      this.repository.directoryFacets(scope),
+    ]);
 
     const users = rows.map((row) => {
       const total = Number(row.total_lessons);
@@ -184,23 +211,60 @@ export class UsersService {
       };
     });
 
-    const by = (predicate: (u: (typeof users)[number]) => boolean) =>
-      users.filter(predicate).length;
+    const sorted = (xs: string[] | null) =>
+      [...(xs ?? [])].sort((a, b) => a.localeCompare(b));
 
     return {
       users,
+      // Org-wide counts. Managers ride in the learner portal (rbac.md decision
+      // 2), so they are counted in `learners` too; surfaced separately because
+      // an admin looking at this table can otherwise not tell they exist.
       stats: {
-        total: users.length,
-        active: by((u) => u.is_active),
-        inactive: by((u) => !u.is_active),
-        admins: by((u) => u.role === 'admin'),
-        learners: by((u) => u.role === 'learner'),
-        trainers: by((u) => u.role === 'trainer'),
-        // Managers ride in the learner portal (rbac.md decision 2), so they
-        // are counted in `learners` above too. Surfaced separately because an
-        // admin looking at this table can otherwise not tell they exist.
-        managers: by((u) => u.role_key === 'manager'),
+        total: Number(statsRow.total),
+        active: Number(statsRow.active),
+        inactive: Number(statsRow.inactive),
+        admins: Number(statsRow.admins),
+        learners: Number(statsRow.learners),
+        trainers: Number(statsRow.trainers),
+        managers: Number(statsRow.managers),
       },
+      // What the filter dropdowns may offer — org-wide distinct values, not
+      // whatever happens to be on this page. Job levels stay unsorted here so
+      // the client can keep them in the org's seniority order.
+      facets: {
+        departments: sorted(facetsRow.departments),
+        locations: sorted(facetsRow.locations),
+        job_roles: sorted(facetsRow.job_roles),
+        job_levels: [...(facetsRow.job_levels ?? [])],
+        roles: sorted(facetsRow.roles),
+      },
+      // The MATCHED count, for the pagination control, plus the page bounds the
+      // server actually used so the client renders the same ones it asked for.
+      total,
+      limit: q.limit,
+      offset: q.offset,
+      has_more: q.offset + users.length < total,
+    };
+  }
+
+  /**
+   * Every account in the org as a lightweight identity list, for the Manager
+   * picker and the bulk-import manager resolution. Separate from the paginated
+   * directory on purpose: a picker needs the whole set, and this carries none
+   * of the directory's per-row progress subqueries.
+   */
+  async pickablePeople(scope: OrgScope) {
+    const rows = await this.repository.listPickablePeople(scope);
+    return {
+      people: rows.map((row) => ({
+        id: row.id,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        email: row.email,
+        is_active: Number(row.is_active) === 1,
+        role: row.role,
+        role_label: row.role_label ?? titleCase(row.role),
+      })),
     };
   }
 

@@ -10,6 +10,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
@@ -23,6 +24,7 @@ import {
   ToggleActiveDto,
   UpdateUserDto,
 } from './dto/user.dto';
+import { ListDirectoryQueryDto } from './dto/list-directory-query.dto';
 import type { OrgScope } from '@/database/org-scope';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
@@ -81,8 +83,23 @@ export class UsersController {
    */
   @Get('directory')
   @Permissions('view_employees')
-  async directory(@CurrentScope() scope: OrgScope) {
-    return this.users.directory(scope);
+  async directory(
+    @CurrentScope() scope: OrgScope,
+    @Query() query: ListDirectoryQueryDto,
+  ) {
+    return this.users.directory(scope, query);
+  }
+
+  /**
+   * Every account in the org as a lightweight identity list — the Manager
+   * picker and the bulk-import manager resolution read this, because the
+   * directory above is now paginated and a picker needs the whole set. Static
+   * segment, so it is declared before `:userId`.
+   */
+  @Get('people')
+  @Permissions('view_employees')
+  async people(@CurrentScope() scope: OrgScope) {
+    return this.users.pickablePeople(scope);
   }
 
   @Post('bulk')

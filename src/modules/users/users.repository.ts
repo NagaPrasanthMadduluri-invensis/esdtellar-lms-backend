@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 
 import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
@@ -45,6 +45,56 @@ export interface EmployeeAggregateRow extends LearnerListRow {
   best_score: number | null;
   has_passed: number | null;
   attempt_count: number;
+}
+
+/**
+ * The resolved, server-side query behind the Manage Users table. The service
+ * turns the HTTP DTO into this (trimming blanks to `undefined`), so the
+ * repository never sees an empty string that would match nothing.
+ */
+export interface DirectoryQuery {
+  limit: number;
+  offset: number;
+  search?: string;
+  status?: 'active' | 'inactive';
+  progress?: 'completed' | 'failed' | 'in-progress' | 'not-started';
+  department?: string;
+  location?: string;
+  jobRole?: string;
+  jobLevel?: string;
+  /** The RBAC role LABEL, matched against `roles.label`. */
+  role?: string;
+}
+
+/** The KPI-tile counts, org-wide and independent of the table's filters. */
+export interface DirectoryStatsRow {
+  total: number;
+  active: number;
+  inactive: number;
+  admins: number;
+  learners: number;
+  trainers: number;
+  managers: number;
+}
+
+/** The distinct values the filter dropdowns offer, org-wide. */
+export interface DirectoryFacetsRow {
+  departments: string[] | null;
+  locations: string[] | null;
+  job_roles: string[] | null;
+  job_levels: string[] | null;
+  roles: string[] | null;
+}
+
+/** A lightweight identity row for the Manager picker and bulk resolution. */
+export interface PickablePersonRow {
+  id: number;
+  first_name: string;
+  last_name: string;
+  email: string;
+  is_active: number;
+  role: string;
+  role_label: string | null;
 }
 
 @Injectable()
@@ -123,12 +173,75 @@ export class UsersRepository {
    * a table rendering `users.role` would show four Managers as Learners and
    * give an admin no way to tell them apart.
    *
-   * Still one query. The progress subqueries are the same correlated pattern
-   * `listEmployeesWithProgress` uses (§7.1) and evaluate to 0 for an account
-   * with no assignments, which is what an admin or trainer has.
+   * Still one query per page. The progress subqueries are the same correlated
+   * pattern `listEmployeesWithProgress` uses (§7.1) and evaluate to 0 for an
+   * account with no assignments, which is what an admin or trainer has.
+   *
+   * It is now PAGINATED (§7.6 — the directory was unbounded). The expensive
+   * correlated subqueries run only for the page in the common case, because
+   * `LIMIT`/`OFFSET` are applied at the `u` level BEFORE they are evaluated —
+   * see `directoryBase`. The one exception is a `progress` filter, which needs
+   * every matching row's derived status computed before it can be narrowed; it
+   * is handled by wrapping the base and is the only path that pays per-row.
    */
-  async listDirectory(scope: OrgScope): Promise<DirectoryRow[]> {
-    return this.db.all<DirectoryRow>(sql`
+
+  /**
+   * The `u`-level filter predicate shared by the page query, the count and the
+   * fast-path. Everything here filters on a column of `users` or the joined
+   * `roles` row — cheap, indexable, and expressible without the progress
+   * subqueries. The derived `progress` status is NOT here; see
+   * `progressCondition`.
+   */
+  private directoryPredicate(scope: OrgScope, q: DirectoryQuery): SQL {
+    const parts: SQL[] = [orgScope('u', scope)];
+    if (q.search) {
+      const like = `%${q.search}%`;
+      // Name and email, matching what the box said it searched. `||` folds a
+      // null middle away; first/last are NOT NULL so the concat is safe.
+      parts.push(
+        sql`((u.first_name || ' ' || u.last_name) ILIKE ${like} OR u.email ILIKE ${like})`,
+      );
+    }
+    if (q.status === 'active') parts.push(sql`u.is_active = 1`);
+    if (q.status === 'inactive') parts.push(sql`u.is_active = 0`);
+    if (q.department) parts.push(sql`u.department = ${q.department}`);
+    if (q.location) parts.push(sql`u.location = ${q.location}`);
+    if (q.jobRole) parts.push(sql`u.job_role = ${q.jobRole}`);
+    if (q.jobLevel) parts.push(sql`u.job_level = ${q.jobLevel}`);
+    if (q.role) parts.push(sql`r.label = ${q.role}`);
+    return sql.join(parts, sql` AND `);
+  }
+
+  /**
+   * The derived-status filter, applied on the OUTER query's computed columns
+   * (`has_passed`, `attempt_count`, `completed_lessons`). It mirrors
+   * `UsersService.directory`'s own mapping exactly, so the filter and the chip
+   * a row shows can never disagree. `1 = 1` when no progress filter is set.
+   */
+  private progressCondition(progress?: DirectoryQuery['progress']): SQL {
+    if (!progress) return sql`1 = 1`;
+    return sql`(CASE
+      WHEN q.has_passed = 1 THEN 'completed'
+      WHEN q.attempt_count > 0 THEN 'failed'
+      WHEN q.completed_lessons > 0 THEN 'in-progress'
+      ELSE 'not-started' END) = ${progress}`;
+  }
+
+  /**
+   * The full directory SELECT, with the `u`-level predicate applied. When
+   * `page` is given the ORDER BY and LIMIT/OFFSET are applied here, so the
+   * correlated subqueries run only for the rows on the page. Without `page` it
+   * is an unordered, unbounded set meant to be wrapped (the progress path).
+   */
+  private directoryBase(
+    scope: OrgScope,
+    q: DirectoryQuery,
+    page?: { limit: number; offset: number },
+  ): SQL {
+    const paging = page
+      ? sql` ORDER BY u.first_name, u.last_name, u.id LIMIT ${page.limit} OFFSET ${page.offset}`
+      : sql``;
+    return sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.department,
              u.location, u.job_role, u.job_level, u.is_active, u.created_at,
              u.role,
@@ -186,8 +299,124 @@ export class UsersRepository {
       LEFT JOIN roles r
         ON r.id = u.role_id AND r.organization_id = u.organization_id
       LEFT JOIN users m ON m.id = u.manager_id
-      WHERE ${orgScope('u', scope)}
-      ORDER BY u.first_name, u.last_name
+      WHERE ${this.directoryPredicate(scope, q)}${paging}
+    `;
+  }
+
+  /** One page of the directory, filtered. */
+  async listDirectoryPage(
+    scope: OrgScope,
+    q: DirectoryQuery,
+  ): Promise<DirectoryRow[]> {
+    if (q.progress) {
+      // The derived status is not known until the subqueries have run, so the
+      // whole matched set is computed, then narrowed, then paged.
+      return this.db.all<DirectoryRow>(sql`
+        SELECT * FROM (${this.directoryBase(scope, q)}) q
+        WHERE ${this.progressCondition(q.progress)}
+        ORDER BY q.first_name, q.last_name, q.id
+        LIMIT ${q.limit} OFFSET ${q.offset}
+      `);
+    }
+    // Fast path: page at the `u` level so the subqueries run only for the page.
+    return this.db.all<DirectoryRow>(
+      this.directoryBase(scope, q, { limit: q.limit, offset: q.offset }),
+    );
+  }
+
+  /** The count of rows MATCHING the filters, for the pagination control. */
+  async countDirectory(scope: OrgScope, q: DirectoryQuery): Promise<number> {
+    if (q.progress) {
+      const rows = await this.db.all<{ n: number }>(sql`
+        SELECT count(*)::int AS n
+          FROM (${this.directoryBase(scope, q)}) q
+         WHERE ${this.progressCondition(q.progress)}
+      `);
+      return Number(rows[0]?.n ?? 0);
+    }
+    // No progress filter: the `u`-level predicate is enough, so the heavy
+    // subqueries are never evaluated just to count.
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT count(*)::int AS n
+        FROM users u
+        LEFT JOIN roles r
+          ON r.id = u.role_id AND r.organization_id = u.organization_id
+       WHERE ${this.directoryPredicate(scope, q)}
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * The KPI-tile counts, ORG-WIDE and independent of the table's filters: the
+   * strip summarises the organization, not the current page. One aggregate
+   * statement, so the tiles cannot cost five COUNT queries or disagree among
+   * themselves (§10.12's instinct, now that the rows they used to be reduced
+   * from are a single page rather than the whole set).
+   */
+  async directoryStats(scope: OrgScope): Promise<DirectoryStatsRow> {
+    const rows = await this.db.all<DirectoryStatsRow>(sql`
+      SELECT count(*)::int                                          AS total,
+             count(*) FILTER (WHERE u.is_active = 1)::int           AS active,
+             count(*) FILTER (WHERE u.is_active = 0)::int           AS inactive,
+             count(*) FILTER (WHERE u.role = 'admin')::int          AS admins,
+             count(*) FILTER (WHERE u.role = 'learner')::int        AS learners,
+             count(*) FILTER (WHERE u.role = 'trainer')::int        AS trainers,
+             count(*) FILTER (WHERE r.key = 'manager')::int         AS managers
+        FROM users u
+        LEFT JOIN roles r
+          ON r.id = u.role_id AND r.organization_id = u.organization_id
+       WHERE ${orgScope('u', scope)}
+    `);
+    return (
+      rows[0] ?? {
+        total: 0, active: 0, inactive: 0,
+        admins: 0, learners: 0, trainers: 0, managers: 0,
+      }
+    );
+  }
+
+  /**
+   * The distinct values the filter dropdowns offer, ORG-WIDE — so the options
+   * do not shrink to whatever happens to be on the current page. One statement
+   * of `array_agg(DISTINCT ...)`; nulls are stripped, order is left to the
+   * service.
+   */
+  async directoryFacets(scope: OrgScope): Promise<DirectoryFacetsRow> {
+    const rows = await this.db.all<DirectoryFacetsRow>(sql`
+      SELECT array_remove(array_agg(DISTINCT u.department), NULL) AS departments,
+             array_remove(array_agg(DISTINCT u.location),   NULL) AS locations,
+             array_remove(array_agg(DISTINCT u.job_role),   NULL) AS job_roles,
+             array_remove(array_agg(DISTINCT u.job_level),  NULL) AS job_levels,
+             array_remove(array_agg(DISTINCT r.label),      NULL) AS roles
+        FROM users u
+        LEFT JOIN roles r
+          ON r.id = u.role_id AND r.organization_id = u.organization_id
+       WHERE ${orgScope('u', scope)}
+    `);
+    return (
+      rows[0] ?? {
+        departments: [], locations: [], job_roles: [], job_levels: [], roles: [],
+      }
+    );
+  }
+
+  /**
+   * Every account in the org as a lightweight identity row, for the Manager
+   * picker and the bulk-import manager resolution. Deliberately NOT a page:
+   * a dropdown offering "everybody active except self" needs the whole set,
+   * and this carries none of the correlated subqueries the directory does, so
+   * it stays cheap even for a large org. The expensive progress table is what
+   * is paginated; this is not.
+   */
+  async listPickablePeople(scope: OrgScope): Promise<PickablePersonRow[]> {
+    return this.db.all<PickablePersonRow>(sql`
+      SELECT u.id, u.first_name, u.last_name, u.email, u.is_active, u.role,
+             r.label AS role_label
+        FROM users u
+        LEFT JOIN roles r
+          ON r.id = u.role_id AND r.organization_id = u.organization_id
+       WHERE ${orgScope('u', scope)}
+       ORDER BY u.first_name, u.last_name
     `);
   }
 
