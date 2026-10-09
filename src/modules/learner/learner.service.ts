@@ -716,6 +716,21 @@ export class LearnerService {
         progress_percentage: c.progress_percentage,
       }));
 
+    // The REAL earned-badge count, so the dashboard tile agrees with the
+    // Achievements page. `myStanding.badges` is "distinct assessments passed"
+    // (LeaderboardEntry.badges, §10.5), NOT earned badges — showing it under a
+    // "Badges" label is the mismatch this fixes. Counted exactly as Achievements
+    // does: the non-journey catalogue, earned by id (BadgesService.earnedKeys
+    // holds ids), so the two numbers cannot disagree.
+    // Sync first (best-effort, never throws) so a newly-eligible badge is
+    // awarded here too — the Achievements page syncs on view, so without this
+    // the dashboard could trail it by one. Then count identically.
+    await this.badges.syncForBestEffort(scope, userId);
+    const earnedBadgeIds = await this.badges.earnedKeys(scope, userId);
+    const earnedBadgeCount = BADGE_CATALOGUE.filter(
+      (def) => def.metric !== 'journeysCompleted' && earnedBadgeIds.has(def.id),
+    ).length;
+
     return {
       enrolled_courses: enrolled,
       stats: {
@@ -733,14 +748,22 @@ export class LearnerService {
       points,
       rank,
       rank_of: standings.entries.length,
-      badges: myStanding?.badges ?? 0,
+      badges: earnedBadgeCount,
       skill_tags: skillTags(enrolled.map((c) => c.course.name)).slice(0, 5),
+      // Prefer the course most recently worked on; if nothing is in progress,
+      // fall back to the next assigned course to start (earliest due) rather
+      // than an empty "no course in progress" box. Same object shape either
+      // way, so the card renders a 0%-progress course the learner can open.
       continue_learning:
         enrolled
           .filter((c) => c.status === 'in-progress')
           .sort((a, b) =>
             (b.last_activity || '').localeCompare(a.last_activity || ''),
-          )[0] ?? null,
+          )[0] ??
+        enrolled
+          .filter((c) => c.status !== 'in-progress' && c.status !== 'completed')
+          .sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''))[0] ??
+        null,
       journey: {
         courses: journey,
         completed: journey.filter((c) => c.status === 'completed').length,
@@ -938,7 +961,52 @@ export class LearnerService {
 
     const flatIndex = all.findIndex((l) => Number(l.id) === lessonId);
     const next = flatIndex >= 0 ? all[flatIndex + 1] : undefined;
+    const prev = flatIndex > 0 ? all[flatIndex - 1] : undefined;
     const current = all[flatIndex];
+
+    // Per-lesson lock state for the playlist sidebar, computed with the SAME
+    // sequential rule this method enforces above: within a module each lesson
+    // opens once the previous is complete, and a module's first lesson opens
+    // once the previous module is fully complete. Done once over the ordered
+    // flat list, grouped by module in order.
+    const moduleOrder = [...new Set(all.map((l) => Number(l.module_id)))];
+    const lockedById = new Map<number, boolean>();
+    let prevModuleComplete = true;
+    for (const mid of moduleOrder) {
+      const moduleLessons = all.filter((l) => Number(l.module_id) === mid);
+      const moduleUnlocked = prevModuleComplete;
+      let prevLessonComplete = true;
+      for (const l of moduleLessons) {
+        lockedById.set(Number(l.id), !moduleUnlocked || !prevLessonComplete);
+        prevLessonComplete = l.progress_status === 'completed';
+      }
+      prevModuleComplete = moduleLessons.every(
+        (l) => l.progress_status === 'completed',
+      );
+    }
+
+    const playlist = all.map((l) => {
+      const done = l.progress_status === 'completed';
+      const isCurrent = Number(l.id) === lessonId;
+      const locked = lockedById.get(Number(l.id)) ?? false;
+      return {
+        id: l.public_id ?? Number(l.id),
+        title: l.title,
+        content_type: l.content_type,
+        duration_minutes: l.duration_minutes ?? null,
+        module_title: l.module_title ?? null,
+        // One field the UI renders an icon from: a tick, the current marker, a
+        // padlock, or nothing. 'completed' wins over 'current' so a finished
+        // lesson you are re-reading still shows its tick.
+        status: done
+          ? 'completed'
+          : isCurrent
+            ? 'current'
+            : locked
+              ? 'locked'
+              : 'available',
+      };
+    });
 
     return {
       lesson: {
@@ -1008,6 +1076,26 @@ export class LearnerService {
       // Its title, so the completion button can name where the learner goes
       // next ("Save & move to next lesson" → that lesson).
       next_lesson_title: next ? (next.title ?? null) : null,
+      // The next lesson in full, for the "Up next" end card (title, type,
+      // duration). Null at the end of the course.
+      next_lesson: next
+        ? {
+            id: next.public_id ?? Number(next.id),
+            title: next.title ?? null,
+            content_type: next.content_type,
+            duration_minutes: next.duration_minutes ?? null,
+          }
+        : null,
+      // The previous lesson, for the Prev button. Always unlocked (it precedes
+      // the current, which is open), so navigating to it is always safe.
+      prev_lesson: prev
+        ? { id: prev.public_id ?? Number(prev.id), title: prev.title ?? null }
+        : null,
+      // "Lesson X of Y" — 1-based position in the whole course and the total.
+      position: flatIndex >= 0 ? flatIndex + 1 : null,
+      total: all.length,
+      // The ordered lesson list for the collapsible playlist sidebar.
+      playlist,
     };
   }
 

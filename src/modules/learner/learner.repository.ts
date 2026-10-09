@@ -472,6 +472,7 @@ export class LearnerRepository {
       progress_status: string;
     }>(sql`
       SELECT l.*,
+        cm.title AS module_title,
         CASE
           WHEN ulc.id IS NOT NULL THEN 'completed'
           WHEN (l.content_type = 'scorm' AND l.scorm_package_id IS NOT NULL
