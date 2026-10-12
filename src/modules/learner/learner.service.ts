@@ -650,6 +650,10 @@ export class LearnerService {
         due_date: this.dueDateFor(row),
         session: this.sessionOf(row),
         reward: rewardOf(row),
+        // Category + mandatory so the dashboard's spotlight cards can pick a
+        // category cover photo and show the Required/Compliance flag.
+        category: row.category ?? null,
+        is_mandatory: Number(row.is_mandatory) === 1,
         course: {
           id: row.course_id,
           // Public uuid so dashboard links point at /my-courses/<uuid> (0046).
@@ -731,8 +735,40 @@ export class LearnerService {
       (def) => def.metric !== 'journeysCompleted' && earnedBadgeIds.has(def.id),
     ).length;
 
+    // The most recently earned badge, surfaced for the Home celebration strip —
+    // but only when it is a FRESH win (last 14 days), so the banner is a prompt,
+    // not permanent furniture.
+    const RECENT_BADGE_MS = 14 * 24 * 60 * 60 * 1000;
+    const badgeList = await this.badges.listForLearner(scope, userId);
+    const latestEarned = badgeList.badges
+      .filter((b) => b.earned && b.earnedAt)
+      .sort((a, b) => (b.earnedAt ?? '').localeCompare(a.earnedAt ?? ''))[0];
+    const latestBadge =
+      latestEarned?.earnedAt &&
+      Date.now() - new Date(latestEarned.earnedAt).getTime() < RECENT_BADGE_MS
+        ? { label: latestEarned.label, description: latestEarned.description }
+        : null;
+
+    // Assigned/in-progress courses already past their due date — the Home
+    // overdue alert. Counted across all enrolments, not just the four shown.
+    const nowMs = Date.now();
+    const overdueItems = enrolled
+      .filter(
+        (c) =>
+          c.status !== 'completed' &&
+          c.due_date &&
+          new Date(c.due_date).getTime() < nowMs,
+      )
+      .map((c) => ({
+        course_id: c.course.id,
+        course_public_id: c.course.public_id ?? null,
+        name: c.course.name,
+      }));
+
     return {
       enrolled_courses: enrolled,
+      latest_badge: latestBadge,
+      overdue_items: overdueItems,
       stats: {
         assigned_courses: enrolled.length,
         in_progress_courses: enrolled.filter((c) => c.status === 'in-progress').length,
@@ -779,6 +815,10 @@ export class LearnerService {
           name: c.course.name,
           due_date: c.due_date,
           status: c.status,
+          // So the Upcoming spotlight cards render a cover photo + progress.
+          thumbnail_url: c.course.thumbnail_url ?? null,
+          category: c.category ?? null,
+          progress_percentage: c.progress_percentage,
         })),
       recent_activity: recentActivity,
       recentAttempts: attempts,
