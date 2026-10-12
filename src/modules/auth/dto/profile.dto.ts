@@ -68,4 +68,13 @@ export class UpdateProfileDto {
 
   @IsOptional() @IsString() @MaxLength(120) @Transform(nullable)
   location?: string | null;
+
+  /**
+   * Profile picture (`0047`). Omitted = leave alone; explicit null = remove;
+   * a string must be a path this server stored, validated in
+   * `AuthService.updateProfile` via `MediaService.assertAvatar` — a person
+   * cannot point their avatar at an arbitrary URL.
+   */
+  @IsOptional() @IsString() @MaxLength(1024) @Transform(nullable)
+  avatar_url?: string | null;
 }

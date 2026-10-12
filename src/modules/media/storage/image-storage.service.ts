@@ -32,10 +32,17 @@ export class ImageStorageService {
   static readonly PUBLIC_PATH_PATTERN =
     /^\/uploads\/course-thumbnails\/[0-9a-f-]{36}\.(jpg|png|webp|gif)$/;
 
+  /** Profile pictures. A separate subdirectory, same local-disk reasoning. */
+  static readonly AVATAR_PREFIX = '/uploads/avatars/';
+
+  static readonly AVATAR_PATH_PATTERN =
+    /^\/uploads\/avatars\/[0-9a-f-]{36}\.(jpg|png|webp|gif)$/;
+
   /** Absolute root that `useStaticAssets` mounts at `/uploads`. */
   readonly rootPath: string;
 
   private readonly thumbnailDir: string;
+  private readonly avatarDir: string;
 
   constructor(config: ConfigService) {
     const configured =
@@ -44,6 +51,38 @@ export class ImageStorageService {
       ? configured
       : resolve(process.cwd(), configured);
     this.thumbnailDir = join(this.rootPath, 'course-thumbnails');
+    this.avatarDir = join(this.rootPath, 'avatars');
+  }
+
+  /**
+   * Writes a profile picture and returns its public path for
+   * `users.avatar_url`. Same UUID-filename rule as `saveThumbnail`: the name
+   * is never derived from the upload, so a caller cannot steer the write out of
+   * the avatars directory and a replacement never reuses a path.
+   */
+  async saveAvatar(bytes: Buffer, extension: string): Promise<string> {
+    await mkdir(this.avatarDir, { recursive: true });
+    const filename = `${randomUUID()}.${extension}`;
+    await writeFile(join(this.avatarDir, filename), bytes);
+    return `${ImageStorageService.AVATAR_PREFIX}${filename}`;
+  }
+
+  /** True for a path this service produced — the only thing `removeAvatar` touches. */
+  static isStoredAvatar(url: string): boolean {
+    return ImageStorageService.AVATAR_PATH_PATTERN.test(url);
+  }
+
+  /** Best-effort deletion of a replaced or cleared avatar (§8.4). Never throws. */
+  async removeAvatar(url: string | null | undefined): Promise<void> {
+    if (!url || !ImageStorageService.isStoredAvatar(url)) return;
+    const filename = url.slice(ImageStorageService.AVATAR_PREFIX.length);
+    try {
+      await unlink(join(this.avatarDir, filename));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return;
+      this.logger.warn(`Could not delete avatar ${filename}: ${String(error)}`);
+    }
   }
 
   /**

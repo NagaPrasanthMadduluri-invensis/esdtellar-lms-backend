@@ -21,6 +21,7 @@ import { ImageStorageService } from './storage/image-storage.service';
 import { R2StorageService } from './storage/r2-storage.service';
 import {
   ALLOWED_IMAGE_TYPES,
+  AVATAR_MAX_BYTES,
   COURSE_THUMBNAIL_MAX_BYTES,
   EXTENSION_FOR_DOCUMENT_TYPE,
   EXTENSION_FOR_IMAGE_TYPE,
@@ -497,6 +498,75 @@ export class MediaService {
   /** Best-effort removal of a thumbnail this server stored (§8.4). */
   async discardCourseThumbnail(url: string | null | undefined): Promise<void> {
     await this.images.removeThumbnail(url);
+  }
+
+  /* ─────────────────────────────────────────────
+     Profile pictures
+
+     Proxied multipart like thumbnails, and inspected here before anything is
+     written into a directory this server publishes. Reachable by ANY
+     authenticated role (ProfileMediaController), because every portal's top bar
+     opens the profile dialog — unlike thumbnails, which are admin content.
+  ───────────────────────────────────────────── */
+
+  /**
+   * Stores a profile picture and returns the path for `users.avatar_url`.
+   * The same three checks as a thumbnail, in the order that costs least — the
+   * last one matters most: a multipart Content-Type is written by the client,
+   * so without sniffing the bytes an HTML file labelled `image/png` would land
+   * in a directory served from this origin.
+   */
+  async uploadAvatar(file: Express.Multer.File | undefined) {
+    if (!file) throw new BadRequestException('No image was uploaded.');
+
+    const contentType = (file.mimetype || '').toLowerCase();
+    if (!(ALLOWED_IMAGE_TYPES as readonly string[]).includes(contentType)) {
+      throw new UnprocessableEntityException(
+        `${file.originalname || 'That file'} is not a supported image. Use ` +
+          'JPG, PNG, WebP or GIF.',
+      );
+    }
+
+    if (file.size > AVATAR_MAX_BYTES) {
+      throw new UnprocessableEntityException(
+        `Image is ${formatBytes(file.size)}, which exceeds the ` +
+          `${formatBytes(AVATAR_MAX_BYTES)} limit.`,
+      );
+    }
+
+    if (sniffImageType(file.buffer) !== contentType) {
+      throw new UnprocessableEntityException(
+        `${file.originalname || 'That file'} is not a valid ` +
+          `${contentType.replace('image/', '').toUpperCase()} image.`,
+      );
+    }
+
+    const url = await this.images.saveAvatar(
+      file.buffer,
+      EXTENSION_FOR_IMAGE_TYPE[contentType],
+    );
+    return { ok: true, url };
+  }
+
+  /**
+   * What may be written into `users.avatar_url`, normalised.
+   *
+   * An avatar is ONLY ever a path this server stored — there is no "paste an
+   * image URL" affordance in the profile form, unlike a course thumbnail, so an
+   * arbitrary URL is refused rather than stored. This value becomes the `src` of
+   * an image tag in every portal's top bar.
+   */
+  assertAvatar(url: string): string {
+    const value = url.trim();
+    if (ImageStorageService.isStoredAvatar(value)) return value;
+    throw new UnprocessableEntityException(
+      'avatar_url must be an uploaded profile picture.',
+    );
+  }
+
+  /** Best-effort removal of an avatar this server stored (§8.4). */
+  async discardAvatar(url: string | null | undefined): Promise<void> {
+    await this.images.removeAvatar(url);
   }
 
   /**

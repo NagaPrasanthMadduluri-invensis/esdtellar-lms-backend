@@ -15,6 +15,7 @@ import type {
 } from '@/common/types/authenticated-request';
 
 import { ActivityService } from '@/modules/activity/activity.service';
+import { MediaService } from '@/modules/media/media.service';
 import { OrgOptionsService } from '@/modules/org-options/org-options.service';
 
 import { OrganizationsService } from '../organizations/organizations.service';
@@ -35,6 +36,8 @@ export interface PublicUser {
   role: UserRole;
   is_active: boolean;
   organization_id: number;
+  /** Optional profile picture path, or null. Falls back to a silhouette in the UI. */
+  avatar_url: string | null;
   /**
    * True when this user administers the PLATFORM organization rather than a
    * customer's.
@@ -86,6 +89,8 @@ export class AuthService {
     private readonly activity: ActivityService,
     /** Per-tenant branch locations and job levels (`0031`). */
     private readonly orgOptions: OrgOptionsService,
+    /** Stores/validates/removes the optional profile picture (`0047`). */
+    private readonly media: MediaService,
   ) {}
 
   async login(dto: LoginDto): Promise<AuthResult> {
@@ -112,6 +117,7 @@ export class AuthService {
         role: user.role,
         is_active: user.isActive === 1,
         organization_id: user.organizationId,
+        avatar_url: user.avatarUrl ?? null,
         is_platform_admin:
           user.role === 'admin' &&
           user.organizationId === this.organizations.getPlatformOrganizationId(),
@@ -160,6 +166,7 @@ export class AuthService {
       role: user.role,
       is_active: user.isActive === 1,
       organization_id: user.organizationId,
+      avatar_url: user.avatarUrl ?? null,
       is_platform_admin:
         user.role === 'admin' &&
         user.organizationId === this.organizations.getPlatformOrganizationId(),
@@ -300,6 +307,18 @@ export class AuthService {
       );
     }
 
+    /*
+     * The avatar is either left alone (undefined), cleared (null) or replaced
+     * with a path this server stored — never an arbitrary URL, which
+     * `assertAvatar` refuses. The previous picture's file is dropped
+     * best-effort after the row is written (§8.4), the same shape as a replaced
+     * course thumbnail.
+     */
+    let avatarUrl: string | null | undefined;
+    if (dto.avatar_url !== undefined) {
+      avatarUrl = dto.avatar_url === null ? null : this.media.assertAvatar(dto.avatar_url);
+    }
+
     await this.repository.updateProfile(userId, {
       firstName: dto.first_name,
       lastName: dto.last_name,
@@ -307,7 +326,12 @@ export class AuthService {
       jobRole: dto.job_role,
       jobLevel,
       location,
+      avatarUrl,
     });
+
+    if (avatarUrl !== undefined && profile.avatar_url && profile.avatar_url !== avatarUrl) {
+      void this.media.discardAvatar(profile.avatar_url);
+    }
     /*
      * Re-read rather than echo the patch back.
      *
@@ -326,6 +350,7 @@ export class AuthService {
     role: UserRole; role_label: string | null; department: string | null;
     employee_id: string | null; job_role: string | null;
     job_level: string | null; location: string | null; phone: string | null;
+    avatar_url: string | null;
     is_active: number; organization_id: number; organization_name: string;
     created_at: string; last_active: string | null;
   }) {
@@ -344,6 +369,7 @@ export class AuthService {
       job_level: row.job_level,
       location: row.location,
       phone: row.phone,
+      avatar_url: row.avatar_url,
       is_active: row.is_active === 1,
       organization_id: row.organization_id,
       organization_name: row.organization_name,
@@ -433,6 +459,9 @@ export class AuthService {
       role: target.role,
       is_active: target.is_active === 1,
       organization_id: target.organization_id,
+      // Not surfaced for a support session — the banner already says whose
+      // account this is, and the owner-admin lookup does not read it.
+      avatar_url: null,
       // False by construction: the platform org is refused above, so the
       // account being assumed is never a platform admin. A support session
       // therefore cannot reach the platform console at all.
@@ -525,6 +554,7 @@ export class AuthService {
         role: platformAdmin.role,
         is_active: platformAdmin.isActive === 1,
         organization_id: platformAdmin.organizationId,
+        avatar_url: platformAdmin.avatarUrl ?? null,
         is_platform_admin: true,
         permissions: filterKnownPermissions(roleContext.permissions),
       },

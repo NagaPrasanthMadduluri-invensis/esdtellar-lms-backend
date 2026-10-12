@@ -8,6 +8,7 @@ import {
   LearnerMediaController,
   LearnerResourcesController,
 } from './learner-media.controller';
+import { ProfileMediaController } from './profile-media.controller';
 import { JourneyGateModule } from '@/modules/journeys/journey-gate.module';
 
 import { MediaRepository } from './media.repository';
@@ -28,6 +29,7 @@ import { R2StorageService } from './storage/r2-storage.service';
     AdminMediaController,
     LearnerMediaController,
     LearnerResourcesController,
+    ProfileMediaController,
   ],
   providers: [MediaService, MediaRepository, R2StorageService, ImageStorageService],
   /**

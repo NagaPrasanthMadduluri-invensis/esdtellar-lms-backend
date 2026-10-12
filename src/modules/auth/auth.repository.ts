@@ -157,6 +157,7 @@ export class AuthRepository {
         department: users.department,
         isActive: users.isActive,
         organizationId: users.organizationId,
+        avatarUrl: users.avatarUrl,
       })
       .from(users)
       .where(and(eq(users.email, email), eq(users.isActive, 1)))
@@ -211,6 +212,7 @@ export class AuthRepository {
         department: users.department,
         isActive: users.isActive,
         organizationId: users.organizationId,
+        avatarUrl: users.avatarUrl,
       })
       .from(users)
       .where(and(eq(users.id, id), eq(users.isActive, 1)))
@@ -246,6 +248,7 @@ export class AuthRepository {
       job_level: string | null;
       location: string | null;
       phone: string | null;
+      avatar_url: string | null;
       is_active: number;
       organization_id: number;
       organization_name: string;
@@ -255,7 +258,7 @@ export class AuthRepository {
       SELECT u.id, u.first_name, u.last_name, u.email, u.role,
              r.label AS role_label,
              u.department, u.employee_id, u.job_role, u.job_level,
-             u.location, u.phone, u.is_active,
+             u.location, u.phone, u.avatar_url, u.is_active,
              u.organization_id, o.name AS organization_name,
              u.created_at,
              -- The same GREATEST(completion, attempt) the user directory
@@ -294,6 +297,7 @@ export class AuthRepository {
       jobRole?: string | null;
       jobLevel?: string | null;
       location?: string | null;
+      avatarUrl?: string | null;
     },
   ) {
     const values: Record<string, unknown> = {};
@@ -303,6 +307,7 @@ export class AuthRepository {
     if (input.jobRole !== undefined) values.jobRole = input.jobRole;
     if (input.jobLevel !== undefined) values.jobLevel = input.jobLevel;
     if (input.location !== undefined) values.location = input.location;
+    if (input.avatarUrl !== undefined) values.avatarUrl = input.avatarUrl;
     if (Object.keys(values).length === 0) return;
 
     await this.db.update(users).set(values).where(eq(users.id, userId));

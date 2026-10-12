@@ -38,6 +38,13 @@ export const users = pgTable(
      */
     phone: text('phone'),
     /**
+     * Optional profile picture (`0047`). NULL means none, and every surface
+     * falls back to an anonymous silhouette. Holds a path this server stored
+     * under /uploads/avatars/ — never a client-supplied URL; the write is
+     * validated in AuthService.updateProfile.
+     */
+    avatarUrl: text('avatar_url'),
+    /**
      * Who this person reports to. Nullable, self-referencing, ON DELETE SET
      * NULL — deleting a manager orphans their reports rather than deleting
      * them, which a CASCADE on a self-reference would do recursively.

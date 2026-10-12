@@ -1,0 +1,13 @@
+-- 0047_user_avatar.sql
+--
+-- An optional profile picture for any user. Additive and nullable: NULL means
+-- no picture, and every surface falls back to an anonymous silhouette, so no
+-- existing row has to be backfilled and nothing becomes invalid when this runs.
+--
+-- The value is a path this server stored under /uploads/avatars/<uuid>.<ext>
+-- (local disk, the same reasoning as course thumbnails in
+-- image-storage.service.ts: a picture rendered on every page needs a stable,
+-- cacheable URL, not a per-click presigned one). It is never an arbitrary URL
+-- the client supplied; AuthService.updateProfile validates it against the
+-- stored-path pattern before writing.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url text;

@@ -213,11 +213,26 @@ export const EXTENSION_FOR_IMAGE_TYPE: Record<string, string> = {
 export const COURSE_THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024;
 
 /**
+ * Size cap for a profile picture. Smaller than a thumbnail on purpose — an
+ * avatar is rendered at ~40px in the top bar, so a 2 MiB ceiling is already
+ * generous. Read by `FileInterceptor`'s multer limit and by the error message,
+ * so one constant keeps the two in step. Mirrored client-side.
+ */
+export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
  * The thumbnail the client is rolling back after a failed course save. The
  * value is a stored path, not a key — `ImageStorageService.removeThumbnail`
  * refuses anything that is not one, so an arbitrary path cannot be handed in.
  */
 export class DiscardThumbnailDto {
+  @IsString()
+  @MaxLength(1024)
+  url!: string;
+}
+
+/** The avatar the client is rolling back after an abandoned profile edit. */
+export class DiscardAvatarDto {
   @IsString()
   @MaxLength(1024)
   url!: string;
