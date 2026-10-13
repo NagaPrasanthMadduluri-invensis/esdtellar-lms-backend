@@ -546,6 +546,12 @@ export class ScormService {
     const scoreRaw = numberOrNull(cmi?.core?.score?.raw ?? cmi?.score?.raw);
     const scoreMax = numberOrNull(cmi?.core?.score?.max ?? cmi?.score?.max);
 
+    const progressMeasure = scormProgressMeasure(cmi, {
+      lessonStatus,
+      completionStatus,
+      successStatus,
+    });
+
     await this.repository.upsertTracking(scope, {
       userId,
       packageId,
@@ -557,6 +563,7 @@ export class ScormService {
       totalTime: cmi?.core?.total_time ?? cmi?.total_time ?? null,
       suspendData: cmi?.suspend_data ?? null,
       location: cmi?.core?.lesson_location ?? cmi?.location ?? null,
+      progressMeasure,
       cmiData: JSON.stringify(cmi),
     });
 
@@ -741,4 +748,66 @@ function isTerminal(
     successStatus === 'passed' ||
     successStatus === 'failed'
   );
+}
+
+/**
+ * A 0..1 progress fraction for an IN-PROGRESS SCORM lesson, or null when the
+ * package gives no usable partial signal (the lesson then stays binary).
+ *
+ * Three sources, in order of how much we trust them:
+ *
+ *  1. Finished already — completed / passed in either dialect — is 1.0. These
+ *     rows are excluded from the partial sum by the course query (they are
+ *     counted as a whole completed lesson), but returning 1 keeps the stored
+ *     value honest.
+ *  2. `cmi.progress_measure` (SCORM 2004) — the STANDARD field, a 0..1 number.
+ *  3. A recognised `suspend_data` completion bitfield — a best-effort fallback
+ *     for SCORM 1.2, which has no progress field at all. It fires ONLY when
+ *     suspend_data is JSON carrying `c` as a pure 0/1 string (one tool's
+ *     "completed slides" bitmap); the fraction is the share of 1s. Any other
+ *     shape falls through to null, so an unknown package is never given a wrong
+ *     number — it simply stays binary.
+ */
+export function scormProgressMeasure(
+  cmi: CmiPayload | null | undefined,
+  status: {
+    lessonStatus: string | null;
+    completionStatus: string | null;
+    successStatus: string | null;
+  },
+): number | null {
+  const done = new Set(['completed', 'passed']);
+  if (
+    done.has(status.completionStatus ?? '') ||
+    done.has(status.lessonStatus ?? '') ||
+    status.successStatus === 'passed'
+  ) {
+    return 1;
+  }
+
+  // SCORM 2004 standard.
+  const pm = (cmi as Record<string, unknown> | null | undefined)?.[
+    'progress_measure'
+  ];
+  if (pm !== null && pm !== undefined && String(pm).trim() !== '') {
+    const n = Number(pm);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+  }
+
+  // SCORM 1.2 best-effort: a completion bitfield in suspend_data.
+  const sd = cmi?.suspend_data;
+  if (typeof sd === 'string' && sd.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(sd) as Record<string, unknown>;
+      const bits = parsed?.c;
+      if (typeof bits === 'string' && bits.length > 0 && /^[01]+$/.test(bits)) {
+        const ones = bits.split('').filter((b) => b === '1').length;
+        return ones / bits.length;
+      }
+    } catch {
+      /* opaque suspend_data from some other tool — leave it binary */
+    }
+  }
+
+  return null;
 }

@@ -492,7 +492,7 @@ export class LearnerService {
     const courses = rows.map((row) => {
       const total = Number(row.total_lessons);
       const done = Number(row.completed_lessons);
-      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      const pct = courseProgressPct(total, done, Number(row.scorm_partial ?? 0));
       const dueDate = this.dueDateFor(row);
       const types = typesByCourse.get(Number(row.course_id)) ?? [];
       const meta = {
@@ -638,7 +638,7 @@ export class LearnerService {
     const enrolled = rows.map((row) => {
       const total = Number(row.total_lessons);
       const done = Number(row.completed_lessons);
-      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      const pct = courseProgressPct(total, done, Number(row.scorm_partial ?? 0));
       const isDone = total > 0 && done >= total;
 
       return {
@@ -909,10 +909,18 @@ export class LearnerService {
       ]),
     );
 
-    const progressPct =
-      totalLessons > 0
-        ? Math.round((completedLessons / totalLessons) * 100)
-        : 0;
+    // Partial SCORM progress, so the detail's bar matches the My Courses card
+    // (both count a started-but-unfinished SCORM lesson, §0048).
+    const scormPartial = await this.repository.scormPartialForCourse(
+      scope,
+      userId,
+      courseId,
+    );
+    const progressPct = courseProgressPct(
+      totalLessons,
+      completedLessons,
+      scormPartial,
+    );
 
     const thisRow =
       assignedRows.find((r) => Number(r.course_id) === courseId) ?? null;
@@ -1287,13 +1295,15 @@ export class LearnerService {
           row.completion_status === 'completed' ||
           row.lesson_status === 'passed' ||
           row.lesson_status === 'completed';
-        if (!isDone && row.cmi_data && total > 0) {
-          try {
-            const cmi = JSON.parse(row.cmi_data) as { progress_measure?: string };
-            const pm = parseFloat(String(cmi.progress_measure ?? 0));
-            if (pm > 0) partialBonus += pm * (1 / total) * 100;
-          } catch {
-            /* malformed CMI blob — ignore the partial bonus */
+        // Partial progress from the STORED progress_measure (§0048) — the same
+        // column My Courses, the dashboard and the course detail read, so the
+        // four screens agree. It already covers both SCORM 2004's
+        // progress_measure and the recognised 1.2 suspend_data bitfield, so the
+        // old inline cmi_data re-parse (2004 only) is gone.
+        if (!isDone && row.progress_measure !== null && total > 0) {
+          const pm = Number(row.progress_measure);
+          if (Number.isFinite(pm) && pm > 0) {
+            partialBonus += pm * (1 / total) * 100;
           }
         }
       }
@@ -2047,4 +2057,20 @@ export class LearnerService {
       month: 'short',
     });
   }
+}
+
+/**
+ * Course progress %, counting partial SCORM progress (§0048).
+ *
+ * `done` whole lessons, plus `partial` (the sum of 0..1 progress for
+ * in-progress SCORM lessons), over `total`. Capped at 99 until every lesson is
+ * genuinely complete, so a package reporting 0.99 never reads as a finished
+ * course: 100% means done, and completion / certificates decide that on
+ * `done >= total`, never on this figure.
+ */
+function courseProgressPct(total: number, done: number, partial: number): number {
+  if (total <= 0) return 0;
+  if (done >= total) return 100;
+  const pct = Math.round(((done + Math.max(0, partial)) / total) * 100);
+  return Math.max(0, Math.min(pct, 99));
 }

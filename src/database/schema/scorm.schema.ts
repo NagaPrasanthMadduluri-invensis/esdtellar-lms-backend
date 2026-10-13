@@ -135,6 +135,13 @@ export const scormTracking = pgTable(
     totalTime: text('total_time'),
     suspendData: text('suspend_data'),
     location: text('location'),
+    /**
+     * 0..1 fraction of the package the learner has finished, for an
+     * IN-PROGRESS lesson (0048). NULL when the package gives no partial signal,
+     * in which case the lesson stays binary. From cmi.progress_measure (2004)
+     * or a recognised suspend_data completion bitfield.
+     */
+    progressMeasure: real('progress_measure'),
     cmiData: text('cmi_data').notNull().default('{}'),
     updatedAt: timestamp('updated_at', { mode: 'string', withTimezone: true })
       .notNull()

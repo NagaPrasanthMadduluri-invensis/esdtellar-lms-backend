@@ -557,6 +557,7 @@ export class ScormRepository {
       totalTime: string | null;
       suspendData: string | null;
       location: string | null;
+      progressMeasure: number | null;
       cmiData: string;
     },
   ): Promise<void> {
@@ -564,12 +565,12 @@ export class ScormRepository {
       INSERT INTO scorm_tracking
         (organization_id, user_id, package_id, lesson_status, completion_status,
          success_status, score_raw, score_max, total_time, suspend_data,
-         location, cmi_data, updated_at)
+         location, progress_measure, cmi_data, updated_at)
       VALUES (${scope.organizationId}, ${values.userId}, ${values.packageId},
               ${values.lessonStatus}, ${values.completionStatus},
               ${values.successStatus}, ${values.scoreRaw}, ${values.scoreMax},
               ${values.totalTime}, ${values.suspendData}, ${values.location},
-              ${values.cmiData}, now())
+              ${values.progressMeasure}, ${values.cmiData}, now())
       ON CONFLICT(user_id, package_id) DO UPDATE SET
         lesson_status     = excluded.lesson_status,
         completion_status = excluded.completion_status,
@@ -579,6 +580,7 @@ export class ScormRepository {
         total_time        = excluded.total_time,
         suspend_data      = excluded.suspend_data,
         location          = excluded.location,
+        progress_measure  = excluded.progress_measure,
         cmi_data          = excluded.cmi_data,
         updated_at        = excluded.updated_at
     `);

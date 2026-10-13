@@ -1,0 +1,15 @@
+-- 0048 — a progress fraction for an IN-PROGRESS SCORM lesson.
+--
+-- A course whose only lesson is one big SCORM package showed 0% until the
+-- package reported itself complete, because course progress is
+-- completed_lessons / total_lessons and that single lesson is binary. This
+-- column lets a partly-finished package contribute its own fraction.
+--
+-- 0..1, nullable. NULL means "no partial signal" (the package reports only
+-- completion, or an older row predating this column) and the lesson stays
+-- binary, exactly as before. It is written by SCORM tracking from
+-- cmi.progress_measure (SCORM 2004) or a recognised suspend_data shape, and
+-- read by the course-progress queries for lessons not yet completed.
+--
+-- Additive and idempotent.
+ALTER TABLE scorm_tracking ADD COLUMN IF NOT EXISTS progress_measure real;

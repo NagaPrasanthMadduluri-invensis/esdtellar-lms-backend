@@ -275,6 +275,8 @@ export class LearnerRepository {
       modules_count: number;
       total_lessons: number;
       completed_lessons: number;
+      /** Sum of partial progress (0..1 each) for IN-PROGRESS SCORM lessons. */
+      scorm_partial: number;
       completed_minutes: number;
       total_minutes: number;
       last_activity: string | null;
@@ -329,6 +331,23 @@ export class LearnerRepository {
          JOIN lessons l ON l.id = ulc.lesson_id
          JOIN course_modules cm ON cm.id = l.module_id
          WHERE cm.course_id = c.id AND ulc.user_id = ${userId}) AS completed_lessons,
+        -- Partial credit for SCORM lessons the learner has STARTED but not
+        -- finished: each contributes its 0..1 progress_measure (§0048). Only
+        -- lessons not yet completed, so this never double-counts a done lesson
+        -- that is already in completed_lessons above.
+        (SELECT COALESCE(SUM(st.progress_measure), 0)
+           FROM lessons l
+           JOIN course_modules cm ON cm.id = l.module_id
+           JOIN scorm_tracking st ON st.package_id = l.scorm_package_id
+             AND st.user_id = ${userId}
+             AND st.organization_id = ${scope.organizationId}
+          WHERE cm.course_id = c.id AND l.is_active = 1 AND cm.is_active = 1
+            AND l.content_type = 'scorm'
+            AND st.progress_measure IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM user_lesson_completions ulc
+               WHERE ulc.lesson_id = l.id AND ulc.user_id = ${userId}
+            )) AS scorm_partial,
         (SELECT COALESCE(SUM(l.duration_minutes), 0) FROM user_lesson_completions ulc
          JOIN lessons l ON l.id = ulc.lesson_id
          JOIN course_modules cm ON cm.id = l.module_id
@@ -760,11 +779,12 @@ export class LearnerRepository {
       score_raw: number | null;
       score_max: number | null;
       total_time: string | null;
+      progress_measure: number | null;
       cmi_data: string | null;
     }>(sql`
       SELECT cm.course_id, st.lesson_status, st.completion_status,
              st.success_status, st.score_raw, st.score_max,
-             st.total_time, st.cmi_data
+             st.total_time, st.progress_measure, st.cmi_data
       FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       LEFT JOIN scorm_tracking st
@@ -850,5 +870,35 @@ export class LearnerRepository {
       .where(
         and(eq(users.id, userId), eq(users.organizationId, scope.organizationId)),
       );
+  }
+
+  /**
+   * Partial SCORM progress for ONE course — the sum of 0..1 progress_measure
+   * over its in-progress (not completed) SCORM lessons (§0048). The course
+   * detail header reads this so its progress bar agrees with the My Courses
+   * card, which gets the same figure from `assignedCourses.scorm_partial`.
+   */
+  async scormPartialForCourse(
+    scope: OrgScope,
+    userId: number,
+    courseId: number,
+  ): Promise<number> {
+    const rows = await this.db.all<{ partial: number }>(sql`
+      SELECT COALESCE(SUM(st.progress_measure), 0) AS partial
+        FROM lessons l
+        JOIN course_modules cm ON cm.id = l.module_id
+        JOIN scorm_tracking st ON st.package_id = l.scorm_package_id
+          AND st.user_id = ${userId}
+          AND st.organization_id = ${scope.organizationId}
+       WHERE cm.course_id = ${courseId}
+         AND l.is_active = 1 AND cm.is_active = 1
+         AND l.content_type = 'scorm'
+         AND st.progress_measure IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM user_lesson_completions ulc
+            WHERE ulc.lesson_id = l.id AND ulc.user_id = ${userId}
+         )
+    `);
+    return Number(rows[0]?.partial ?? 0);
   }
 }

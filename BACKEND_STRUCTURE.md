@@ -3717,6 +3717,35 @@ The course cards price themselves with `courseReward()` from the same file:
 is winnable, the pass rate per assessment) and `maxPoints` what perfect
 scores would pay.
 
+### 10.4.1 Partial SCORM progress feeds the course percentage (0048)
+
+A course whose only lesson is one big SCORM package used to read **0% until
+the package reported itself finished**, because course progress is
+`completed_lessons / total_lessons` and that single lesson is binary. A learner
+two sections into a ten-section package saw nothing move.
+
+`scorm_tracking.progress_measure` (0..1, nullable) fixes it. It is written at
+tracking time by `scormProgressMeasure()` from, in order: a finished status
+(1.0), SCORM 2004's standard `cmi.progress_measure`, or — best-effort for 1.2,
+which has no progress field — a recognised `suspend_data` completion bitfield
+(`{"c":"1100…"}`, the share of 1s). Any unrecognised shape stays NULL and the
+lesson stays binary, so a package from another authoring tool is never given a
+wrong number.
+
+**One definition, read in four places.** `courseProgressPct(total, done,
+partial)` in `learner.service.ts` adds the sum of in-progress SCORM fractions
+to the completed count, capped at 99 until every lesson is genuinely done — so
+100% still means done, and completion / certificates still decide that on
+`done >= total`, never on this figure. My Courses and the dashboard read
+`assignedCourses.scorm_partial`; the course detail reads
+`scormPartialForCourse`; My Progress reads the same stored column (its old
+inline `cmi_data` re-parse, which caught only 2004, is gone). All four agree.
+
+**Hours were already partial and are unchanged.** §10.4 below already credits
+an in-progress SCORM lesson from the package's reported `total_time` (capped at
+the declared duration), so time and percentage both advance as the learner
+works — they just measure different things (minutes spent vs. content covered).
+
 ### 10.4 Learning hours
 
 `modules/learning-hours` owns the single definition of an hour of learning, and
