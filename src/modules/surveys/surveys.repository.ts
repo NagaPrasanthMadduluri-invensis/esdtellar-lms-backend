@@ -68,6 +68,25 @@ export interface ResponseRow {
   created_at: string;
 }
 
+/**
+ * A course-feedback row as the LEARNER-FACING reviews panel reads it.
+ *
+ * It carries a FIRST NAME and a LAST INITIAL and nothing else that identifies
+ * the author — no `user_id`, no email, no surname. §10.24's rule is "anonymous
+ * to everyone except the admin"; the owner relaxed it (2026-10-13) to show a
+ * first name and a last initial on the course page as social proof, and this
+ * row shape is the whole of that relaxation. The initial is taken in SQL so the
+ * full surname never leaves the database.
+ */
+export interface ReviewRow {
+  id: number;
+  template_id: number | null;
+  answers: Record<string, unknown>;
+  created_at: string;
+  first_name: string | null;
+  last_initial: string | null;
+}
+
 /** What the resolver needs to decide which form a course shows. */
 export interface CourseFeedbackConfigRow {
   id: number;
@@ -536,6 +555,36 @@ export class SurveysRepository {
        WHERE ${orgScope('cf', scope)}
        GROUP BY cf.course_id, c.name
        ORDER BY responses DESC, c.name
+    `);
+  }
+
+  /**
+   * Every feedback row for a course, for the learner-facing reviews panel.
+   *
+   * ACTIVITY, so `orgScope` (§10.12) — the course may be platform-owned and
+   * shared, but the opinions counted against it belong to one tenant, and a
+   * learner must never see another organization's reviews of a global course.
+   *
+   * Selects only the author's first name and the initial of their surname
+   * (see `ReviewRow`). Newest first, the product's usual order for a list of
+   * opinions. The service turns the rating/text answers into stars + a comment.
+   */
+  async courseReviewRows(
+    scope: OrgScope,
+    courseId: number,
+  ): Promise<ReviewRow[]> {
+    return this.db.all<ReviewRow>(sql`
+      SELECT cf.id,
+             cf.template_id,
+             cf.answers,
+             cf.created_at,
+             NULLIF(TRIM(COALESCE(u.first_name, '')), '')                AS first_name,
+             NULLIF(UPPER(LEFT(TRIM(COALESCE(u.last_name, '')), 1)), '') AS last_initial
+        FROM course_feedback cf
+        JOIN users u ON u.id = cf.user_id
+       WHERE cf.course_id = ${courseId}
+         AND ${orgScope('cf', scope)}
+       ORDER BY cf.created_at DESC
     `);
   }
 

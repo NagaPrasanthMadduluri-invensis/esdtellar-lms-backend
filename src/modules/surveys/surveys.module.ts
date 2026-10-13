@@ -4,6 +4,7 @@ import { NotificationsModule } from '@/modules/notifications/notifications.modul
 
 import { AdminSurveysController } from './admin-surveys.controller';
 import {
+  LearnerCourseReviewsController,
   LearnerSurveyListController,
   LearnerSurveysController,
 } from './learner-surveys.controller';
@@ -28,6 +29,7 @@ import { SurveysService } from './surveys.service';
     AdminSurveysController,
     LearnerSurveysController,
     LearnerSurveyListController,
+    LearnerCourseReviewsController,
   ],
   providers: [SurveysService, SurveysRepository],
   exports: [SurveysService],

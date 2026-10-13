@@ -1589,7 +1589,34 @@ different audience:
 | | who may see the author |
 |---|---|
 | `session_feedback` | the admin only; no trainer route selects `user_id` |
-| `course_feedback` | the admin, and the form says so before the first answer |
+| `course_feedback` | the admin in full; other learners as a FIRST NAME + LAST INITIAL only (below) |
+
+**The learner-facing reviews relaxation (2026-10-13).** The owner's original
+rule was "anonymous to everyone except the admin", and it still holds for the
+one thing it was protecting — candid feedback the trainer must not trace. What
+changed is that a learner on a course's detail page now sees the OTHER
+learners' ratings and comments as edX-style social proof. The author is shown
+as a **first name and a last initial** ("Vamsi K."), never the full surname,
+email or `user_id`. That limited identity is the whole of the relaxation:
+`SurveysRepository.courseReviewRows` takes the initial IN SQL so the surname
+never leaves the database, `GET /api/learner/courses/:courseId/reviews` reads
+no id, and `SurveysService.courseReviews` returns none. The admin's full-name
+read (`listResponses`, the only one that selects `user_id`) is unchanged.
+
+A review is the OVERALL rating (the template's first `rating` question) plus
+the first non-empty `text` answer as the comment. A response with no numeric
+rating is not a review and is left out of the average, the 5★→1★ distribution
+and the cards — the star is the thing being counted. Entitlement matches the
+feedback form beside it: the learner must be assigned the course. Scoping is
+`orgScope` on `course_feedback` (§10.12) — a shared platform course must never
+show one tenant another tenant's reviews.
+
+**Fixed in the same change: the feedback card had gone silently blank.**
+`LearnerSurveysController`'s `:courseId` was a `ParseIntPipe`, but the course
+page sends a public UUID (§10.34), so `GET .../feedback` 400'd and the card —
+whose rule is to render nothing on a failed fetch — showed nothing, which also
+meant no new feedback could be collected from the page. Both it and the new
+reviews controller now resolve the id through `PublicIdService`.
 
 **Which form a course shows is resolved in ONE method**,
 `SurveysService.resolveTemplate`, read by the learner's form, the learner's

@@ -32,6 +32,7 @@ import {
   SurveysRepository,
   type CourseFeedbackConfigRow,
   type QuestionRow,
+  type ReviewRow,
   type TemplateRow,
 } from './surveys.repository';
 
@@ -359,6 +360,123 @@ export class SurveysService {
     }
 
     return { ok: true, created, submitted_at: new Date().toISOString() };
+  }
+
+  /**
+   * The learner-facing reviews for a course: the headline average, the
+   * 5★→1★ distribution, and one card per rated response.
+   *
+   * A "review" is the OVERALL rating (the template's first `rating` question)
+   * plus the first non-empty `text` answer as the comment. A row with no
+   * numeric rating is not a review and is left out of every figure — the star
+   * is the thing being counted, and there is nothing to draw without one.
+   *
+   * Entitlement is the same as the feedback form beside it: the learner must
+   * be assigned the course. The reviews sit on the course-detail page, which
+   * is already gated that way, so gating here keeps the two consistent.
+   *
+   * ACTIVITY scoping is in the repository (`orgScope`); the author's identity
+   * is a first name and a last initial only (§10.24, relaxed 2026-10-13) — no
+   * user id is read or returned.
+   */
+  async courseReviews(scope: OrgScope, courseId: number, userId: number) {
+    const course = await this.repository.findCourseConfig(scope, courseId);
+    if (!course) throw new NotFoundException('Course not found');
+
+    const assigned = await this.repository.learnerHasCourse(
+      scope,
+      courseId,
+      userId,
+    );
+    if (!assigned) {
+      throw new ForbiddenException('This course is not assigned to you');
+    }
+
+    const rows = await this.repository.courseReviewRows(scope, courseId);
+
+    // Which question carries the star, and which carry free text, per template
+    // — resolved once per distinct template rather than once per row (§7.1).
+    const templateIds = [
+      ...new Set(
+        rows
+          .map((r) => r.template_id)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+    const shapeByTemplate = new Map<
+      number,
+      { ratingId: number | null; textIds: number[] }
+    >();
+    await Promise.all(
+      templateIds.map(async (id) => {
+        const qs = await this.repository.listQuestions(id);
+        const rating = qs.find((q) => q.question_type === 'rating');
+        shapeByTemplate.set(id, {
+          ratingId: rating?.id ?? null,
+          textIds: qs
+            .filter((q) => q.question_type === 'text')
+            .map((q) => q.id),
+        });
+      }),
+    );
+
+    const distribution: Record<string, number> = {
+      '1': 0,
+      '2': 0,
+      '3': 0,
+      '4': 0,
+      '5': 0,
+    };
+    const reviews = rows.flatMap((row) =>
+      this.toReview(row, row.template_id ? shapeByTemplate.get(row.template_id) : undefined),
+    );
+    for (const r of reviews) distribution[String(r.rating)] += 1;
+
+    const count = reviews.length;
+    const sum = reviews.reduce((s, r) => s + r.rating, 0);
+    const average = count ? Math.round((sum / count) * 10) / 10 : null;
+
+    return { count, average, distribution, reviews };
+  }
+
+  /**
+   * One feedback row to a review card, or [] when it carries no star. The
+   * array return lets the caller `flatMap` and drop the starless rows in one
+   * pass.
+   */
+  private toReview(
+    row: ReviewRow,
+    shape: { ratingId: number | null; textIds: number[] } | undefined,
+  ): {
+    id: number;
+    name: string;
+    initials: string;
+    rating: number;
+    comment: string | null;
+    date: string | null;
+  }[] {
+    if (!shape || shape.ratingId === null) return [];
+    const rating = Number(row.answers[String(shape.ratingId)]);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return [];
+
+    let comment: string | null = null;
+    for (const id of shape.textIds) {
+      const value = row.answers[String(id)];
+      if (typeof value === 'string' && value.trim()) {
+        comment = value.trim();
+        break;
+      }
+    }
+
+    const first = row.first_name;
+    const initial = row.last_initial;
+    const name = first ? (initial ? `${first} ${initial}.` : first) : 'Learner';
+    const initials =
+      ((first?.[0] ?? '') + (initial ?? '')).toUpperCase() || 'L';
+
+    return [
+      { id: row.id, name, initials, rating, comment, date: toIso(row.created_at) },
+    ];
   }
 
   /* ──────────────────────────── Resolution ───────────────────────────── */
