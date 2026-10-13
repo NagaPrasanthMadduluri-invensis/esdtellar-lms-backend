@@ -86,7 +86,14 @@ export class ScormService {
     scope: OrgScope,
     file: Express.Multer.File | undefined,
     adminId: number,
-    body: { title?: string; course_id?: string; provisional?: string },
+    body: {
+      title?: string;
+      course_id?: string;
+      provisional?: string;
+      // Resolved from the public UUID by the controller (§10.34). Null when no
+      // course was named or the id did not resolve.
+      courseId?: number | null;
+    },
   ) {
     if (!file) {
       throw new UnprocessableEntityException('No SCORM package file received');
@@ -160,7 +167,7 @@ export class ScormService {
          * an existing caller cannot accidentally create sweepable debris.
          */
         claimedAt: isProvisional ? null : new Date().toISOString(),
-        courseId: body.course_id ? Number(body.course_id) : null,
+        courseId: body.courseId ?? null,
         createdBy: adminId,
         // Null when the manifest declares no typicalLearningTime, which is the
         // signal the lesson form uses to ask the admin for it instead.

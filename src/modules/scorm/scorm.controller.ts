@@ -37,7 +37,13 @@ import { ScormService } from './scorm.service';
 @Controller('admin/scorm')
 @Roles('admin')
 export class AdminScormController {
-  constructor(private readonly scorm: ScormService) {}
+  constructor(
+    private readonly scorm: ScormService,
+    // Resolves a course's public UUID (sent by the authoring page) to its key
+    // on upload. Admin packageId params stay integers (§10.34), so those keep
+    // using ParseIntPipe.
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get()
   async list(@CurrentScope() scope: OrgScope) {
@@ -56,10 +62,18 @@ export class AdminScormController {
   async upload(
     @CurrentScope() scope: OrgScope,
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: { title?: string; course_id?: string },
+    @Body() body: { title?: string; course_id?: string; provisional?: string },
     @CurrentUser() admin: AuthenticatedUser,
   ) {
-    return this.scorm.upload(scope, file, admin.userId, body);
+    // `course_id` arrives as a public UUID (§10.34). Resolve it to the integer
+    // key before it reaches the insert — `Number("<uuid>")` is NaN, and NaN into
+    // the integer course_id column is the 500 this used to throw. `resolveId`
+    // accepts an integer too, so an older client still works; an unknown id
+    // resolves to null (the package is created provisional and unclaimed).
+    const courseId = body.course_id
+      ? await this.publicId.resolveId('courses', body.course_id)
+      : null;
+    return this.scorm.upload(scope, file, admin.userId, { ...body, courseId });
   }
 
   @Get(':packageId')
