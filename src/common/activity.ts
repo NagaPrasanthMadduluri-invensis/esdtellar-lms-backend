@@ -65,6 +65,7 @@ export const ACTIVITY_TYPES = {
   },
 
   service_requested: { label: 'Edstellar service requested', group: 'services' },
+  referral_submitted: { label: 'Referral submitted', group: 'services' },
 } as const;
 
 export type ActivityType = keyof typeof ACTIVITY_TYPES;

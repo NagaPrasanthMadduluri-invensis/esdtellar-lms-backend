@@ -124,7 +124,14 @@ export class EmailRenderService {
      */
     const def = typeDef(row.type);
     const paragraphs: string[] = [];
-    if (row.body) paragraphs.push(row.body);
+    if (row.body) {
+      // One blank line separates paragraphs. Every existing body is a single
+      // sentence, so this is a no-op for them; it lets a longer message (the
+      // referral invite) carry more than one paragraph without a new column.
+      for (const p of row.body.split(/\n{2,}/).map((s) => s.trim())) {
+        if (p) paragraphs.push(p);
+      }
+    }
     if (row.actorName) paragraphs.push(`Actioned by ${row.actorName}.`);
     if (paragraphs.length === 0) {
       // A notification with a title and no body is legal. Rather than ship
@@ -228,10 +235,18 @@ export class EmailRenderService {
   private ctaFor(row: OutboxRow): { label: string; url: string } | undefined {
     if (isDirectEmailType(row.type)) {
       if (row.type === 'password_changed') return undefined;
-      return {
-        label: row.type === 'password_reset' ? 'Reset my password' : 'Sign in',
-        url: this.absoluteUrl(row.link),
-      };
+      if (row.type === 'password_reset') {
+        return { label: 'Reset my password', url: this.absoluteUrl(row.link) };
+      }
+      if (row.type === 'welcome') {
+        return { label: 'Sign in', url: this.absoluteUrl(row.link) };
+      }
+      // Any other direct type (the referral invite) uses its catalogue `cta`
+      // and only renders a button when it has somewhere to send the reader.
+      const label = DIRECT_EMAIL_TYPES[row.type].cta;
+      return row.link && label
+        ? { label, url: this.absoluteUrl(row.link) }
+        : undefined;
     }
     if (!row.link) return undefined;
     /*
@@ -270,6 +285,17 @@ export class EmailRenderService {
     const small = `font-family:${FONT_STACK};font-size:11px;line-height:1.55;color:${C.text3};`;
 
     if (isDirectEmailType(row.type)) {
+      // A non-account direct type (the referral invite to a prospect) is not a
+      // security message and the recipient has no account to manage, so neither
+      // the "always sent" line nor a Manage-settings link fits. Say plainly why
+      // they received it.
+      if (DIRECT_EMAIL_TYPES[row.type].account === false) {
+        const org = row.orgName ? escapeHtml(row.orgName) : 'An organisation';
+        return {
+          footerExtraHtml: `<p style="margin:0;${small}">${org} shared Spectra LMS by Edstellar with you. If this is not relevant, you can ignore this email.</p>`,
+          headers,
+        };
+      }
       return {
         footerExtraHtml: `<p style="margin:0;${small}">This is a security message about your account, so it is always sent.</p>`,
         headers,

@@ -28,6 +28,8 @@ export * from './services.schema';
 export * from './billing.schema';
 // Depends on organizations + users. Nothing depends on it.
 export * from './seats.schema';
+// Depends on organizations + users. Nothing depends on it.
+export * from './referrals.schema';
 
 /** Per-recipient notifications with read state (0030). */
 export * from './notifications.schema';

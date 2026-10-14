@@ -30,7 +30,8 @@ export interface RecipientRow {
 
 export interface NewOutboxRow {
   organizationId: number;
-  userId: number;
+  /** Null for a direct email to a non-user address (the referral invite). */
+  userId: number | null;
   notificationId: number | null;
   type: string;
   policy: string;

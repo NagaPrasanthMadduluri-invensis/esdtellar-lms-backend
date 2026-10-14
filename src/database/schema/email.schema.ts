@@ -28,9 +28,15 @@ export const emailOutbox = pgTable(
     organizationId: integer('organization_id')
       .notNull()
       .references(() => organizations.id, { onDelete: 'cascade' }),
-    userId: integer('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Nullable since 0053: a direct email can go to a NON-USER address (the
+     * referral invite, §10.36). A real user id is still validated by the FK and
+     * still cascades; an external row stands NULL here and carries its address
+     * in `toEmail`.
+     */
+    userId: integer('user_id').references(() => users.id, {
+      onDelete: 'cascade',
+    }),
     /**
      * Forensics only, and nullable on purpose. A NOT NULL reference would
      * tie the two inserts into one transaction, so an email failure would

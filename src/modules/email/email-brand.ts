@@ -71,6 +71,10 @@ export const GROUP_STYLE: Record<string, { color: string; label: string }> = {
   people: { color: MAIL_BRAND.navy, label: 'People' },
   commercial: { color: MAIL_BRAND.rust, label: 'Account' },
   security: { color: MAIL_BRAND.danger, label: 'Security' },
+  // The referral invite (§10.36) — a warm introduction, not an account
+  // message. Accent blue + a plain eyebrow, so a prospect's first email reads
+  // as an invitation rather than a system alert.
+  referral: { color: MAIL_BRAND.accent, label: 'Invitation' },
 };
 
 export function groupStyle(group: string): { color: string; label: string } {

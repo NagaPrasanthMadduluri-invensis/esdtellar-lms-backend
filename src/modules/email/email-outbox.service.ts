@@ -51,6 +51,26 @@ export interface EnqueueInput {
   skipEmail?: boolean;
 }
 
+/** What `enqueueDirect()` takes — a single email to a raw external address. */
+export interface EnqueueDirectInput {
+  organizationId: number;
+  type: string;
+  /** The external recipient. Lower-cased and used as the dedupe anchor. */
+  toEmail: string;
+  toName?: string | null;
+  /** The referring org's name, shown in the header and footer. */
+  orgName?: string | null;
+  orgLogoUrl?: string | null;
+  subject?: string;
+  body?: string | null;
+  link?: string | null;
+  facts?: Array<{ label: string; value: string }> | null;
+  subjectName?: string | null;
+  /** For the dedupe key only, so a double-submit does not send twice. */
+  subjectType?: string | null;
+  subjectId?: number | null;
+}
+
 /**
  * Decides who gets an email, and writes the rows. Sends nothing.
  *
@@ -110,6 +130,85 @@ export class EmailOutboxService {
     } catch (error) {
       this.logger.warn(
         `Email not enqueued (${input.type}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * Enqueue ONE email to a raw external address — a recipient with no `users`
+   * row (the referral invite, §10.36).
+   *
+   * The ordinary `enqueue` path resolves `to_email` from a `users` join and
+   * applies the per-user preference and suppression gate; a prospect has
+   * neither a row nor preferences, so this is a separate path that writes the
+   * row directly. It still honours the two gates that are about the ADDRESS and
+   * the environment, not the user:
+   *
+   *   - the suppression list (a hard-bounced or complained address is never
+   *     emailed again, whatever we decide about it — it protects a sending
+   *     reputation shared by every tenant);
+   *   - `EMAIL_ALLOWLIST` (so a non-production environment cannot email a real
+   *     prospect — the row is written `suppressed/not_allowlisted` instead).
+   *
+   * Never throws, like `enqueue`. Returns 1 if a row was queued, else 0.
+   */
+  async enqueueDirect(input: EnqueueDirectInput): Promise<number> {
+    try {
+      if (!this.enabled) return 0;
+
+      const policy = this.policyFor(input.type);
+      if (policy === 'none') return 0;
+
+      const email = input.toEmail.trim().toLowerCase();
+      if (!email) return 0;
+
+      // An address we have been told never to mail again outranks everything.
+      if (await this.repository.isSuppressed(email)) {
+        this.logger.log(`${input.type}: skipped, ${email} is suppressed.`);
+        return 0;
+      }
+
+      const row: NewOutboxRow = {
+        organizationId: input.organizationId,
+        userId: null,
+        notificationId: null,
+        type: input.type,
+        policy,
+        toEmail: email,
+        toName: input.toName ?? null,
+        orgName: input.orgName ?? null,
+        orgLogoUrl: input.orgLogoUrl ?? null,
+        facts: input.facts?.length ? JSON.stringify(input.facts) : null,
+        subjectName: input.subjectName ?? null,
+        subject: input.subject?.trim() || this.fallbackSubject(input.type),
+        body: input.body ?? null,
+        link: input.link ?? null,
+        actorName: null,
+        dedupeKey: this.dedupeKeyDirect(input, email),
+      };
+
+      // The allowlist is the one gate that writes a suppressed row, because the
+      // point of a dry run is to count what WOULD have gone out.
+      if (!this.allowed(email)) {
+        const held = await this.repository.enqueueSuppressed(
+          [row],
+          'not_allowlisted',
+        );
+        if (held > 0) {
+          this.logger.log(
+            `${input.type}: 0 queued, 1 held by EMAIL_ALLOWLIST (${email}).`,
+          );
+        }
+        return 0;
+      }
+
+      return await this.repository.enqueue([row]);
+    } catch (error) {
+      this.logger.warn(
+        `Direct email not enqueued (${input.type}): ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -281,6 +380,26 @@ export class EmailOutboxService {
         [
           input.type,
           userId,
+          input.subjectType ?? '',
+          input.subjectId ?? '',
+          bucket,
+        ].join(':'),
+      )
+      .digest('hex');
+  }
+
+  /**
+   * The dedupe key for a direct external email, anchored on the ADDRESS rather
+   * than a user id (there is no user). Same five-minute bucket as `dedupeKey`,
+   * so a double-clicked submit does not send the prospect two invites.
+   */
+  private dedupeKeyDirect(input: EnqueueDirectInput, email: string): string {
+    const bucket = Math.floor(Date.now() / 300_000);
+    return createHash('sha256')
+      .update(
+        [
+          input.type,
+          email,
           input.subjectType ?? '',
           input.subjectId ?? '',
           bucket,

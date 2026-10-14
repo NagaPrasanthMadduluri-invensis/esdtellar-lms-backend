@@ -366,6 +366,33 @@ export const NOTIFICATION_TYPES = {
     cta: 'View seats',
   },
   /**
+   * A tenant filed a referral. Platform-only and `email: 'none'` — Edstellar's
+   * staff work the queue from the bell, and a cold email per referral to our
+   * own team is noise. (The PROSPECT's invitation is a separate direct email,
+   * §10.36 — it has no bell and is not a notification.)
+   */
+  referral_received: {
+    label: 'New referral',
+    group: 'commercial',
+    icon: 'Gift',
+    audience: ['platform'],
+    email: 'none',
+    cta: 'View referrals',
+  },
+  /**
+   * A referral the admin filed became an active customer. Emailed, because it
+   * is good news that unlocks a discount and the admin is unlikely to be
+   * watching the queue for it.
+   */
+  referral_converted: {
+    label: 'Your referral became a customer',
+    group: 'commercial',
+    icon: 'Gift',
+    audience: ['admin'],
+    email: 'transactional',
+    cta: 'View my referrals',
+  },
+  /**
    * An email to somebody in this organization gave up after its retries.
    *
    * **`email: 'none'`, and that is not a preference — it is the loop

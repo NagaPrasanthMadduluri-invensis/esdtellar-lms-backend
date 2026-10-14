@@ -1,0 +1,15 @@
+-- Lets the outbox carry a message to a NON-USER address.
+--
+-- Every email this product has sent so far goes to a `users` row, so
+-- `email_outbox.user_id` was NOT NULL with an FK to `users.id` and `to_email`
+-- was resolved from the user at enqueue. The referral INVITE (§10.36) goes to
+-- a prospect who has no account — they are being invited to become one — so
+-- the column must be allowed to stand empty while `to_email` carries the real
+-- address, written directly by `EmailOutboxService.enqueueDirect`.
+--
+-- Additive and safe (§6.2): dropping NOT NULL leaves every existing row intact,
+-- keeps the FK (so a real user id is still validated and still cascades), and
+-- an external row simply has NULL there. `notification_id` was already nullable
+-- for a related reason (a direct email has no bell row), so nullable linkage on
+-- this table is an established pattern, not a new one.
+ALTER TABLE email_outbox ALTER COLUMN user_id DROP NOT NULL;

@@ -28,6 +28,19 @@ export interface DirectEmailDef {
   /** Picks the colour and the eyebrow on the rendered email. */
   group: string;
   policy: EmailPolicy;
+  /**
+   * The button label, for a direct type that links somewhere a recipient
+   * should go. The three account types below set their own in the renderer
+   * (reset/sign-in) and leave this unset.
+   */
+  cta?: string;
+  /**
+   * Whether this is an ACCOUNT/security message to the holder of an account.
+   * The three originals are; the renderer gives them the "always sent" footer
+   * and their own CTA. A type with `account: false` (the referral invite, to a
+   * prospect with no account) gets a neutral footer and its `cta` label.
+   */
+  account?: boolean;
 }
 
 export const DIRECT_EMAIL_TYPES = {
@@ -35,16 +48,36 @@ export const DIRECT_EMAIL_TYPES = {
     label: 'Reset your password',
     group: 'security',
     policy: 'transactional',
+    account: true,
   },
   password_changed: {
     label: 'Your password was changed',
     group: 'security',
     policy: 'transactional',
+    account: true,
   },
   welcome: {
     label: 'Your account is ready',
     group: 'people',
     policy: 'transactional',
+    account: true,
+  },
+  /**
+   * The referral INVITE (§10.36) — sent to a prospect who has NO account.
+   *
+   * Direct, not a notification: there is no bell for a non-user, and the
+   * recipient is not in `users` at all, so it is enqueued through
+   * `EmailOutboxService.enqueueDirect` with a raw address. `account: false`
+   * gives it a neutral footer rather than the "security message" one, and the
+   * `cta` sends them to a public Edstellar page — never a sign-in or onboarding
+   * link, because this creates no account.
+   */
+  referral_invite: {
+    label: 'You have been referred to Spectra LMS by Edstellar',
+    group: 'referral',
+    policy: 'transactional',
+    cta: 'Discover Spectra LMS',
+    account: false,
   },
 } as const satisfies Record<string, DirectEmailDef>;
 

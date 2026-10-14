@@ -108,6 +108,16 @@ export const PERMISSIONS = {
   // meaningless.
   manage_organization: 'Edit organization settings',
   moderate_community: 'Moderate the learning community',
+
+  // Referrals. Guarded on the tenant routes in
+  // `modules/referrals/referrals.controller.ts` — filing a referral and reading
+  // this org's own ones. Separate from every other permission for the same
+  // reason as `request_services`: it is an action that reaches OUTSIDE the
+  // tenant, putting a prospect's details in front of Edstellar and sending an
+  // email on Edstellar's brand. An org may want content admins who cannot open
+  // a commercial conversation on its behalf. (The platform queue is
+  // `@PlatformAdmin()` and carries no permission, like the services queue.)
+  manage_referrals: 'Refer companies to Edstellar',
 } as const;
 
 /** Every valid permission id. */

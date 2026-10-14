@@ -611,6 +611,7 @@ Update this table with every module you move.
 | forgot password (request, check, reset) | 3 | `server/src/modules/auth` |
 | scheduled reminders (`course_due_soon`) — cron, no HTTP | 0 | `server/src/modules/reminders` |
 | learning community (learner feed/compose/reply/like; admin moderation) | 12 | `server/src/modules/community` |
+| referrals (tenant files/reads; platform queue + convert) | 6 | `server/src/modules/referrals` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -3995,6 +3996,92 @@ ready), post editing beyond `edited_at`, a report-abuse flow, and auto-hiding
 the learner nav entry when the org disables the module (the entry shows and the
 page renders a clean "turned off" state, because `/api/auth/me` does not yet
 surface org feature flags — surfacing it there is the small follow-up).
+
+---
+
+### 10.36 Referrals
+
+`0051_referrals.sql` adds a per-organization referral program; `0052` grants the
+one new permission; `0053` lets the outbox carry a non-user email. An org admin
+refers another COMPANY to become a Spectra customer and earns a tiered discount
+once a referral converts. Read the migration headers first — the summary:
+
+**It is the Edstellar Services shape (§10.14) a second time.** A tenant files a
+row, a `@PlatformAdmin()` queue manages it cross-tenant, and only the platform
+side moves the status. So: `referrals` is ACTIVITY (`orgScope` on every tenant
+read, never `contentScope` — the referral belongs to the REFERRER); `ref_no` is
+`REF-YYYY-NNNN`, per-org, from the highest existing suffix; the tenant controller
+(`@Roles('admin')` + `@Permissions('manage_referrals')`) has no route that writes
+`status`; the platform controller (`@PlatformAdmin()`) is the only writer and is
+a separate route tree, never a widening of the tenant one.
+
+**`manage_referrals`** is a new permission with guards on both tenant routes in
+the same change (§5.2.1). Separate from everything else for the same reason as
+`request_services`: it reaches OUTSIDE the tenant (a prospect's details, an email
+on Edstellar's brand). `0052` grants it to `is_system` admin roles and bumps
+`perm_version`, signing admins out once (§10.17).
+
+**THE REWARD TIER IS DERIVED, NEVER STORED.** 2 converted referrals earn 15%,
+3 earn 25% (`common/referral-rewards.ts`, catalogue-as-code). `referralTier()`
+reads `COUNT(*) WHERE status='converted'` per org at read time — no discount
+column that a job has to keep in step (§10.17). The discount is SHOWN as earned;
+applying it to billing is a deliberate platform action, not an automation. The
+tenant `GET` returns `reward` in the same read as the list so the showcase banner
+cannot disagree with it. `client/lib/referral-rewards.js` mirrors it.
+
+**First-touch attribution.** A prospect email is globally unique
+(`idx_referrals_contact_email` on `LOWER(contact_email)`); a second org referring
+the same address gets a 409. Relaxable later if the business wants it.
+
+#### Emailing a non-user prospect — the one genuinely new capability
+
+The outbox was user-id driven: `enqueue` takes `userIds[]`, resolves `to_email`
+from a `users` join, and `email_outbox.user_id` was `NOT NULL` FK to `users.id`.
+A referred prospect has no account, so the invite needed a small extension that
+KEEPS durability (the outbox is the message store, §10.30 — an invite cannot be
+recalled):
+
+- `0053` makes `email_outbox.user_id` nullable (additive; FK and cascade kept).
+- `EmailOutboxService.enqueueDirect({ toEmail, ... })` writes a ready-to-send
+  row directly (user_id NULL), bypassing the user-row `recipients()`/preference
+  gate but still honouring the ADDRESS-level gates: the suppression list and
+  `EMAIL_ALLOWLIST` (so a non-production environment cannot email a real
+  prospect). Dedupe is keyed on the address, not a user id.
+- `referral_invite` is a new `DIRECT_EMAIL_TYPES` entry with `account: false`,
+  which the renderer reads to give it its own `cta` ("Discover Spectra LMS") and
+  a neutral "{org} shared Spectra LMS with you" footer rather than the "security
+  message" one. Its group is `referral` (a new `GROUP_STYLE` entry, accent blue,
+  eyebrow "Invitation"). The CTA link is relative (`/`) so it resolves to the
+  public Spectra origin — deliberately NOT a sign-in or onboarding link, because
+  the invite creates no account (confirmed with the owner).
+- `EmailRenderService.render` now splits `body` on blank lines into paragraphs
+  (a no-op for every existing single-sentence body), so the invite carries its
+  pitch and a facts panel.
+
+Verified end to end against the local API: create → 201 + `REF-` ref_no; the
+invite enqueued as a direct row (`user_id` NULL, `to_email` the prospect,
+`org_name` the referrer, status pending) and RENDERED correctly for the null-user
+row; the platform notified (`referral_received`, bell only, no email); the tenant
+list carries the reward tier; a duplicate prospect → 409; a learner → 403 on the
+admin route; the platform queue includes it with the referrer named; convert →
+200, the referrer notified (`referral_converted`) and the tier recomputed; a
+tenant admin → 403 on the platform route.
+
+**Notifications.** `referral_received` (platform, bell only — Edstellar works the
+queue) on create; `referral_converted` (admin, transactional) to the referrer on
+the TRANSITION into converted only, so re-saving a converted referral does not
+re-ring the bell. Both best-effort (§8.4), beside a `referral_submitted` activity
+entry for the referrer's dashboard.
+
+**Integer ids in URLs**, not `public_id` — the admin and platform screens carry
+no id in the browser URL (mirror service_requests).
+
+**Deliberately out of v1:** the earned discount is not wired into billing (shown
+as earned, platform applies by hand); the invite CTA points at the Spectra app
+origin rather than a dedicated marketing/landing URL (the renderer's `absoluteUrl`
+confines links to the app origin — pointing at a public Edstellar page is the
+noted follow-up); linking a conversion to a tenant provisioned in the same step
+(v1 links via the platform respond dialog's org picker instead).
 
 ## 11. Adding a new module — checklist
 
