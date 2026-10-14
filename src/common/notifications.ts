@@ -388,6 +388,24 @@ export const NOTIFICATION_TYPES = {
     email: 'none',
     cta: 'Open email delivery',
   },
+  /* ── Learning community ── */
+  community_reply: {
+    label: 'New reply in the community',
+    group: 'people',
+    icon: 'MessageSquare',
+    audience: ['learner'],
+    email: 'none',
+    cta: 'Open the discussion',
+    aspiration: 'Someone joined a post you started.',
+  },
+  community_post_removed: {
+    label: 'A community post was removed',
+    group: 'people',
+    icon: 'ShieldAlert',
+    audience: ['learner'],
+    email: 'none',
+    cta: 'Open the community',
+  },
 } as const satisfies Record<string, NotificationTypeDef>;
 
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;

@@ -89,6 +89,9 @@ export const organizations = pgTable(
      * learner population; transactional mail is unaffected by this column.
      */
     emailAnnouncements: integer('email_announcements').notNull().default(0),
+    // Per-tenant Learning Community switch (0049). Default 1 = on; an admin can
+    // turn the whole module off from Organization settings.
+    communityEnabled: integer('community_enabled').notNull().default(1),
     /** Non-sequential PUBLIC id for URLs (/platform/organizations/:publicId). 0046. */
     publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })

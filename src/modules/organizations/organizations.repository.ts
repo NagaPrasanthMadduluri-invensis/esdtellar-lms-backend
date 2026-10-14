@@ -50,6 +50,15 @@ export class OrganizationsRepository {
     return this.database.db;
   }
 
+  /** The Learning Community toggle for one org (0049). Defaults on. */
+  async getCommunityEnabled(id: number): Promise<number> {
+    const rows = await this.db
+      .select({ v: organizations.communityEnabled })
+      .from(organizations)
+      .where(eq(organizations.id, id));
+    return rows[0]?.v ?? 1;
+  }
+
   async findPlatformOrganizationId(): Promise<number | null> {
     const rows = await this.db
       .select({ id: organizations.id })
@@ -227,10 +236,13 @@ export class OrganizationsRepository {
       certificatePrefix?: string | null;
       certificateSignatoryName?: string | null;
       certificateSignatoryTitle?: string | null;
+      communityEnabled?: number;
     },
   ): Promise<OrganizationRow | null> {
     const values: Record<string, unknown> = {};
     if (input.name !== undefined) values.name = input.name;
+    if (input.communityEnabled !== undefined)
+      values.communityEnabled = input.communityEnabled;
     if (input.logoUrl !== undefined) values.logoUrl = input.logoUrl;
     if (input.certificatePrefix !== undefined)
       values.certificatePrefix = input.certificatePrefix;

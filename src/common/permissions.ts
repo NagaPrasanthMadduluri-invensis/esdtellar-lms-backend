@@ -107,6 +107,7 @@ export const PERMISSIONS = {
   // its own commercial terms, or raising its own seat cap, would make both
   // meaningless.
   manage_organization: 'Edit organization settings',
+  moderate_community: 'Moderate the learning community',
 } as const;
 
 /** Every valid permission id. */

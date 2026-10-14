@@ -40,6 +40,7 @@ export * from './course-feedback.schema';
 
 /** External certifications and their two-step approval trail (0036). */
 export * from './external-certifications.schema';
+export * from './community.schema';
 
 /** The email outbox, suppressions, preferences and reset tokens (0037). */
 export * from './email.schema';

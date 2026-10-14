@@ -610,6 +610,7 @@ Update this table with every module you move.
 | email (outbox, preferences, unsubscribe, SES events, platform read) | 7 | `server/src/modules/email` |
 | forgot password (request, check, reset) | 3 | `server/src/modules/auth` |
 | scheduled reminders (`course_due_soon`) — cron, no HTTP | 0 | `server/src/modules/reminders` |
+| learning community (learner feed/compose/reply/like; admin moderation) | 12 | `server/src/modules/community` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -3928,6 +3929,72 @@ backfills on boot, then the client. The `SET NOT NULL` enforce migration is a
 later, separate deploy once the client emits only UUIDs.
 
 ---
+
+### 10.35 Learning Community
+
+`0049_community.sql` adds a per-organization social space; `0050_community_permission.sql`
+grants the one new permission. Three tables, one toggle. Read the migration
+headers first — the summary:
+
+**It is ACTIVITY, so `orgScope` on EVERY read, never `contentScope`.** A post,
+reply or like belongs to one tenant and never crosses the boundary — the exact
+leak class §10.12 records. `community_posts`, `community_replies` and
+`community_reactions` all carry `organization_id`, and every query in
+`CommunityRepository` applies `orgScope`. This is the module whose isolation
+matters most, because the content is user-written and visible to peers; the
+isolation test must cover the feed, the detail, replies and likes.
+
+**One post, three TYPES, chosen before composing** — `question` | `achievement`
+| `discussion`. The type drives the UI (a question gets a **Contribute** button;
+an achievement/discussion gets **Like + Comment**) but not the storage: there is
+ONE `community_replies` table serving a question's contributions AND an
+achievement/discussion's comments, relabelled by `post.type` in the client, so
+there is one engine to keep in sync rather than two that drift. An achievement
+post references a `certificate_id`; the course/path name is captured into
+`title` at share time so the feed never has to join the certificate tables, and
+the certificate's `public_id` is carried only for a "view certificate" link.
+
+**Likes are `community_reactions`, shaped for posts now and replies later.** The
+"exactly one of" pattern (§10.11): `post_id`/`reply_id` with a CHECK that one is
+set and partial unique indexes on each — so v1 likes a post, and answer
+up-votes (v1.1) are a column already present, not a migration. The `ON CONFLICT
+(post_id, user_id) WHERE post_id IS NOT NULL` must repeat the partial index's
+predicate (§10.26). Counters (`reply_count`, `like_count`) are denormalised and
+recomputed with `SELECT COUNT(*)` inside the same write, so the feed never
+counts rows per card (§7.1) and the counters cannot drift.
+
+**Delete is SOFT** (`deleted_at`, `deleted_by`), for the author and for a
+moderator. The row stays for audit and is hidden everywhere (`deleted_at IS
+NULL` on every read); removing a post hides its replies with it. The author
+deletes their own (ownership checked in the service, 403 vs 404, §5.3); an admin
+deletes any — and the author is told, `community_post_removed`, naming only "a
+moderator".
+
+**`community_posts.public_id`** is the URL identity (§10.34), added to
+`PublicIdService`'s whitelist; replies are addressed by integer id. The feed is
+**keyset-paginated** (`(created_at, id) <` a base64 cursor), newest first;
+the admin moderation read is limit/offset with a type filter and search.
+
+**Permissions.** Learner participation carries NO permission — posting, liking
+and replying are not capabilities an org grants (like the bell and surveys), so
+the learner controller is `@Roles('learner')` only. The whole module is instead
+gated by **`organizations.community_enabled`** (default 1 = on), checked in the
+service (`assertEnabled`) and editable by a tenant admin on the Organization
+settings screen. The one new permission, **`moderate_community`**, gates only
+the admin DELETEs; the admin READ is open to the admin audience (§5.2.1). The
+grant migration bumps `perm_version`, signing admins out once (§10.17).
+
+**Notifications.** A new reply tells the post's author (`community_reply`,
+bell-only, `email: 'none'`) unless they replied to themselves (`exceptUserId`).
+A moderator removal tells the author (`community_post_removed`). Both are
+best-effort (§8.4). Author identity on learner-facing surfaces is **first name +
+last initial** (the §10.24 relaxation), full name only on the admin read.
+
+**Known, deliberately out of v1:** answer up-votes (the reactions table is
+ready), post editing beyond `edited_at`, a report-abuse flow, and auto-hiding
+the learner nav entry when the org disables the module (the entry shows and the
+page renders a clean "turned off" state, because `/api/auth/me` does not yet
+surface org feature flags — surfacing it there is the small follow-up).
 
 ## 11. Adding a new module — checklist
 

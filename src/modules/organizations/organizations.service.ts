@@ -206,11 +206,16 @@ export class OrganizationsService implements OnModuleInit {
 
     const contract = contractState(row.contract_end);
     const seats = await this.seats.usage(scope);
+    const communityEnabled = await this.repository.getCommunityEnabled(
+      scope.organizationId,
+    );
 
     return {
       organization: {
         id: row.organization_id,
         name: row.name,
+        // Learning Community switch (0049). Writable by this tenant.
+        community_enabled: communityEnabled === 1,
         slug: row.slug,
         industry: row.industry,
         region: row.region,
@@ -257,6 +262,12 @@ export class OrganizationsService implements OnModuleInit {
       certificatePrefix: dto.certificate_prefix,
       certificateSignatoryName: dto.certificate_signatory_name,
       certificateSignatoryTitle: dto.certificate_signatory_title,
+      communityEnabled:
+        dto.community_enabled === undefined
+          ? undefined
+          : dto.community_enabled
+            ? 1
+            : 0,
     });
     return this.getOwnOrganization(scope);
   }

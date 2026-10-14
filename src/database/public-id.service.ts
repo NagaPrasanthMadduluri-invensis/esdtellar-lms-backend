@@ -17,6 +17,7 @@ const PUBLIC_ID_TABLES = {
   sessions: 'sessions',
   organizations: 'organizations',
   certificates: 'certificates',
+  community_posts: 'community_posts',
 } as const;
 
 export type PublicIdTable = keyof typeof PUBLIC_ID_TABLES;

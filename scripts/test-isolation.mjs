@@ -777,6 +777,90 @@ async function main() {
     }
   }
 
+  /* ======================================================================
+     9. Learning community is org-scoped
+
+     A community post is ACTIVITY (orgScope), not content. Every read and
+     write — the learner feed, a direct post read, reply, like, and admin
+     moderation — must be confined to the caller's tenant. The post created
+     here is the fixture the Invensis tenant must fail to reach.
+     ====================================================================== */
+  section('9. Learning community is org-scoped');
+
+  {
+    const created = await api(edLearner, 'POST', '/learner/community', {
+      type: 'discussion',
+      title: `Isolation suite discussion ${RUN_ID}`,
+      body: 'Visible only inside Edstellar.',
+    });
+    check(
+      'community: Edstellar learner creates a post -> 201',
+      created.status === 201,
+      `status=${created.status} body=${JSON.stringify(created.body)}`,
+    );
+    const edPostPublicId = created.body?.post?.id ?? null;
+
+    if (!edPostPublicId) {
+      skip('community cross-tenant checks', 'post was not created, nothing to isolate against');
+    } else {
+      registerCleanup(`community post ${edPostPublicId}`, async () => {
+        // Replies and reactions cascade on this delete (FK ON DELETE CASCADE).
+        await run('DELETE FROM community_posts WHERE public_id = $1', [edPostPublicId]);
+      });
+
+      // Control: the owner's own tenant can read it back.
+      const own = await api(edLearner, 'GET', `/learner/community/${edPostPublicId}`);
+      check('community: owner reads own post -> 200', own.status === 200, `status=${own.status}`);
+
+      // The Invensis learner feed must not contain it.
+      const invFeed = await api(invLearner, 'GET', '/learner/community');
+      const invSees =
+        Array.isArray(invFeed.body?.posts) &&
+        invFeed.body.posts.some((p) => p.id === edPostPublicId);
+      check(
+        'community: Invensis learner feed excludes the Edstellar post',
+        invFeed.status === 200 && !invSees,
+        `status=${invFeed.status} sawForeignPost=${invSees}`,
+      );
+
+      // Direct cross-tenant reads and writes are 404 — never 403, never data.
+      const invRead = await api(invLearner, 'GET', `/learner/community/${edPostPublicId}`);
+      check('community: Invensis learner GET foreign post -> 404', invRead.status === 404, `status=${invRead.status}`);
+
+      const invReply = await api(invLearner, 'POST', `/learner/community/${edPostPublicId}/replies`, { body: 'nope' });
+      check('community: Invensis learner reply to foreign post -> 404', invReply.status === 404, `status=${invReply.status}`);
+
+      const invLike = await api(invLearner, 'POST', `/learner/community/${edPostPublicId}/like`);
+      check('community: Invensis learner like on foreign post -> 404', invLike.status === 404, `status=${invLike.status}`);
+
+      // Admin moderation is org-scoped too.
+      const invAdminFeed = await api(invAdmin, 'GET', '/admin/community');
+      const invAdminSees =
+        Array.isArray(invAdminFeed.body?.posts) &&
+        invAdminFeed.body.posts.some((p) => p.id === edPostPublicId);
+      check(
+        'community: Invensis admin moderation excludes the Edstellar post',
+        invAdminFeed.status === 200 && !invAdminSees,
+        `status=${invAdminFeed.status} sawForeignPost=${invAdminSees}`,
+      );
+
+      const invAdminDelete = await api(invAdmin, 'DELETE', `/admin/community/${edPostPublicId}`);
+      check('community: Invensis admin DELETE foreign post -> 404', invAdminDelete.status === 404, `status=${invAdminDelete.status}`);
+
+      // Control: the Edstellar admin CAN see it, so the 404s above are a
+      // boundary rather than a blanket failure.
+      const edAdminFeed = await api(edAdmin, 'GET', '/admin/community');
+      const edAdminSees =
+        Array.isArray(edAdminFeed.body?.posts) &&
+        edAdminFeed.body.posts.some((p) => p.id === edPostPublicId);
+      check(
+        'community: Edstellar admin moderation includes the Edstellar post',
+        edAdminFeed.status === 200 && edAdminSees,
+        `status=${edAdminFeed.status} sawOwnPost=${edAdminSees}`,
+      );
+    }
+  }
+
   return { countsBefore };
 }
 

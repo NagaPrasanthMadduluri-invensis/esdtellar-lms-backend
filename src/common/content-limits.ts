@@ -22,3 +22,12 @@ export const DESCRIPTION_MAX_LENGTH = 450;
 
 /** The message every description field gives, so they cannot drift apart. */
 export const DESCRIPTION_TOO_LONG = `description must be ${DESCRIPTION_MAX_LENGTH} characters or fewer`;
+
+/**
+ * Learning Community free text. A post body is long-form (a question, a
+ * discussion, an achievement caption), so it is NOT the 450-char description
+ * cap — it has its own, larger limit. Titles stay short. `client/lib/
+ * content-limits.js` mirrors these — change both.
+ */
+export const COMMUNITY_TITLE_MAX = 160;
+export const COMMUNITY_BODY_MAX = 4000;

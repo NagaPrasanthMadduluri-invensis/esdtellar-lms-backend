@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 import {
   CERTIFICATE_PREFIX_MAX,
@@ -96,4 +96,7 @@ export class UpdateOrgSettingsDto {
    */
   @IsOptional() @MaxLength(80) @Transform(nullable) certificate_signatory_name?: string | null;
   @IsOptional() @MaxLength(120) @Transform(nullable) certificate_signatory_title?: string | null;
+
+  /** Learning Community switch (0049). A tenant-level feature toggle. */
+  @IsOptional() @IsBoolean() community_enabled?: boolean;
 }
