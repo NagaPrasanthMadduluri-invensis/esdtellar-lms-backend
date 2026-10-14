@@ -1562,9 +1562,9 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async leaderboard(scope: OrgScope, userId: number) {
-    const { byPoints, byMonth, recognition } = await this.leaderboard_.standings(scope);
+    const { ranked, byMonth, recognition } = await this.leaderboard_.standings(scope);
 
-    const decorate = (e: (typeof byPoints)[number]) => ({
+    const decorate = (e: (typeof ranked)[number]) => ({
       id: e.id,
       name: e.name,
       initials: initialsOf(e.firstName, e.lastName),
@@ -1575,10 +1575,12 @@ export class LearnerService {
       allTimePoints: e.points,
       monthPoints: e.monthPoints,
       badges: e.badges,
+      // The rank basis below the podium (§10.5), so the board can show it.
+      completionPct: e.completionPct,
       isYou: e.id === userId,
     });
 
-    const allLearners = byPoints.map(decorate);
+    const allLearners = ranked.map(decorate);
     const top3 = allLearners.slice(0, 3);
     const podium = [
       top3[1] ? { ...top3[1], podiumPos: 2 } : null,
@@ -1605,7 +1607,7 @@ export class LearnerService {
       allLearners,
       departments: [
         'All Departments',
-        ...new Set(byPoints.map((l) => l.dept).filter(Boolean)),
+        ...new Set(ranked.map((l) => l.dept).filter(Boolean)),
       ].sort((a, b) =>
         a === 'All Departments' ? -1 : b === 'All Departments' ? 1 : a.localeCompare(b),
       ),

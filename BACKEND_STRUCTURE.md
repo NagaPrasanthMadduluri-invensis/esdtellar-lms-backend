@@ -3656,9 +3656,22 @@ only — see §10.5.1 for what an event is.
 `is_active = 1` is filtered (deactivated learners kept competing, while the
 dashboard's own user count already excluded them).
 
-The admin board shows hours and completion as columns but does NOT rank on them
-— it used to rank on a 60/40 blend, so the two boards could disagree about who
-was first. Do not add a second points calculation.
+**The ranking is a hybrid, set by the owner (2026-10-14): the top three stay by
+points, and everyone from rank 4 down is ordered by course completion %.**
+`LeaderboardService.standings` computes it once — sort all by points, keep the
+first three, sort the rest by `completionPct` (points then passes break a tie),
+concatenate, stamp `rank` — and returns it as `ranked`, read by BOTH boards. The
+podium is therefore still a points race (the highest points generally sit at
+~100% completion anyway), while the long tail no longer shows a 0%-complete
+learner above a 27% one. The previous rule said the board did NOT rank on
+completion and warned against a second points calculation; that still holds — the
+points SUM is unchanged and is the top-3 order and the completion tie-break, not a
+parallel calculation. `completionPct` uses the SAME definition as the admin
+analytics column (all lesson completions over the lessons in assigned courses),
+so the number the rank is based on is the one already on screen.
+
+The month board (`byMonth`, Learner of the Month) is unchanged — it is a
+points-per-month race by design, and completion has no monthly form.
 
 ### 10.5.1 The points model: the reference's rules, minus community
 

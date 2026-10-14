@@ -462,7 +462,7 @@ export class AnalyticsService {
    * because they are useful to an admin, but they no longer decide the order.
    */
   async leaderboard(scope: OrgScope) {
-    const [{ byPoints, recognition }, statRows, minutesByUser] = await Promise.all([
+    const [{ ranked: standings, recognition }, statRows, minutesByUser] = await Promise.all([
       this.leaderboard_.standings(scope),
       this.stats(scope),
       this.minutes(scope),
@@ -470,10 +470,11 @@ export class AnalyticsService {
 
     const statsById = new Map(statRows.map((r) => [Number(r.id), r]));
 
-    const ranked = byPoints.map((entry) => {
+    // Order and rank already carry the owner's rule (top 3 by points, the rest
+    // by completion — §10.5). `completionPct` comes from the standings so the
+    // column shown is exactly the one the rank is based on.
+    const ranked = standings.map((entry) => {
       const row = statsById.get(entry.id);
-      const assigned = Number(row?.assigned_lessons ?? 0);
-      const completed = Number(row?.completed_lessons ?? 0);
 
       return {
         id: entry.id,
@@ -482,7 +483,7 @@ export class AnalyticsService {
         job_role: row?.job_role ?? null,
         location: row?.location ?? null,
         rank: entry.rank,
-        // `score` stays the field the table sorts and bars on — it is points now.
+        // `score` stays the field the SCORE column bars on — it is points.
         score: entry.points,
         points: entry.points,
         monthPoints: entry.monthPoints,
@@ -491,7 +492,7 @@ export class AnalyticsService {
         avgScore: entry.avgScore,
         thisMonth: minutesToHours(minutesByUser.get(entry.id)?.thisMonth ?? 0),
         allTime: minutesToHours(minutesByUser.get(entry.id)?.all ?? 0),
-        completionPct: assigned > 0 ? Math.round((completed / assigned) * 100) : 0,
+        completionPct: entry.completionPct,
         assessScore: Number(row?.best_score ?? 0),
       };
     });

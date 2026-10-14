@@ -21,6 +21,8 @@ export interface LeaderboardEntry {
   coursesMonth: number;
   /** Attempts spent per assessment passed. Lower is more efficient. */
   attemptsPerPass: number | null;
+  /** Course completion %, the rank basis below the podium (§10.5). */
+  completionPct: number;
   rank: number;
   monthRank: number;
 }
@@ -58,6 +60,8 @@ export class LeaderboardService {
     const entries: LeaderboardEntry[] = rows.map((row) => {
       const passed = Number(row.passed);
       const attempts = Number(row.attempts);
+      const assigned = Number(row.assigned_lessons);
+      const completed = Number(row.completed_lessons);
       return {
         id: Number(row.id),
         name: `${row.first_name} ${row.last_name}`,
@@ -72,22 +76,40 @@ export class LeaderboardService {
         avgScore: row.avg_score !== null ? Math.round(Number(row.avg_score)) : null,
         coursesMonth: Number(row.courses_month),
         attemptsPerPass: passed > 0 ? attempts / passed : null,
+        completionPct: assigned > 0 ? Math.round((completed / assigned) * 100) : 0,
         rank: 0,
         monthRank: 0,
       };
     });
 
+    /**
+     * The ranking the owner asked for (§10.5): the TOP THREE stay by points —
+     * the podium is still a points race, and the highest points generally sit
+     * at full completion anyway — and EVERYONE FROM RANK 4 DOWN is ordered by
+     * course completion, so a learner at 27% is never shown below one at 0%.
+     * Points then passes break a completion tie.
+     */
     const byPoints = [...entries].sort(
       (a, b) => b.points - a.points || b.badges - a.badges,
     );
-    byPoints.forEach((entry, index) => { entry.rank = index + 1; });
+    const topThree = byPoints.slice(0, 3);
+    const rest = byPoints
+      .slice(3)
+      .sort(
+        (a, b) =>
+          b.completionPct - a.completionPct ||
+          b.points - a.points ||
+          b.badges - a.badges,
+      );
+    const ranked = [...topThree, ...rest];
+    ranked.forEach((entry, index) => { entry.rank = index + 1; });
 
     const byMonth = [...entries].sort(
       (a, b) => b.monthPoints - a.monthPoints || b.badges - a.badges,
     );
     byMonth.forEach((entry, index) => { entry.monthRank = index + 1; });
 
-    return { entries, byPoints, byMonth, recognition: this.recognise(entries, byMonth) };
+    return { entries, ranked, byMonth, recognition: this.recognise(entries, byMonth) };
   }
 
   /**

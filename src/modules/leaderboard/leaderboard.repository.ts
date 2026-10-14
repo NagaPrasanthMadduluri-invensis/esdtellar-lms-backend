@@ -30,6 +30,14 @@ export interface LeaderboardRow {
   /** SUM over `pointEvents` — the only place points are computed. */
   points: number;
   month_points: number;
+  /**
+   * Course completion — the SAME definition the admin analytics column shows
+   * (all lesson completions over the lessons in assigned courses), so ranking
+   * by it matches the % already on screen. The rank is: top 3 by points, then
+   * the rest by this (§10.5).
+   */
+  completed_lessons: number;
+  assigned_lessons: number;
 }
 
 export interface PointEventRow {
@@ -201,6 +209,13 @@ export class LeaderboardRepository {
          JOIN course_modules cm ON cm.id = l.module_id
          WHERE c.user_id = u.id
            AND to_char(c.completed_at, 'YYYY-MM') = ${thisMonth}) AS courses_month,
+        (SELECT COUNT(*) FROM user_lesson_completions c
+         WHERE c.user_id = u.id) AS completed_lessons,
+        (SELECT COUNT(DISTINCT l.id)
+         FROM user_course_assignments uca
+         JOIN course_modules cm ON cm.course_id = uca.course_id
+         JOIN lessons l ON l.module_id = cm.id
+         WHERE uca.user_id = u.id) AS assigned_lessons,
         COALESCE(p.points, 0) AS points,
         COALESCE(p.month_points, 0) AS month_points
       FROM users u
