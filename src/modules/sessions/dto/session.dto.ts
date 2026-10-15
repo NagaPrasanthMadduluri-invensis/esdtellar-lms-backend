@@ -55,7 +55,7 @@ export class SessionDto {
   })
   enroll_mode?: string;
 
-  @IsOptional() @IsIn(['ILT', 'Virtual']) session_type?: 'ILT' | 'Virtual';
+  @IsOptional() @IsIn(['ILT', 'Virtual', 'Webinar']) session_type?: 'ILT' | 'Virtual' | 'Webinar';
 
   /**
    * The session's cover picture, stored on its companion training course —

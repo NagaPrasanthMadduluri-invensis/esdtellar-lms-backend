@@ -1356,6 +1356,10 @@ export class LearnerService {
         sessionStatus: course.session_status ?? null,
         trainer: course.trainer ?? null,
         venue: course.venue_url ?? null,
+        /* When this course is due, so My Progress can surface Deadlines &
+           At-Risk. A session training is due on its sitting date; everything
+           else is assigned_at + DUE_DAYS (the same rule My Courses uses). */
+        dueDate: this.dueDateFor(course),
       };
     });
 
@@ -1391,6 +1395,7 @@ export class LearnerService {
       scormEvents,
       paths,
       hoursByPeriod,
+      certs,
     ] = await Promise.all([
       this.repository.lessonEvents(scope, userId, 5),
       this.repository.assessmentEvents(scope, userId, 5),
@@ -1401,6 +1406,9 @@ export class LearnerService {
          path cannot disagree with the Learning Paths page itself. */
       this.journeys.listForLearner(scope, userId, { limit: 100 }),
       this.hours.learnerHoursTrend(scope, userId),
+      /* Count only — the certificates module owns the definition, so the KPI
+         tile cannot disagree with the Certifications page. */
+      this.certificates.listForLearner(scope, userId),
     ]);
 
     const timeline = [
@@ -1444,6 +1452,9 @@ export class LearnerService {
           : null,
         bestScore: scores.length ? Math.max(...scores) : null,
         allTimeHours,
+        certificates: Array.isArray(certs)
+          ? certs.filter((c) => !c.isRevoked).length
+          : 0,
       },
       courseHistory,
       assessmentPerformance: {

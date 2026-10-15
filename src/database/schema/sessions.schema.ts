@@ -11,7 +11,7 @@ export const sessions = pgTable(
     /** Always a real org — never the platform org (§3.3, §3.4). */
     organizationId: integer('organization_id').notNull(),
     title: text('title').notNull(),
-    sessionType: text('session_type', { enum: ['ILT', 'Virtual'] })
+    sessionType: text('session_type', { enum: ['ILT', 'Virtual', 'Webinar'] })
       .notNull()
       .default('ILT'),
     department: text('department'),

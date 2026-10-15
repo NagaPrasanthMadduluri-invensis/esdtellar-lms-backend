@@ -1253,7 +1253,8 @@ export class SessionsService {
     session: SessionWithCourseRow,
   ): Promise<{ facts: Array<{ label: string; value: string }>; link: string }> {
     const type = typeof session.session_type === 'string' ? session.session_type : null;
-    const isVirtual = type === 'Virtual';
+    // A Webinar is a virtual sitting too — its venue_url is a meeting link.
+    const isVirtual = type === 'Virtual' || type === 'Webinar';
     const venueUrl =
       typeof session.venue_url === 'string' ? session.venue_url.trim() : '';
     const date = typeof session.date === 'string' ? session.date : null;
