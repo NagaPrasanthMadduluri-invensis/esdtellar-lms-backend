@@ -54,6 +54,19 @@ export class AdminRolesController {
     return this.roles.create(scope, dto);
   }
 
+  /**
+   * Create this org's trainer role on demand (idempotent), so an admin can
+   * onboard somebody straight onto the trainer portal from the Add User dialog.
+   * Returns the full role list, like the other role reads. 200, not 201: the
+   * common case is "already exists", and the client only needs the list back.
+   */
+  @Post('roles/trainer')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('manage_roles')
+  async ensureTrainer(@CurrentScope() scope: OrgScope) {
+    return this.roles.ensureTrainerRole(scope);
+  }
+
   @Patch('roles/:id')
   @Permissions('manage_roles')
   async update(

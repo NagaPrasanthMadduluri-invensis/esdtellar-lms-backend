@@ -1990,6 +1990,39 @@ sitting on the trainer portal. An id from another tenant 404s.
 learner-portal. Checking it for a trainer would refuse an account that
 consumes nothing; skipping it for a learner would make the cap decoration.
 
+#### The trainer role is created on demand, from the Add User dialog (2026-10-15)
+
+The Role selector could only offer roles the org already HAD, and the trainer
+role is deliberately not in `SYSTEM_ROLES` — not every org runs its own
+training, so seeding it into all of them puts an empty role in front of every
+admin (`TRAINER_ROLE` in `common/permissions.ts`). So an org that had never
+created one had no Trainer option, and the only ways to make one were
+`scripts/create-org-role.mjs --trainer` over SSH or the roles screen — which is
+§5.2.1's gap seen from onboarding: the trainer PORTAL, the welcome email and the
+seat-free create all worked, and nothing could put the first person on the role.
+
+`POST /api/admin/roles/trainer` (`@Permissions('manage_roles')`, 200) closes it.
+`RolesService.ensureTrainerRole` creates the org's trainer role once, from the
+`TRAINER_ROLE` seed (`is_system = true`, portal `trainer`, its three session
+permissions), and is idempotent — a second call is a no-op returning the current
+list, so the dialog can call it freely. The Add User dropdown offers "Trainer
+(set up now)" only when the org has no trainer role; picking it creates the role,
+reselects it, and the ordinary create path (above) does the rest — portal
+`trainer`, no seat consumed, a welcome email with a set-password link, and the
+trainer portal on next sign-in.
+
+**It does NOT bump `perm_version`.** A brand-new role nobody holds changes no
+existing user's effective permissions, so the org-wide sign-out a bump causes
+(§10.17) would be gratuitous — and it would log the admin out mid-onboarding.
+That is the one way this differs from `create` (which bumps) and from the grant
+migrations `0022`/`0052` (which bump because they add a permission to roles
+people already hold). `repository.create` gained an optional `isSystem` flag
+(default `false`, so every existing caller is unchanged) to seed it as a system
+role. Verified end to end against org 7, which had no trainer role: ensure
+created it with the right shape, was idempotent, a created trainer landed on
+`users.role = 'trainer'` with a welcome row enqueued, and no learner seat was
+consumed.
+
 #### Two holes closed in `RolesService.assign`
 
 Both were reachable before any of this and neither had anything to do with

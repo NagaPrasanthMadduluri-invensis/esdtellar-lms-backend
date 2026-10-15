@@ -192,12 +192,19 @@ export class RolesRepository {
       label: string;
       portal: string;
       scope: string;
+      /**
+       * A custom role from the roles UI is `false`; a seeded system role
+       * (the trainer role, created per org on demand — see
+       * `RolesService.ensureTrainerRole`) is `true`, so it reads and is
+       * protected exactly as the ones `SYSTEM_ROLES` seeds at provisioning.
+       */
+      isSystem?: boolean;
     },
   ): Promise<number> {
     const rows = await this.db.all<{ id: number }>(sql`
       INSERT INTO roles (organization_id, key, label, portal, scope, is_system)
       VALUES (${scope.organizationId}, ${values.key}, ${values.label},
-              ${values.portal}, ${values.scope}, false)
+              ${values.portal}, ${values.scope}, ${values.isSystem ?? false})
       RETURNING id
     `);
     return rows[0].id;

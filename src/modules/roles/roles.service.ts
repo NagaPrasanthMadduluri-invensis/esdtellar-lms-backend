@@ -9,6 +9,7 @@ import {
   filterKnownPermissions,
   isPermission,
   PERMISSION_CATALOGUE,
+  TRAINER_ROLE,
   type Permission,
 } from '@/common/permissions';
 import type { OrgScope } from '@/database/org-scope';
@@ -160,6 +161,40 @@ export class RolesService {
     const permVersion = await this.repository.bumpPermVersion(scope);
 
     return { ...(await this.list(scope)), permVersion };
+  }
+
+  /**
+   * Create this organization's trainer role, once, on demand.
+   *
+   * The trainer role is deliberately NOT in `SYSTEM_ROLES` — seeding it into
+   * every tenant would put an empty role in front of every admin (see
+   * `TRAINER_ROLE` in `common/permissions.ts`). It is created per org when the
+   * admin first needs it, which is exactly when they go to onboard somebody as
+   * a trainer in the Add User dialog. This is the in-product equivalent of
+   * `scripts/create-org-role.mjs --trainer`.
+   *
+   * Idempotent: if a role with the trainer key already exists it is a no-op and
+   * the current list is returned, so the dialog can call it freely.
+   *
+   * It does NOT bump `perm_version`. A brand-new role that nobody holds yet
+   * changes no existing user's effective permissions, so signing the whole
+   * organization out (what a bump does, §10.17) would be gratuitous — and it
+   * would log the admin out in the middle of onboarding the trainer.
+   */
+  async ensureTrainerRole(scope: OrgScope) {
+    if (!(await this.repository.keyExists(scope, TRAINER_ROLE.key))) {
+      const roleId = await this.repository.create(scope, {
+        key: TRAINER_ROLE.key,
+        label: TRAINER_ROLE.label,
+        portal: TRAINER_ROLE.portal,
+        scope: TRAINER_ROLE.scope,
+        isSystem: true,
+      });
+      await this.repository.replacePermissions(scope, roleId, [
+        ...TRAINER_ROLE.permissions,
+      ]);
+    }
+    return this.list(scope);
   }
 
   async update(scope: OrgScope, roleId: number, dto: UpdateRoleDto, actor: { roleId: number | null }) {
