@@ -4129,6 +4129,70 @@ confines links to the app origin — pointing at a public Edstellar page is the
 noted follow-up); linking a conversion to a tenant provisioned in the same step
 (v1 links via the platform respond dialog's org picker instead).
 
+### 10.37 Self-enrolment emails, and the session meeting link (2026-10-15)
+
+Self-enrolment (§10.25) wrote the assignment but, for the learner's own
+confirmation, nothing or the wrong thing. Three gaps, all fixed, plus the
+session emails learned to carry the sitting and the join link.
+
+**Course self-enrol now confirms, and tells the admin.**
+`CoursesService.selfEnrol` fired no notification at all. It now sends the
+learner `course_self_enrolled` (transactional, "you added this yourself" — a
+distinct type from `course_assigned`, which says L&D assigned it) and fires the
+org's admins a bell.
+
+**Session self-enrol was silently excluded from its own confirmation.**
+`addToRoster` notifies `session_enrolled` with `exceptUserId: adminId`, and the
+self-enrol path calls `addToRoster(.., userId, { user_id: userId })` — so the
+enroller WAS the excepted "admin" and got nothing. `selfEnrol` now sends the
+receipt explicitly (and `notifySelfWaitlisted` sends `session_waitlisted` when
+the session is full). Both also fire the admins a bell.
+
+**"Give up my place" now confirms.** `selfLeave` sent nothing; it now sends
+`session_booking_cancelled` (leaving a place, or leaving the queue — one type,
+two bodies), linked to the catalogue so they can rebook.
+
+**The admin bell is ONE type, bell-only.** `self_enrolment` (audience
+`['admin']`, `email: 'none'`) fires to the org's admins whenever a learner
+self-enrols in a course or session, or joins a waitlist. `email: 'none'`
+because self-enrolment can be high-volume and L&D wants it in the bell, not
+filling their inbox — `EmailOutboxService` writes no outbox row for a `'none'`
+policy. The learner's name rides as `actorName`.
+
+#### Session emails carry the sitting and the venue, and the button joins
+
+`SessionsService.sessionLearnerDetails` is the one place a learner's session
+email is described — read by the admin-add, self-enrol and waitlist paths — so
+"booked", "waitlisted" and "self-enrolled" cannot disagree about a sitting. It
+builds the facts panel (Format, Date/Time as `start – end`, each **batch
+sitting** listed when the session runs in sittings, Trainer) and decides the
+place-vs-link rule from `session_type`:
+
+- **Virtual** — `venue_url` is a meeting URL. It is shown as a copyable "Join
+  link" fact AND returned as the email's `link`, so the button JOINS the
+  meeting from the inbox.
+- **In person (ILT)** — `venue_url` is a room. Shown as "Venue"; the button
+  goes to `/my-sessions`.
+
+The meeting-link button is the one place a notification `link` is allowed to be
+an external URL. `EmailRenderService.ctaFor` whitelists exactly
+`session_enrolled` (`SESSION_JOIN_TYPES`) and only when the link is a
+well-formed http(s) URL (`isSafeHttpUrl`); every other type still goes through
+`absoluteUrl`, which confines links to the app origin (§10.30's fan-out guard).
+This is safe because that link is always the admin-set `venue_url`, never
+learner input. The in-app bell was taught to open an external `link` with
+`window.open` (it used `router.push`, which only handles internal routes), so
+the same meeting link works from the bell too.
+
+**No migration and no new table** — the three new learner types and the one
+admin type are catalogue-as-code (`common/notifications.ts`), so a deploy needs
+a **worker restart** (new notification/email catalogue entries) but no schema
+change. Verified end to end against a real tenant (throwaway data, torn down):
+course and session self-enrol each send the learner's email and the admins'
+bell; a virtual enrol's email button is "Join the session" → the meeting URL
+while an in-person one is "See my sessions" → `/my-sessions`; waitlist and
+give-up-place both confirm; and `self_enrolment` writes no outbox row.
+
 ## 11. Adding a new module — checklist
 
 Answer these before writing code:

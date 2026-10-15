@@ -547,7 +547,8 @@ export class CoursesService {
    * No due date: nobody set them a deadline, and inventing one would turn a
    * course somebody chose into a course they are late for.
    */
-  async selfEnrol(scope: OrgScope, courseId: number, userId: number) {
+  async selfEnrol(scope: OrgScope, courseId: number, user: AuthenticatedUser) {
+    const userId = user.userId;
     const course = await this.repository.findById(scope, courseId);
     if (!course) throw new NotFoundException('Course not found');
 
@@ -571,7 +572,75 @@ export class CoursesService {
       dueDate: null,
     });
 
+    // Both channels are best-effort (§8.4) and must not fail the enrolment.
+    void this.notifySelfEnrolCourse(scope, course, user);
+
     return { enrolled: true, already: false, course_id: courseId };
+  }
+
+  /**
+   * Two notifications when a learner adds a course to themselves: a receipt to
+   * the learner, and a bell to the org's admins so L&D can see catalogue
+   * activity. The learner one is transactional email; the admin one is bell
+   * only (email 'none' in the catalogue), because self-enrolment can be
+   * high-volume and L&D wants to see it, not have it fill their inbox.
+   *
+   * Never throws; always `void`-ed (§8.4).
+   */
+  private async notifySelfEnrolCourse(
+    scope: OrgScope,
+    course: { id: number; name: string; category?: string | null },
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    const f = await this.repository.courseEmailFacts(scope, course.id);
+    const facts: Array<{ label: string; value: string }> = [
+      { label: 'How you got it', value: 'You added it from the Course Catalogue' },
+    ];
+    if (course.category) facts.push({ label: 'Category', value: course.category });
+    if (f.lessonCount > 0) {
+      facts.push({
+        label: 'Content',
+        value: f.totalMinutes
+          ? `${f.lessonCount} lesson${f.lessonCount === 1 ? '' : 's'} · about ${Math.round(f.totalMinutes / 6) / 10} hours`
+          : `${f.lessonCount} lesson${f.lessonCount === 1 ? '' : 's'}`,
+      });
+    }
+    facts.push({
+      label: 'Assessment',
+      value: f.assessmentCount > 0
+        ? `Yes — ${f.assessmentCount} to pass before the course counts as complete`
+        : 'None — finishing the lessons completes this course',
+    });
+
+    void this.notifications.notify({
+      userIds: [user.userId],
+      organizationId: scope.organizationId,
+      type: 'course_self_enrolled',
+      title: `You added "${course.name}" to your learning`,
+      subjectName: course.name,
+      body:
+        `"${course.name}" is in My Courses now because you added it from the `
+        + 'catalogue. Your progress and learning hours count from here.',
+      facts,
+      link: '/my-courses',
+      subjectType: 'course',
+      subjectId: course.id,
+      actorName: null,
+    });
+
+    const learnerName = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim() || 'A learner';
+    void this.notifications.notify({
+      userIds: await this.notifications.adminsOf(scope.organizationId),
+      organizationId: scope.organizationId,
+      type: 'self_enrolment',
+      title: `${learnerName} self-enrolled in "${course.name}"`,
+      subjectName: course.name,
+      body: `${learnerName} added "${course.name}" to their learning from the catalogue.`,
+      link: '/admin/courses',
+      subjectType: 'course',
+      subjectId: course.id,
+      actorName: learnerName,
+    });
   }
 
   /**

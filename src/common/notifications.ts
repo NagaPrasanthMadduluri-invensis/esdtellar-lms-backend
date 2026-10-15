@@ -164,6 +164,18 @@ export const NOTIFICATION_TYPES = {
     cta: 'Book my place',
     aspiration: 'Places are limited and are taken in the order people book.',
   },
+  /* Self-enrolment confirmations (the booked-on-a-session one reuses
+     session_enrolled below). These are the "you did this yourself" receipts,
+     transactional because they confirm an action the person just took. */
+  course_self_enrolled: {
+    label: 'You added a course',
+    group: 'learning',
+    icon: 'BookOpen',
+    audience: ['learner'],
+    email: 'transactional',
+    cta: 'Start learning',
+    aspiration: 'It is in My Courses now — your progress and hours count from here.',
+  },
 
   /* ── Recognition ── */
   badge_earned: {
@@ -231,6 +243,24 @@ export const NOTIFICATION_TYPES = {
     audience: ['learner', 'trainer'],
     email: 'transactional',
     cta: 'See my sessions',
+  },
+  session_waitlisted: {
+    label: 'You are on the waitlist',
+    group: 'sessions',
+    icon: 'CalendarClock',
+    audience: ['learner'],
+    email: 'transactional',
+    cta: 'See my sessions',
+    aspiration: 'If a place opens up you move up automatically, in the order people joined.',
+  },
+  session_booking_cancelled: {
+    label: 'You gave up your place',
+    group: 'sessions',
+    icon: 'CalendarX',
+    audience: ['learner'],
+    email: 'transactional',
+    cta: 'Browse the catalogue',
+    aspiration: 'You can book again from the catalogue while places last.',
   },
   /* The one notification in this catalogue that must carry NO actor. Every
      other type names who caused it; naming the author here would undo the
@@ -330,6 +360,18 @@ export const NOTIFICATION_TYPES = {
     audience: ['admin'],
     email: 'transactional',
     cta: 'Manage users',
+  },
+  /* A learner joined a course or session from the catalogue on their own.
+     Bell only (email 'none'): self-enrolment can be high-volume, and L&D wants
+     to SEE it in the bell, not have their inbox filled by it. The body names
+     what was joined; the actor names who. */
+  self_enrolment: {
+    label: 'A learner self-enrolled',
+    group: 'people',
+    icon: 'UserPlus',
+    audience: ['admin'],
+    email: 'none',
+    cta: 'View sessions',
   },
 
   /* ── Commercial, both directions ── */

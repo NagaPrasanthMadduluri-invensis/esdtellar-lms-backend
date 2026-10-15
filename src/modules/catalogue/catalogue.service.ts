@@ -82,14 +82,14 @@ export class CatalogueService {
   }
 
   enrolCourse(scope: OrgScope, courseId: number, user: AuthenticatedUser) {
-    return this.courses.selfEnrol(scope, courseId, user.userId);
+    return this.courses.selfEnrol(scope, courseId, user);
   }
 
   enrolSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {
-    return this.sessions.selfEnrol(scope, sessionId, user.userId);
+    return this.sessions.selfEnrol(scope, sessionId, user);
   }
 
   leaveSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {
-    return this.sessions.selfLeave(scope, sessionId, user.userId);
+    return this.sessions.selfLeave(scope, sessionId, user);
   }
 }

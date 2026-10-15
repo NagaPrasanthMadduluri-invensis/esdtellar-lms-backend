@@ -19,7 +19,11 @@ import type {
 } from './dto/session.dto';
 import { batchDisplayStatus } from '@/common/session-enrolment';
 import { displayStatus } from './session-status.util';
-import { SessionsRepository, type AttendanceRow } from './sessions.repository';
+import {
+  SessionsRepository,
+  type AttendanceRow,
+  type SessionWithCourseRow,
+} from './sessions.repository';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 import { actorLabel } from '@/common/notifications';
 
@@ -576,15 +580,19 @@ export class SessionsService {
     if (added.length === 0) return this.roster(scope, sessionId);
     void (async () => {
       const full = await this.repository.findWithCourse(scope, sessionId);
+      if (!full) return;
+      const { facts, link } = await this.sessionLearnerDetails(scope, full);
       void this.notifications.notify({
         userIds: added,
         organizationId: scope.organizationId,
         type: 'session_enrolled',
-        title: `You are booked on "${full?.title ?? 'a session'}"`,
-        body: [full?.date, full?.start_time, full?.venue]
-          .filter(Boolean)
-          .join(' · ') || 'Check My Courses for the details.',
-        link: '/training-calendar',
+        title: `You are booked on "${full.title ?? 'a session'}"`,
+        subjectName: String(full.title ?? 'a session'),
+        body:
+          `You have a place on "${full.title ?? 'this session'}". The details are `
+          + 'below; your trainer marks attendance, and that is what credits the training.',
+        facts,
+        link,
         subjectType: 'session',
         subjectId: sessionId,
         actorName: 'Your L&D team',
@@ -617,7 +625,8 @@ export class SessionsService {
    * what a full self-enrol session is for, and it already exists (0025); a
    * 409 would send them away with nothing to do.
    */
-  async selfEnrol(scope: OrgScope, sessionId: number, userId: number) {
+  async selfEnrol(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {
+    const userId = user.userId;
     const session = await this.repository.findWithCourse(scope, sessionId);
     if (!session) throw new NotFoundException('Session not found');
 
@@ -646,11 +655,74 @@ export class SessionsService {
       const position =
         (await this.repository.addToWaitlist(scope, sessionId, userId)) ??
         (await this.repository.waitlistPosition(scope, sessionId, userId));
+      void this.notifySelfWaitlisted(scope, session, user, position);
       return { state: 'waitlisted' as const, already: false, position };
     }
 
+    // addToRoster's own notify EXCLUDES the person it was told is the "admin",
+    // which here is the learner themselves — so it sends them nothing, and the
+    // self-enrol receipt is sent explicitly below with its own wording.
     await this.addToRoster(scope, sessionId, userId, { user_id: userId });
+    void this.notifySelfEnrolledSession(scope, session, user);
     return { state: 'enrolled' as const, already: false, position: null };
+  }
+
+  /** Receipt to a learner who booked themselves, plus the admin bell. §8.4. */
+  private async notifySelfEnrolledSession(
+    scope: OrgScope,
+    session: SessionWithCourseRow,
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    const title = String(session.title ?? 'a session');
+    const { facts, link } = await this.sessionLearnerDetails(scope, session);
+    void this.notifications.notify({
+      userIds: [user.userId],
+      organizationId: scope.organizationId,
+      type: 'session_enrolled',
+      title: `You booked a place on "${title}"`,
+      subjectName: title,
+      body:
+        `You booked yourself onto "${title}" from the catalogue. The details are `
+        + 'below; your trainer marks attendance, and that is what credits the training.',
+      facts,
+      link,
+      subjectType: 'session',
+      subjectId: Number(session.id),
+      actorName: null,
+    });
+    void this.notifyAdminSelfEnrol(scope, session, user, 'booked a place on');
+  }
+
+  /** Receipt to a learner who joined the waitlist, plus the admin bell. §8.4. */
+  private async notifySelfWaitlisted(
+    scope: OrgScope,
+    session: SessionWithCourseRow,
+    user: AuthenticatedUser,
+    position: number | null,
+  ): Promise<void> {
+    const title = String(session.title ?? 'a session');
+    const { facts } = await this.sessionLearnerDetails(scope, session);
+    const posFacts = position
+      ? [{ label: 'Your position', value: `#${position} in the queue` }, ...facts]
+      : facts;
+    void this.notifications.notify({
+      userIds: [user.userId],
+      organizationId: scope.organizationId,
+      type: 'session_waitlisted',
+      title: `You are on the waitlist for "${title}"`,
+      subjectName: title,
+      body:
+        `"${title}" is full, so you are on the waitlist. If a place opens up you `
+        + 'move up automatically, in the order people joined, and you will be told.',
+      facts: posFacts,
+      // The waitlist is managed from My Sessions; never the meeting link, since
+      // they do not have a place yet.
+      link: '/my-sessions',
+      subjectType: 'session',
+      subjectId: Number(session.id),
+      actorName: null,
+    });
+    void this.notifyAdminSelfEnrol(scope, session, user, 'joined the waitlist for');
   }
 
   /**
@@ -667,7 +739,8 @@ export class SessionsService {
    * and no admin in the loop; an admin can still unassign from the roster
    * screen, knowing what it costs.
    */
-  async selfLeave(scope: OrgScope, sessionId: number, userId: number) {
+  async selfLeave(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {
+    const userId = user.userId;
     const session = await this.repository.findStatus(scope, sessionId);
     if (!session) throw new NotFoundException('Session not found');
 
@@ -679,6 +752,7 @@ export class SessionsService {
       userId,
     );
     if (removedFromQueue > 0) {
+      void this.notifySelfLeft(scope, sessionId, user, 'waitlisted');
       return { state: 'left' as const, was: 'waitlisted' as const };
     }
 
@@ -700,7 +774,46 @@ export class SessionsService {
     }
 
     await this.removeFromRoster(scope, sessionId, userId);
+    void this.notifySelfLeft(scope, sessionId, user, 'enrolled');
     return { state: 'left' as const, was: 'enrolled' as const };
+  }
+
+  /**
+   * Confirms to a learner that they gave up their place (or left the queue).
+   * Never throws; always `void`-ed (§8.4). The confirmation matters because
+   * leaving is irreversible once a place is given up — somebody who clicked by
+   * mistake needs to see it happened and that they can book again.
+   */
+  private async notifySelfLeft(
+    scope: OrgScope,
+    sessionId: number,
+    user: AuthenticatedUser,
+    was: 'enrolled' | 'waitlisted',
+  ): Promise<void> {
+    const session = await this.repository.findWithCourse(scope, sessionId);
+    if (!session) return;
+    const title = String(session.title ?? 'a session');
+    const body =
+      was === 'waitlisted'
+        ? `You left the waitlist for "${title}". You can join it again from the `
+          + 'catalogue while the session is open.'
+        : `You gave up your place on "${title}", so you are no longer booked. You `
+          + 'can book again from the catalogue while places last.';
+    void this.notifications.notify({
+      userIds: [user.userId],
+      organizationId: scope.organizationId,
+      type: 'session_booking_cancelled',
+      title:
+        was === 'waitlisted'
+          ? `You left the waitlist for "${title}"`
+          : `You gave up your place on "${title}"`,
+      subjectName: title,
+      body,
+      link: '/catalogue',
+      subjectType: 'session',
+      subjectId: sessionId,
+      actorName: null,
+    });
   }
 
   async removeFromRoster(scope: OrgScope, sessionId: number, userId: number) {
@@ -1121,6 +1234,97 @@ export class SessionsService {
    * and the sentence that says so is not the sentence that says a course can
    * be started now.
    */
+  /**
+   * The facts panel and the email CTA target for a learner's session email.
+   *
+   * One place, so "booked", "waitlisted" and "self-enrolled" all describe the
+   * sitting the same way and the place-vs-meeting-link rule is decided once.
+   *
+   * `venue_url` is a ROOM for an in-person (ILT) session and a MEETING URL for
+   * a Virtual one (schema: sessions.venue_url). So a Virtual session shows the
+   * URL as a copyable "Join link" fact AND returns it as `link` so the email's
+   * button joins the meeting (the one external-link exception, vetted in
+   * `EmailRenderService.ctaFor`). An in-person session shows the room as
+   * "Venue" and the button goes to My Sessions. Batches (sittings) are listed
+   * so a learner who self-enrolled without picking one still sees the dates.
+   */
+  private async sessionLearnerDetails(
+    scope: OrgScope,
+    session: SessionWithCourseRow,
+  ): Promise<{ facts: Array<{ label: string; value: string }>; link: string }> {
+    const type = typeof session.session_type === 'string' ? session.session_type : null;
+    const isVirtual = type === 'Virtual';
+    const venueUrl =
+      typeof session.venue_url === 'string' ? session.venue_url.trim() : '';
+    const date = typeof session.date === 'string' ? session.date : null;
+    const start = typeof session.start_time === 'string' ? session.start_time : null;
+    const end = typeof session.end_time === 'string' ? session.end_time : null;
+    const timeText = start ? (end ? `${start} – ${end}` : start) : null;
+
+    const facts: Array<{ label: string; value: string }> = [];
+    if (type) facts.push({ label: 'Format', value: isVirtual ? 'Virtual' : 'In person' });
+
+    const batches = await this.repository.listBatchesForSessions(scope, [
+      Number(session.id),
+    ]);
+    if (batches.length > 0) {
+      // Run in sittings — list each, because self-enrolment does not pick one
+      // and the learner needs to know which dates are available.
+      for (const b of batches) {
+        const label = b.label || `Sitting ${b.batch_no}`;
+        const when = [
+          b.date ? cancelDate(b.date) : 'date to be confirmed',
+          b.start_time
+            ? b.end_time
+              ? `${b.start_time} – ${b.end_time}`
+              : b.start_time
+            : null,
+        ]
+          .filter(Boolean)
+          .join(', ');
+        facts.push({ label, value: when || 'date to be confirmed' });
+      }
+    } else {
+      if (date) facts.push({ label: 'Date', value: cancelDate(date) });
+      if (timeText) facts.push({ label: 'Time', value: timeText });
+    }
+
+    if (isVirtual && venueUrl) {
+      facts.push({ label: 'Join link', value: venueUrl });
+    } else if (!isVirtual && venueUrl) {
+      facts.push({ label: 'Venue', value: venueUrl });
+    }
+    if (session.trainer) facts.push({ label: 'Trainer', value: String(session.trainer) });
+
+    // The button joins the meeting for a virtual session (the URL is vetted in
+    // the renderer); everything else points at My Sessions.
+    const link = isVirtual && /^https?:\/\//i.test(venueUrl) ? venueUrl : '/my-sessions';
+    return { facts, link };
+  }
+
+  /** Bell for the org's admins when a learner self-enrols (course or session). */
+  private async notifyAdminSelfEnrol(
+    scope: OrgScope,
+    session: SessionWithCourseRow,
+    user: AuthenticatedUser,
+    what: 'booked a place on' | 'joined the waitlist for',
+  ): Promise<void> {
+    const name = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim() || 'A learner';
+    const title = String(session.title ?? 'a session');
+    void this.notifications.notify({
+      userIds: await this.notifications.adminsOf(scope.organizationId),
+      organizationId: scope.organizationId,
+      type: 'self_enrolment',
+      title: `${name} ${what} "${title}"`,
+      subjectName: title,
+      body: `${name} ${what} "${title}" from the catalogue.`,
+      link: '/admin/sessions',
+      subjectType: 'session',
+      subjectId: Number(session.id),
+      actorName: name,
+    });
+  }
+
   private async announceOpenSession(
     scope: OrgScope,
     session: {

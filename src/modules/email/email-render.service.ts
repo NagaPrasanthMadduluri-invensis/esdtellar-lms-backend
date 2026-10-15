@@ -17,6 +17,24 @@ function typeDef(type: string) {
     label: string; cta: string; aspiration?: string;
   }>)[type];
 }
+
+/**
+ * The notification types whose `link` is allowed to be a trusted EXTERNAL URL
+ * (a virtual session's meeting link), so the email button joins the meeting.
+ * See the exception documented in `ctaFor`.
+ */
+const SESSION_JOIN_TYPES = new Set<string>(['session_enrolled']);
+
+/** A well-formed http(s) URL, used to vet a meeting link before it becomes a CTA. */
+function isSafeHttpUrl(value: string | null | undefined): value is string {
+  if (!value) return false;
+  try {
+    const u = new URL(value);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && Boolean(u.host);
+  } catch {
+    return false;
+  }
+}
 import { createUnsubscribeToken } from './unsubscribe-token';
 import type { OutboxRow } from './email-outbox.repository';
 import type { OutgoingMail } from './mailer/mailer.interface';
@@ -249,6 +267,21 @@ export class EmailRenderService {
         : undefined;
     }
     if (!row.link) return undefined;
+    /*
+     * Session-join exception to the origin confinement in `absoluteUrl`.
+     *
+     * A virtual session's `venue_url` is a meeting URL (Zoom/Teams/Meet), set
+     * by the org's L&D when they create the session — never by a learner. For
+     * the "you are booked" email the owner wants that to BE the button, so a
+     * learner joins from the inbox. `absoluteUrl` would strip it to the origin
+     * (that guard exists for links that could be attacker-controlled in a
+     * fan-out). This is the one type whose link is a trusted external URL, so
+     * it is the one type allowed through — and only when it is a well-formed
+     * http(s) URL. Every other type still goes through `absoluteUrl`.
+     */
+    if (SESSION_JOIN_TYPES.has(row.type) && isSafeHttpUrl(row.link)) {
+      return { label: 'Join the session', url: row.link };
+    }
     /*
      * The button's words come from the TYPE, not the group.
      *
