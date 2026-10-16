@@ -612,6 +612,7 @@ Update this table with every module you move.
 | scheduled reminders (`course_due_soon`) — cron, no HTTP | 0 | `server/src/modules/reminders` |
 | learning community (learner feed/compose/reply/like; admin moderation) | 12 | `server/src/modules/community` |
 | referrals (tenant files/reads; platform queue + convert) | 6 | `server/src/modules/referrals` |
+| direct messages (learner inbox, thread, send, unread) | 4 | `server/src/modules/messages` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -1863,6 +1864,33 @@ final score stays off all three, on the owner's earlier instruction.
 
 A session certificate is still issued only by hand (`issueManually`),
 because auto-issue refuses session trainings (§10.7).
+
+The printable document (`client/components/learner/certificate-print-view.jsx`)
+was rebuilt to the owner's reference `openCert` HTML on 2026-10-16 — its gold
+seal above the signature is the one element it had lacked — while keeping the
+TENANT's branding and signatory rather than the reference's hardcoded Edstellar
+wordmark and CEO, for exactly the reason this section gives. The three `kind`
+values and everything the API decides are unchanged; this was a client-only
+visual change, no migration, no new field.
+
+#### Backfilling the certificates completion already earned
+
+`scripts/backfill-certificates.mjs` issues the certificates that completion
+should already have produced but did not — `autoIssue` fires once, at
+lesson-complete, with no scheduler or retry (§10.23), so a course finished
+before the platform-course scope fix, a path completed before §10.11 wired
+`issueForJourney`, or history written straight into the tables all leave a
+completion with no certificate and nothing to mint one. It re-uses the ONE
+completion definition (`evaluate` over `getCompletionSnapshot`, inlined as SQL):
+every active lesson done, the assessment passed if there is one. It will not
+touch a session training (§10.7), an approved external certification (§10.26),
+or any (user, course|journey) that already holds a certificate — revoked or
+not — and the learner's org owns the row, so a shared course finished in another
+tenant does not leak one here. It does NOT notify or email: these are historical
+completions. Dry-run by default, `--commit` to apply, `--org=` to scope — the
+same convention as the other data scripts (§10.6). A path cert needs
+`course_id` nullable (`migrate-journey-certificates.mjs`); the script says so
+rather than failing on the INSERT.
 
 #### A new migration is not copied into dist by watch mode
 
@@ -3705,6 +3733,17 @@ so the number the rank is based on is the one already on screen.
 
 The month board (`byMonth`, Learner of the Month) is unchanged — it is a
 points-per-month race by design, and completion has no monthly form.
+
+**`LeaderboardEntry` carries `avatarUrl` (standings selects `u.avatar_url`),
+and the learner dashboard reuses `standings` for two Home cards** rather than
+querying anew: `cohort_leaderboard` is the TOP 3 of `ranked` plus the caller's
+own `{rank, points}` line, and `learning_with_you` comes from
+`LearnerRepository.coEnrolledPeers` — other active learners org-scoped to the
+caller who share a course assignment (session trainings and external-cert
+courses excluded, one shared course per peer via DISTINCT ON). Both are
+additive fields on `GET /learner/dashboard`; no new endpoint, no migration. The
+client renders them in `dashboard-cohort-peers.jsx` and deliberately drops the
+reference's per-peer "Say hi" (no messaging backend — §5.2.1's screen that lies).
 
 ### 10.5.1 The points model: the reference's rules, minus community
 

@@ -21,6 +21,8 @@ export interface LeaderboardRow {
   first_name: string;
   last_name: string;
   department: string | null;
+  /** Profile picture path (0047), or null. */
+  avatar_url: string | null;
   /** DISTINCT assessments passed — not attempts. */
   passed: number;
   /** Every attempt, passing or not — the denominator for efficiency. */
@@ -196,7 +198,7 @@ export class LeaderboardRepository {
     thisMonth: string,
   ): Promise<LeaderboardRow[]> {
     return this.db.all<LeaderboardRow>(sql`
-      SELECT u.id, u.first_name, u.last_name, u.department,
+      SELECT u.id, u.first_name, u.last_name, u.department, u.avatar_url,
         (SELECT COUNT(DISTINCT t.assessment_id) FROM user_assessment_attempts t
          WHERE t.user_id = u.id AND t.is_passed = 1) AS passed,
         (SELECT COUNT(*) FROM user_assessment_attempts t

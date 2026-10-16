@@ -12,6 +12,8 @@ export interface LeaderboardEntry {
   firstName: string;
   lastName: string;
   dept: string;
+  /** Profile picture path (0047), or null — the podium/peers show a photo. */
+  avatarUrl: string | null;
   points: number;
   monthPoints: number;
   /** Distinct assessments passed. */
@@ -68,6 +70,7 @@ export class LeaderboardService {
         firstName: row.first_name,
         lastName: row.last_name,
         dept: row.department || 'Unknown',
+        avatarUrl: row.avatar_url ?? null,
         // Summed in SQL from `pointEvents` — never recomputed here.
         points: Number(row.points),
         monthPoints: Number(row.month_points),

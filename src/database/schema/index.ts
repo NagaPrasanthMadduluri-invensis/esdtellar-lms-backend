@@ -44,6 +44,9 @@ export * from './course-feedback.schema';
 export * from './external-certifications.schema';
 export * from './community.schema';
 
+/** Two-way direct messages between people in one org (0054). */
+export * from './direct-messages.schema';
+
 /** The email outbox, suppressions, preferences and reset tokens (0037). */
 export * from './email.schema';
 export * from './audit.schema';

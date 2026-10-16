@@ -31,3 +31,11 @@ export const DESCRIPTION_TOO_LONG = `description must be ${DESCRIPTION_MAX_LENGT
  */
 export const COMMUNITY_TITLE_MAX = 160;
 export const COMMUNITY_BODY_MAX = 4000;
+
+/**
+ * A direct message between two people. Shorter than a community post — a DM is
+ * a line or two, not an essay — but longer than a card description. Its column
+ * is `text`, same reasoning as the others. `client/lib/content-limits.js`
+ * mirrors it — change both.
+ */
+export const MESSAGE_MAX_LENGTH = 2000;

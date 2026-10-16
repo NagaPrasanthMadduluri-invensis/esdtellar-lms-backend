@@ -624,13 +624,14 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async dashboard(scope: OrgScope, userId: number) {
-    const [rows, standings, lessonMinutes, scormBuckets, attempts] =
+    const [rows, standings, lessonMinutes, scormBuckets, attempts, peers] =
       await Promise.all([
         this.repository.assignedCourses(scope, userId),
         this.leaderboard_.standings(scope),
         this.hours.lessonMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
         this.hours.scormMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
         this.repository.recentAttempts(scope, userId, 5),
+        this.repository.coEnrolledPeers(scope, userId, 6),
       ]);
 
     const rewardOf = this.rewardMapper(rows);
@@ -672,6 +673,41 @@ export class LearnerService {
     const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
     const points = myStanding?.points ?? 0;
     const rank = myStanding?.rank ?? standings.entries.length + 1;
+
+    // Cohort leaderboard podium (Home) — the TOP 3 of the same `ranked`
+    // standings the leaderboard page shows, so the two can never disagree,
+    // plus the learner's own line for the "You" context when they are not in
+    // the top 3. A peer is named FIRST NAME + LAST INITIAL (the §10.24 reviews
+    // relaxation): enough to recognise a colleague, never a full directory.
+    const shortName = (first: string, last: string) =>
+      `${first ?? ''}${last ? ` ${last.charAt(0)}.` : ''}`.trim();
+    const cohortLeaderboard = {
+      podium: standings.ranked.slice(0, 3).map((e) => ({
+        id: e.id,
+        name: shortName(e.firstName, e.lastName),
+        points: e.points,
+        rank: e.rank,
+        is_you: e.id === userId,
+        avatar_url: e.avatarUrl,
+      })),
+      me: myStanding
+        ? {
+            rank,
+            points,
+            name: shortName(myStanding.firstName, myStanding.lastName),
+            in_top3: rank <= 3,
+          }
+        : null,
+      total: standings.entries.length,
+    };
+
+    // "Learning with you" — peers assigned to a course this learner also has.
+    const learningWithYou = peers.map((p) => ({
+      id: Number(p.id),
+      name: shortName(p.first_name, p.last_name),
+      course_name: p.course_name,
+      avatar_url: p.avatar_url ?? null,
+    }));
 
     const minutes = lessonMinutes.find((row) => Number(row.user_id) === userId);
     const scorm = scormBuckets.get(userId);
@@ -785,6 +821,8 @@ export class LearnerService {
       rank,
       rank_of: standings.entries.length,
       badges: earnedBadgeCount,
+      cohort_leaderboard: cohortLeaderboard,
+      learning_with_you: learningWithYou,
       skill_tags: skillTags(enrolled.map((c) => c.course.name)).slice(0, 5),
       // Prefer the course most recently worked on; if nothing is in progress,
       // fall back to the next assigned course to start (earliest due) rather

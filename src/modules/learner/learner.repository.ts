@@ -221,6 +221,47 @@ export class LearnerRepository {
   }
 
   /**
+   * Other learners assigned to a course this learner is also assigned to —
+   * the dashboard's "Learning with you" peers.
+   *
+   * One shared course per peer (the most recently assigned of the shared
+   * ones, via DISTINCT ON), then the peers ordered by that recency and
+   * capped. Session companion trainings (§10.7) and external-certification
+   * courses (§10.26) are excluded, the same way every other course surface
+   * excludes them — "the same course" means a real course, not a sitting.
+   * The peer is org-scoped (`u`), so this never names another tenant's people.
+   */
+  async coEnrolledPeers(scope: OrgScope, userId: number, limit: number) {
+    return this.db.all<{
+      id: number;
+      first_name: string;
+      last_name: string;
+      avatar_url: string | null;
+      course_name: string;
+    }>(sql`
+      SELECT p.id, p.first_name, p.last_name, p.avatar_url, p.course_name
+      FROM (
+        SELECT DISTINCT ON (u.id)
+               u.id, u.first_name, u.last_name, u.avatar_url,
+               c.name AS course_name, mine.assigned_at AS shared_at
+        FROM user_course_assignments mine
+        JOIN user_course_assignments theirs
+          ON theirs.course_id = mine.course_id AND theirs.user_id <> mine.user_id
+        JOIN users u
+          ON u.id = theirs.user_id AND u.role = 'learner' AND u.is_active = 1
+        JOIN courses c ON c.id = mine.course_id
+        WHERE mine.user_id = ${userId}
+          AND c.session_id IS NULL
+          AND c.external_certification_id IS NULL
+          AND ${orgScope('u', scope)}
+        ORDER BY u.id, mine.assigned_at DESC
+      ) p
+      ORDER BY p.shared_at DESC
+      LIMIT ${limit}
+    `);
+  }
+
+  /**
    * The content types each of this learner's courses actually contains.
    *
    * Replaces a hard-coded map that covered course ids 1-4 and asserted things

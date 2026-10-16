@@ -475,6 +475,19 @@ export const NOTIFICATION_TYPES = {
     email: 'none',
     cta: 'Open the community',
   },
+  /* ── Direct messages ── */
+  // `email: 'none'` on purpose: a DM is read where it was sent (the Messages
+  // page, whose unread count surfaces it), and emailing every message would
+  // turn a conversation into an inbox flood. The bell is the ping.
+  direct_message: {
+    label: 'New message',
+    group: 'people',
+    icon: 'MessageSquare',
+    audience: ['learner'],
+    email: 'none',
+    cta: 'Open messages',
+    aspiration: 'Someone on your learning sent you a message.',
+  },
 } as const satisfies Record<string, NotificationTypeDef>;
 
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;
