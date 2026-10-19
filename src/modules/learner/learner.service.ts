@@ -624,7 +624,7 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async dashboard(scope: OrgScope, userId: number) {
-    const [rows, standings, lessonMinutes, scormBuckets, attempts, peers] =
+    const [rows, standings, lessonMinutes, scormBuckets, attempts, peers, activityDays, certList] =
       await Promise.all([
         this.repository.assignedCourses(scope, userId),
         this.leaderboard_.standings(scope),
@@ -632,6 +632,8 @@ export class LearnerService {
         this.hours.scormMinutes(scope, currentMonthKey(), previousMonthKey(), monthWeeks()),
         this.repository.recentAttempts(scope, userId, 5),
         this.repository.coEnrolledPeers(scope, userId, 6),
+        this.repository.activityDates(scope, userId, 60),
+        this.certificates.listForLearner(scope, userId),
       ]);
 
     const rewardOf = this.rewardMapper(rows);
@@ -708,6 +710,36 @@ export class LearnerService {
       course_name: p.course_name,
       avatar_url: p.avatar_url ?? null,
     }));
+
+    // Learning streak — consecutive LOCAL days with a completion or an attempt,
+    // ending today or yesterday (a streak is not broken until a full day is
+    // missed, so it survives a day you have not studied YET). Real activity
+    // dates, not a fabricated counter.
+    const activeDays = new Set(activityDays.map((d) => String(d.day).slice(0, 10)));
+    const dayStr = (date: Date) => date.toISOString().slice(0, 10);
+    const cursor = new Date();
+    if (!activeDays.has(dayStr(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+    let streak = 0;
+    while (activeDays.has(dayStr(cursor))) {
+      streak += 1;
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
+
+    // Certificates the learner holds (non-revoked), newest first — the Home tile.
+    const earnedCerts = (Array.isArray(certList) ? certList : [])
+      .filter((c) => !c.isRevoked)
+      .sort((a, b) => String(b.issuedAt).localeCompare(String(a.issuedAt)));
+    const certificatesSummary = {
+      count: earnedCerts.length,
+      latest: earnedCerts[0]
+        ? {
+            name: earnedCerts[0].courseName ?? earnedCerts[0].journeyName ?? 'Certificate',
+            issued_at: earnedCerts[0].issuedAt,
+          }
+        : null,
+    };
+
+    const pointsThisMonth = myStanding?.monthPoints ?? 0;
 
     const minutes = lessonMinutes.find((row) => Number(row.user_id) === userId);
     const scorm = scormBuckets.get(userId);
@@ -823,6 +855,9 @@ export class LearnerService {
       badges: earnedBadgeCount,
       cohort_leaderboard: cohortLeaderboard,
       learning_with_you: learningWithYou,
+      streak,
+      certificates: certificatesSummary,
+      points_this_month: pointsThisMonth,
       skill_tags: skillTags(enrolled.map((c) => c.course.name)).slice(0, 5),
       // Prefer the course most recently worked on; if nothing is in progress,
       // fall back to the next assigned course to start (earliest due) rather

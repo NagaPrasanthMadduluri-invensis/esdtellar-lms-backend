@@ -231,6 +231,29 @@ export class LearnerRepository {
    * excludes them — "the same course" means a real course, not a sitting.
    * The peer is org-scoped (`u`), so this never names another tenant's people.
    */
+  /**
+   * The distinct LOCAL days this learner did something — a lesson completion or
+   * an assessment attempt — within the window, newest first. The service folds
+   * them into a consecutive-day streak. ISTtimestamps are grouped in SQL by the
+   * server's date; the window keeps it to one small scan.
+   */
+  async activityDates(scope: OrgScope, userId: number, sinceDays: number) {
+    return this.db.all<{ day: string }>(sql`
+      SELECT DISTINCT day FROM (
+        SELECT (c.completed_at)::date AS day
+        FROM user_lesson_completions c
+        WHERE c.user_id = ${userId} AND ${orgScope('c', scope)}
+          AND c.completed_at >= now() - (${sinceDays} || ' days')::interval
+        UNION
+        SELECT (a.submitted_at)::date AS day
+        FROM user_assessment_attempts a
+        WHERE a.user_id = ${userId} AND ${orgScope('a', scope)}
+          AND a.submitted_at >= now() - (${sinceDays} || ' days')::interval
+      ) d
+      ORDER BY day DESC
+    `);
+  }
+
   async coEnrolledPeers(scope: OrgScope, userId: number, limit: number) {
     return this.db.all<{
       id: number;

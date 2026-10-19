@@ -3756,6 +3756,15 @@ and the conversation list; the browser renders what it is sent and never decides
 who is online. A hardcoded dot would be the screen that lies (§5.2.1) — this is
 backed by a real column.
 
+**`GET /learner/dashboard` also gained `streak`, `certificates` and
+`points_this_month`** for the Home "at a glance" tiles — additive, no new
+endpoint. `streak` is the consecutive-local-day count from
+`LearnerRepository.activityDates` (distinct days with a lesson completion or an
+assessment attempt, `submitted_at` on attempts — NOT `created_at`, which that
+table lacks); `certificates` is `{count, latest}` reused from
+`CertificatesService.listForLearner`; `points_this_month` is the standings'
+`monthPoints`. The streak is real activity, never a fabricated counter.
+
 ### 10.5.1 The points model: the reference's rules, minus community
 
 `modules/leaderboard/points.ts` holds the numbers and the readable catalogue
