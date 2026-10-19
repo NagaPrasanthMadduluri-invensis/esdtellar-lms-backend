@@ -3720,8 +3720,18 @@ dashboard's own user count already excluded them).
 **The ranking is a hybrid, set by the owner (2026-10-14): the top three stay by
 points, and everyone from rank 4 down is ordered by course completion %.**
 `LeaderboardService.standings` computes it once — sort all by points, keep the
-first three, sort the rest by `completionPct` (points then passes break a tie),
-concatenate, stamp `rank` — and returns it as `ranked`, read by BOTH boards. The
+first three, sort the rest by `completionPct`, concatenate, stamp `rank` — and
+returns it as `ranked`, read by BOTH boards.
+
+**A points tie is broken by who EARNED it first (2026-10-19), then by passes.**
+Before this, a points tie fell through to assessments-passed and then to raw DB
+order, so two learners on the same points (e.g. both at 390, both with one
+assessment passed) ranked arbitrarily — one with lower completion could sit
+above one with higher. The tiebreak is now `lastEarnedAt` (the MAX `earned_at`
+over their point events): the earlier finisher wins, which is deterministic and
+matches what a reader expects. It applies to the podium AND the rest, and the
+client re-derivation for the dept filter mirrors it (the API sends
+`lastEarnedAt` per learner, used only for the sort, never displayed). The
 podium is therefore still a points race (the highest points generally sit at
 ~100% completion anyway), while the long tail no longer shows a 0%-complete
 learner above a 27% one. The previous rule said the board did NOT rank on

@@ -1661,6 +1661,9 @@ export class LearnerService {
       badges: e.badges,
       // The rank basis below the podium (§10.5), so the board can show it.
       completionPct: e.completionPct,
+      // Not displayed — the client re-ranks the dept-filtered view and breaks a
+      // points tie by who earned it first, matching the server (§10.5).
+      lastEarnedAt: e.lastEarnedAt,
       isYou: e.id === userId,
     });
 

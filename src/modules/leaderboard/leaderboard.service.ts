@@ -14,6 +14,8 @@ export interface LeaderboardEntry {
   dept: string;
   /** Profile picture path (0047), or null — the podium/peers show a photo. */
   avatarUrl: string | null;
+  /** When they last earned points; the earlier finisher wins a points tie. */
+  lastEarnedAt: string | null;
   points: number;
   monthPoints: number;
   /** Distinct assessments passed. */
@@ -71,6 +73,7 @@ export class LeaderboardService {
         lastName: row.last_name,
         dept: row.department || 'Unknown',
         avatarUrl: row.avatar_url ?? null,
+        lastEarnedAt: row.last_earned_at ?? null,
         // Summed in SQL from `pointEvents` — never recomputed here.
         points: Number(row.points),
         monthPoints: Number(row.month_points),
@@ -92,8 +95,18 @@ export class LeaderboardService {
      * course completion, so a learner at 27% is never shown below one at 0%.
      * Points then passes break a completion tie.
      */
+    // A points tie is broken in favour of whoever EARNED it first — the
+    // earlier last-point-event wins; someone with no points sorts last. This is
+    // the only sensible tiebreaker when points (and often assessments passed)
+    // are equal, so the podium order is deterministic rather than DB-order.
+    const earnedFirst = (a: LeaderboardEntry, b: LeaderboardEntry) => {
+      if (a.lastEarnedAt === b.lastEarnedAt) return 0;
+      if (a.lastEarnedAt === null) return 1;
+      if (b.lastEarnedAt === null) return -1;
+      return a.lastEarnedAt < b.lastEarnedAt ? -1 : 1;
+    };
     const byPoints = [...entries].sort(
-      (a, b) => b.points - a.points || b.badges - a.badges,
+      (a, b) => b.points - a.points || earnedFirst(a, b) || b.badges - a.badges,
     );
     const topThree = byPoints.slice(0, 3);
     const rest = byPoints
@@ -102,6 +115,7 @@ export class LeaderboardService {
         (a, b) =>
           b.completionPct - a.completionPct ||
           b.points - a.points ||
+          earnedFirst(a, b) ||
           b.badges - a.badges,
       );
     const ranked = [...topThree, ...rest];

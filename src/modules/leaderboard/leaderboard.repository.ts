@@ -32,6 +32,8 @@ export interface LeaderboardRow {
   /** SUM over `pointEvents` — the only place points are computed. */
   points: number;
   month_points: number;
+  /** When they last earned points — the earlier finisher wins a points tie. */
+  last_earned_at: string | null;
   /**
    * Course completion — the SAME definition the admin analytics column shows
    * (all lesson completions over the lessons in assigned courses), so ranking
@@ -219,13 +221,17 @@ export class LeaderboardRepository {
          JOIN lessons l ON l.module_id = cm.id
          WHERE uca.user_id = u.id) AS assigned_lessons,
         COALESCE(p.points, 0) AS points,
-        COALESCE(p.month_points, 0) AS month_points
+        COALESCE(p.month_points, 0) AS month_points,
+        p.last_earned_at AS last_earned_at
       FROM users u
       LEFT JOIN (
         SELECT ev.user_id,
                SUM(ev.points) AS points,
                SUM(CASE WHEN to_char(ev.earned_at, 'YYYY-MM') = ${thisMonth}
-                        THEN ev.points ELSE 0 END) AS month_points
+                        THEN ev.points ELSE 0 END) AS month_points,
+               -- When they last earned points: the podium breaks a points tie
+               -- in favour of whoever got there FIRST (earlier wins).
+               MAX(ev.earned_at) AS last_earned_at
         FROM ${this.pointEvents(scope)} ev
         GROUP BY ev.user_id
       ) p ON p.user_id = u.id
