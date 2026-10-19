@@ -3742,8 +3742,19 @@ own `{rank, points}` line, and `learning_with_you` comes from
 caller who share a course assignment (session trainings and external-cert
 courses excluded, one shared course per peer via DISTINCT ON). Both are
 additive fields on `GET /learner/dashboard`; no new endpoint, no migration. The
-client renders them in `dashboard-cohort-peers.jsx` and deliberately drops the
-reference's per-peer "Say hi" (no messaging backend — §5.2.1's screen that lies).
+client renders them in `dashboard-cohort-peers.jsx` and the per-peer "Say hi"
+opens a direct-message thread (the Messages module, 0054).
+
+**Presence (0055): `users.last_seen_at`, for the Messages "Available" dot.**
+`PresenceInterceptor` (global `APP_INTERCEPTOR`, after the guards so
+`request.user` is set) touches it on ANY authenticated request — throttled in
+memory to once a minute per user, fired best-effort without awaiting (§8.4), so
+a slow or failed presence write never delays the request. It is last-SEEN, not
+last learning activity, so "Available" means around now. `MessagesService`
+derives `online` (seen within five minutes) + `last_seen` for the thread peer
+and the conversation list; the browser renders what it is sent and never decides
+who is online. A hardcoded dot would be the screen that lies (§5.2.1) — this is
+backed by a real column.
 
 ### 10.5.1 The points model: the reference's rules, minus community
 

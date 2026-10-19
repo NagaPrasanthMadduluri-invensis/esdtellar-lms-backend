@@ -92,6 +92,13 @@ export const users = pgTable(
      * re-enqueues anything still set after a grace window.
      */
     welcomePendingSince: timestamp('welcome_pending_since', { withTimezone: true }),
+    /**
+     * When this person last made an authenticated request (0055). Powers the
+     * Messages "Available" / "Active <relative> ago" presence dot. Updated on
+     * ANY request, throttled by `PresenceInterceptor`, so it means "around
+     * now", not "recently finished a lesson".
+     */
+    lastSeenAt: timestamp('last_seen_at', { mode: 'string', withTimezone: true }),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

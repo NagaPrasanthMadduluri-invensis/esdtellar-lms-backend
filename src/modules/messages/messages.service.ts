@@ -13,9 +13,20 @@ import { MessagesRepository } from './messages.repository';
 const CONVERSATION_LIMIT = 50;
 const THREAD_LIMIT = 200;
 
+/** Someone seen within this window reads as "Available"; else "Active … ago". */
+const PRESENCE_ONLINE_MS = 5 * 60 * 1000;
+
 /** First name + last initial — the §10.24 relaxation, used on every surface. */
 function shortName(first: string, last: string) {
   return `${first ?? ''}${last ? ` ${last.charAt(0)}.` : ''}`.trim();
+}
+
+/** Presence from last-seen (0055): online within the window, plus the stamp. */
+function presenceOf(lastSeenAt: string | null) {
+  const online =
+    lastSeenAt !== null &&
+    Date.now() - new Date(lastSeenAt).getTime() < PRESENCE_ONLINE_MS;
+  return { online, last_seen: lastSeenAt };
 }
 
 @Injectable()
@@ -33,6 +44,7 @@ export class MessagesService {
         user_id: Number(r.other_id),
         name: shortName(r.first_name, r.last_name),
         avatar_url: r.avatar_url ?? null,
+        ...presenceOf(r.last_seen_at),
         unread: Number(r.unread),
         last_message: {
           body: r.last_body,
@@ -58,6 +70,7 @@ export class MessagesService {
         user_id: Number(other.id),
         name: shortName(other.first_name, other.last_name),
         avatar_url: other.avatar_url ?? null,
+        ...presenceOf(other.last_seen_at),
       },
       messages: messages.map((m) => ({
         id: Number(m.id),

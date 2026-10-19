@@ -9,6 +9,7 @@ export interface ConversationRow {
   first_name: string;
   last_name: string;
   avatar_url: string | null;
+  last_seen_at: string | null;
   last_body: string;
   last_at: string;
   last_sender_id: number;
@@ -29,6 +30,7 @@ export interface OtherUserRow {
   first_name: string;
   last_name: string;
   avatar_url: string | null;
+  last_seen_at: string | null;
 }
 
 @Injectable()
@@ -48,7 +50,7 @@ export class MessagesRepository {
   async conversations(scope: OrgScope, userId: number, limit: number) {
     return this.db.all<ConversationRow>(sql`
       SELECT
-        k.other_id, o.first_name, o.last_name, o.avatar_url,
+        k.other_id, o.first_name, o.last_name, o.avatar_url, o.last_seen_at,
         lm.body AS last_body, lm.created_at AS last_at, lm.sender_id AS last_sender_id,
         COALESCE(uc.unread, 0) AS unread
       FROM (
@@ -137,7 +139,7 @@ export class MessagesRepository {
    */
   async findActiveUser(scope: OrgScope, otherId: number): Promise<OtherUserRow | null> {
     const rows = await this.db.all<OtherUserRow>(sql`
-      SELECT u.id, u.first_name, u.last_name, u.avatar_url
+      SELECT u.id, u.first_name, u.last_name, u.avatar_url, u.last_seen_at
       FROM users u
       WHERE u.id = ${otherId} AND u.is_active = 1 AND ${orgScope('u', scope)}
     `);

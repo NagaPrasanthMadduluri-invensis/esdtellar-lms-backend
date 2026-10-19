@@ -1,12 +1,13 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AuthGuard } from './common/guards/auth.guard';
 import { PlatformAdminGuard } from './common/guards/platform-admin.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { TenantContextGuard } from './common/guards/tenant-context.guard';
+import { PresenceInterceptor } from './common/interceptors/presence.interceptor';
 import configuration from './config/configuration';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
@@ -103,6 +104,9 @@ import { AuditMiddleware } from '@/modules/audit/audit.middleware';
     { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_GUARD, useClass: PlatformAdminGuard },
     { provide: APP_GUARD, useClass: TenantContextGuard },
+    // Records last-seen for the Messages presence dot. After the guards, so
+    // request.user is set; throttled and best-effort (0055).
+    { provide: APP_INTERCEPTOR, useClass: PresenceInterceptor },
   ],
 })
 export class AppModule implements NestModule {
