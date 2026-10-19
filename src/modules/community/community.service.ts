@@ -186,6 +186,22 @@ export class CommunityService {
     return { liked: false, likeCount };
   }
 
+  /** The people who liked a post — first name + last initial, newest first. */
+  async postLikers(scope: OrgScope, user: AuthenticatedUser, postId: number) {
+    await this.assertEnabled(scope);
+    const post = await this.repository.findPost(scope, postId);
+    if (!post) throw new NotFoundException('Post not found');
+    const rows = await this.repository.postLikers(scope, postId, 200);
+    return {
+      likers: rows.map((r) => ({
+        user_id: r.author_id,
+        name: r.last_initial ? `${r.first_name} ${r.last_initial}.` : r.first_name,
+        avatar: r.avatar_url,
+        is_me: r.author_id === user.userId,
+      })),
+    };
+  }
+
   async deleteOwnPost(
     scope: OrgScope,
     user: AuthenticatedUser,

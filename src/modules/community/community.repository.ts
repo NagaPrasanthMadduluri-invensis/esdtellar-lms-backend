@@ -297,6 +297,30 @@ export class CommunityRepository {
     return rows[0]?.like_count ?? 0;
   }
 
+  /**
+   * Who liked a post — newest first, org-scoped on the reaction so a like never
+   * crosses a tenant. Returns the same author columns the feed uses, so the
+   * caller shows first name + last initial on the learner surface (§10.24).
+   */
+  async postLikers(scope: OrgScope, postId: number, limit: number) {
+    return this.db.all<{
+      author_id: number;
+      first_name: string;
+      last_initial: string | null;
+      author_name: string;
+      author_email: string | null;
+      avatar_url: string | null;
+      created_at: string;
+    }>(sql`
+      SELECT ${this.authorColumns('u')}, cr.created_at
+      FROM community_reactions cr
+      JOIN users u ON u.id = cr.user_id
+      WHERE cr.post_id = ${postId} AND ${orgScope('cr', scope)}
+      ORDER BY cr.created_at DESC
+      LIMIT ${limit}
+    `);
+  }
+
   /** Author + type of a post, org-scoped — for ownership and notifications. */
   async findPost(
     scope: OrgScope,

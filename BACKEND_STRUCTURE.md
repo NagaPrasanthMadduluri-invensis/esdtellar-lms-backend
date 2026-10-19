@@ -4069,6 +4069,13 @@ predicate (§10.26). Counters (`reply_count`, `like_count`) are denormalised and
 recomputed with `SELECT COUNT(*)` inside the same write, so the feed never
 counts rows per card (§7.1) and the counters cannot drift.
 
+**Who-liked list (2026-10-19): `GET /learner/community/:postId/likes`** returns
+the people who liked a post, newest first, as first name + last initial (the
+§10.24 relaxation, the same `authorColumns` the feed uses) — org-scoped on the
+reaction so a like never crosses a tenant. The learner UI splits the footer
+control: the heart toggles the like (POST/DELETE `:postId/like`), and the count
+text ("N Likes") opens a "Liked by" dialog backed by this read.
+
 **Delete is SOFT** (`deleted_at`, `deleted_by`), for the author and for a
 moderator. The row stays for audit and is hidden everywhere (`deleted_at IS
 NULL` on every read); removing a post hides its replies with it. The author

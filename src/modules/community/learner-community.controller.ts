@@ -124,6 +124,19 @@ export class LearnerCommunityController {
     return this.community.unlike(scope, user, postId);
   }
 
+  @Get(':postId/likes')
+  async likes(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('postId') postIdParam: string,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow(
+      'community_posts',
+      postIdParam,
+    );
+    return this.community.postLikers(scope, user, postId);
+  }
+
   @Delete('replies/:replyId')
   async removeReply(
     @CurrentScope() scope: OrgScope,
