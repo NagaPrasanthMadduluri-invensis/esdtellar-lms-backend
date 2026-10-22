@@ -35,6 +35,14 @@ export interface AppConfig {
     tokenDays: number;
     cookieName: string;
     cookieDomain: string;
+    /**
+     * Key for encrypting TOTP secrets at rest (0058). Optional at boot — like
+     * the R2 and email config, absence is a warn-and-degrade, not a crash: the
+     * MFA enrolment routes refuse to operate without it, and nobody can enrol
+     * until it is set, so login is unaffected. 32 bytes as hex/base64, or any
+     * passphrase (folded to 32 bytes). Empty string means "not configured".
+     */
+    mfaEncryptionKey: string;
   };
   storage: {
     /**
@@ -235,6 +243,7 @@ export default (): AppConfig => ({
     tokenDays: Number(process.env.AUTH_TOKEN_DAYS ?? 7),
     cookieName: process.env.AUTH_COOKIE_NAME ?? 'lms_token',
     cookieDomain: process.env.COOKIE_DOMAIN ?? 'localhost',
+    mfaEncryptionKey: process.env.MFA_ENCRYPTION_KEY ?? '',
   },
   storage: {
     uploadsPath: process.env.UPLOAD_STORAGE_PATH ?? './storage/uploads',

@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
+import { CURRENT_PRIVACY_VERSION, isConsentRequired } from '@/common/consent';
 import { filterKnownPermissions, type RoleScope } from '@/common/permissions';
 import type {
   AuthenticatedUser,
@@ -20,6 +21,7 @@ import { OrgOptionsService } from '@/modules/org-options/org-options.service';
 
 import { OrganizationsService } from '../organizations/organizations.service';
 import { AuthRepository } from './auth.repository';
+import { MfaService } from './mfa.service';
 import type { ChangePasswordDto } from '@/modules/learner/dto/change-password.dto';
 import type { LoginDto } from './dto/login.dto';
 import type { UpdateProfileDto } from './dto/profile.dto';
@@ -55,6 +57,12 @@ export interface PublicUser {
    * says of itself. The API is the boundary (`specs/rbac.md` §5.2).
    */
   permissions: string[];
+  /**
+   * True when this person must accept the current privacy notice before using
+   * the app (0057). The client gates on it after login; the server is the
+   * authority, so it rides on `/auth/me` and the login response alike.
+   */
+  consent_required: boolean;
   /** Present only on `/auth/me`, and only during a support session. */
   impersonation?: { by_name: string; organization_name: string } | null;
 }
@@ -69,6 +77,17 @@ export interface AuthResult {
    * stopped accepting, which reads to the user as "randomly signed out".
    */
   maxAgeSeconds?: number;
+}
+
+/**
+ * Returned by `login` instead of an `AuthResult` when the password was correct
+ * but the account has MFA enabled (0058). NO cookie is set — the caller must
+ * complete `POST /auth/mfa/verify` with the `mfaToken` and a code to get a real
+ * session. The token names only the user and expires in minutes.
+ */
+export interface MfaChallenge {
+  mfaRequired: true;
+  mfaToken: string;
 }
 
 /**
@@ -91,15 +110,34 @@ export class AuthService {
     private readonly orgOptions: OrgOptionsService,
     /** Stores/validates/removes the optional profile picture (`0047`). */
     private readonly media: MediaService,
+    /** Admin TOTP second factor (0058). */
+    private readonly mfa: MfaService,
   ) {}
 
-  async login(dto: LoginDto): Promise<AuthResult> {
+  async login(dto: LoginDto): Promise<AuthResult | MfaChallenge> {
     const user = await this.repository.findActiveByEmailWithSecret(dto.email);
 
     // One message for "no such user" and "wrong password" — distinguishing them
     // turns the login form into an account-enumeration oracle.
     if (!user || !verifyPassword(dto.password, user.password)) {
       throw new UnauthorizedException('Invalid email or password');
+    }
+
+    /*
+     * Password is correct. If this is an admin with MFA enabled, stop here and
+     * hand back a short-lived challenge — NO cookie, no session. The second
+     * factor is proven at `POST /auth/mfa/verify`, which is the only place the
+     * real token is issued. Checked only for admins, which is the scope MFA
+     * covers; a learner or trainer is never challenged.
+     */
+    if (user.role === 'admin' && (await this.mfa.isEnabledForLogin(user.id))) {
+      return {
+        mfaRequired: true,
+        mfaToken: this.tokenService.signMfaChallenge(
+          user.id,
+          user.organizationId,
+        ),
+      };
     }
 
     const roleContext = await this.repository.findRoleContext(
@@ -125,9 +163,80 @@ export class AuthService {
         // build no longer enforces must not reach a claim, or a guard added
         // later under the same name would honour something nobody reviewed.
         permissions: filterKnownPermissions(roleContext.permissions),
+        consent_required: isConsentRequired(
+          user.consentVersion,
+          user.consentedAt,
+        ),
       },
       roleContext,
     );
+  }
+
+  /**
+   * Complete the MFA second factor and issue the real session (0058).
+   *
+   * The challenge token proves only that a password was accepted moments ago;
+   * the CODE proves possession of the second factor. The user and role context
+   * are re-read here so nothing from the challenge is trusted beyond the user
+   * id it names.
+   */
+  async mfaVerify(mfaToken: string, code: string): Promise<AuthResult> {
+    const challenge = this.tokenService.verifyMfaChallenge(mfaToken);
+    if (!challenge) {
+      throw new UnauthorizedException(
+        'Your verification session has expired. Please sign in again.',
+      );
+    }
+
+    const ok = await this.mfa.verifyCode(challenge.userId, code);
+    if (!ok) {
+      throw new UnauthorizedException('Invalid verification code');
+    }
+
+    const user = await this.repository.findActiveById(challenge.userId);
+    if (!user) {
+      throw new UnauthorizedException('Account is no longer active');
+    }
+
+    const roleContext = await this.repository.findRoleContext(
+      user.id,
+      user.organizationId,
+    );
+
+    return this.issue(
+      {
+        id: user.id,
+        first_name: user.firstName,
+        last_name: user.lastName,
+        email: user.email,
+        department: user.department,
+        role: user.role,
+        is_active: user.isActive === 1,
+        organization_id: user.organizationId,
+        avatar_url: user.avatarUrl ?? null,
+        is_platform_admin:
+          user.role === 'admin' &&
+          user.organizationId === this.organizations.getPlatformOrganizationId(),
+        permissions: filterKnownPermissions(roleContext.permissions),
+        consent_required: isConsentRequired(
+          user.consentVersion,
+          user.consentedAt,
+        ),
+      },
+      roleContext,
+    );
+  }
+
+  /**
+   * Record that the caller accepted the current privacy notice (0057), then
+   * return their refreshed identity so the client can clear the gate.
+   */
+  async recordConsent(
+    userId: number,
+    claims?: AuthenticatedUser,
+  ): Promise<{ user: PublicUser }> {
+    await this.repository.recordConsent(userId, CURRENT_PRIVACY_VERSION);
+    return { user: await this.me(userId, claims) };
   }
 
   /**
@@ -167,6 +276,10 @@ export class AuthService {
       is_active: user.isActive === 1,
       organization_id: user.organizationId,
       avatar_url: user.avatarUrl ?? null,
+      consent_required: isConsentRequired(
+        user.consentVersion,
+        user.consentedAt,
+      ),
       is_platform_admin:
         user.role === 'admin' &&
         user.organizationId === this.organizations.getPlatformOrganizationId(),
@@ -467,6 +580,9 @@ export class AuthService {
       // therefore cannot reach the platform console at all.
       is_platform_admin: false,
       permissions: filterKnownPermissions(roleContext.permissions),
+      // A support session is not the tenant user's own browser, so it is not
+      // the place to make them accept a privacy notice.
+      consent_required: false,
     };
 
     const result = this.issue(user, roleContext, {
@@ -557,6 +673,10 @@ export class AuthService {
         avatar_url: platformAdmin.avatarUrl ?? null,
         is_platform_admin: true,
         permissions: filterKnownPermissions(roleContext.permissions),
+        consent_required: isConsentRequired(
+          platformAdmin.consentVersion,
+          platformAdmin.consentedAt,
+        ),
       },
       roleContext,
     );

@@ -99,6 +99,14 @@ export const users = pgTable(
      * now", not "recently finished a lesson".
      */
     lastSeenAt: timestamp('last_seen_at', { mode: 'string', withTimezone: true }),
+    /**
+     * Which privacy-notice version this person accepted, and when (0057). NULL
+     * means they have not consented to the CURRENT version — the app gates the
+     * portals on it after login. Raising `CURRENT_PRIVACY_VERSION`
+     * (common/consent.ts) re-prompts everyone with no backfill.
+     */
+    consentVersion: text('consent_version'),
+    consentedAt: timestamp('consented_at', { mode: 'string', withTimezone: true }),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

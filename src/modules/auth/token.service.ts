@@ -8,6 +8,9 @@ import type {
   JwtPayload,
 } from '@/common/types/authenticated-request';
 
+/** How long an MFA challenge token is valid — one reach for the phone. */
+const MFA_CHALLENGE_TTL_SECONDS = 5 * 60;
+
 /**
  * Hand-rolled HS256 JWT, byte-compatible with the legacy `lib/auth.js`.
  *
@@ -47,6 +50,58 @@ export class TokenService {
       exp: Math.floor(Date.now() / 1000) + lifetime,
     });
     return `${header}.${claims}.${this.signature(`${header}.${claims}`)}`;
+  }
+
+  /**
+   * A short-lived token proving ONLY that a password was accepted and a second
+   * factor is still owed (0058). Not an auth token: it carries no role,
+   * permissions or scope, so it can authorise nothing on its own — the one
+   * thing it does is name the user the MFA-verify step must challenge. Five
+   * minutes, because it is held open only while the person reaches for their
+   * authenticator app.
+   */
+  signMfaChallenge(userId: number, organizationId: number): string {
+    const header = this.encode({ alg: 'HS256', typ: 'JWT' });
+    const claims = this.encode({
+      mfaChallenge: true,
+      userId,
+      organizationId,
+      exp: Math.floor(Date.now() / 1000) + MFA_CHALLENGE_TTL_SECONDS,
+    });
+    return `${header}.${claims}.${this.signature(`${header}.${claims}`)}`;
+  }
+
+  /** The user the challenge names, or null if it is forged, expired or not one. */
+  verifyMfaChallenge(
+    token: string,
+  ): { userId: number; organizationId: number } | null {
+    try {
+      const [header, claims, signature] = token.split('.');
+      if (!header || !claims || !signature) return null;
+      const expected = this.signature(`${header}.${claims}`);
+      const provided = Buffer.from(signature);
+      const computed = Buffer.from(expected);
+      if (provided.length !== computed.length) return null;
+      if (!timingSafeEqual(provided, computed)) return null;
+
+      const payload = JSON.parse(
+        Buffer.from(claims, 'base64url').toString(),
+      ) as {
+        mfaChallenge?: boolean;
+        userId?: number;
+        organizationId?: number;
+        exp?: number;
+      };
+      if (payload.mfaChallenge !== true) return null;
+      if (typeof payload.userId !== 'number') return null;
+      if (typeof payload.organizationId !== 'number') return null;
+      if (typeof payload.exp !== 'number') return null;
+      if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+
+      return { userId: payload.userId, organizationId: payload.organizationId };
+    } catch {
+      return null;
+    }
   }
 
   /** Returns the claims, or null for any malformed, forged, or expired token. */

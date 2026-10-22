@@ -524,6 +524,7 @@ paragraphs. That is courtesy; this is enforcement.
 | `CLIENT_ORIGIN` | no | Exact frontend origin(s) for CORS — comma-separated, no wildcard. The FIRST is canonical and is what email links are built from |
 | `COOKIE_DOMAIN` | no | Omitted for localhost; set to the shared parent domain in production |
 | `AUTH_TOKEN_DAYS` | no (7) | Token + cookie lifetime |
+| `MFA_ENCRYPTION_KEY` | for MFA | AES-256-GCM key (32 bytes hex/base64, or a passphrase) for encrypting TOTP secrets at rest (0058). Absent = MFA enrolment 503s; losing it after enrolment locks out MFA admins |
 | `SCORM_STORAGE_DRIVER` | no (`local`) | `local` (single-instance) or `s3` (R2, multi-instance) — see §10.9. `s3` reuses the `R2_*` variables |
 | `SCORM_STORAGE_PATH` | no | Local SCORM root |
 | `R2_ACCOUNT_ID` | for video | Cloudflare account id; used to derive the endpoint |
@@ -614,6 +615,7 @@ Update this table with every module you move.
 | referrals (tenant files/reads; platform queue + convert) | 6 | `server/src/modules/referrals` |
 | direct messages (learner inbox, thread, send, unread) | 4 | `server/src/modules/messages` |
 | my data (PDPA export, correction/deletion requests, admin queue) | 6 | `server/src/modules/my-data` |
+| consent capture + admin MFA (TOTP enrol/verify, login second factor) | 6 | `server/src/modules/auth` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4353,6 +4355,82 @@ a deletion request was filed and listed; a learner got 403 on the admin route,
 the admin (same org) saw the request with the subject named, a PATCH recorded
 the handler and the learner saw the new status; a cross-org id 404'd and an
 invalid type 400'd. The test row was removed afterwards.
+
+### 10.39 Consent capture and admin MFA
+
+Two more Singapore-PDPA readiness features, both on the auth module.
+`0057_user_consent.sql` and `0058_user_mfa.sql` — read each migration header.
+
+#### Consent (0057)
+
+`users` gains `consent_version` and `consented_at`, both nullable, no backfill.
+`PublicUser` gains `consent_required`, computed by `isConsentRequired()`
+(`common/consent.ts`) on every read that builds one — login, `/auth/me`, the
+MFA-verify issue, and exit-impersonation. The rule is one place: NULL
+`consented_at`, or a `consent_version` that is not `CURRENT_PRIVACY_VERSION`,
+means consent is owed. So raising that constant re-prompts everyone with no
+migration.
+
+`POST /auth/consent` records the current version for the caller and returns
+their refreshed identity. No `@Roles()` — every portal gates on it, identity is
+the token's, so a caller only ever consents for themselves. A support session
+reports `consent_required: false`: making a platform admin accept a tenant
+user's notice inside a borrowed account is not consent by anyone.
+
+The client is the authority on the NOTICE COPY (a product/legal artifact); the
+server only records acceptance and says whether it is owed.
+
+#### Admin MFA — TOTP (0058)
+
+`user_mfa` (one row per enrolled user): the TOTP `secret` ENCRYPTED with
+AES-256-GCM under `MFA_ENCRYPTION_KEY` (`common/crypto/secret-box.util.ts`),
+`enabled_at`, and `recovery_codes` (jsonb of `{hash, used_at}`, SHA-256 hashed,
+shown once). `otplib` + `qrcode`.
+
+**ENROLLED vs ENABLED is the safety.** `setup` stores the secret with
+`enabled_at` NULL (pending) and returns the QR; `enable` verifies a first code,
+sets `enabled_at` and mints recovery codes. Only an ENABLED row makes login
+challenge, so a secret the user never scanned can never lock them out.
+
+**The login flow is two-step for an MFA admin.** `AuthService.login` returns a
+union: the normal `AuthResult`, or `MfaChallenge { mfaRequired, mfaToken }` when
+the password is right and the account is an admin with MFA enabled. On the
+challenge path **no cookie is set** — the controller returns `{ mfa_required,
+mfa_token }`. `POST /auth/mfa/verify` (`@Public`, authorised by the short-lived
+challenge token, not a session) checks the TOTP or a single-use recovery code
+and only THEN issues the real session. The challenge token
+(`TokenService.signMfaChallenge`, 5 min) carries only a user id and org — no
+role, permissions or scope — so it can authorise nothing on its own.
+
+**MFA is admin-scoped.** The login check is gated on `role === 'admin'`
+(covers tenant and platform admins); the enrolment controller is
+`@Roles('admin')`. Learners and trainers are never challenged. No new
+permission.
+
+**`MFA_ENCRYPTION_KEY` is optional at boot** (warn-and-degrade like R2/email):
+absent, `MfaService.isConfigured()` is false, `isEnabledForLogin` returns false,
+and the enrolment routes 503. Since nobody can enrol without the key, login is
+unaffected until it is set. **It must be added to the box's `.env` by hand before
+the deploy that needs it** (§9 — config is read once at boot), and must never be
+lost or rotated casually: losing it makes every stored secret undecryptable and
+locks out every MFA admin (recovery codes remain the way back in).
+
+Routes:
+
+```
+POST /api/auth/consent                 record consent        (any role)
+GET  /api/auth/mfa/status              enrolled/enabled      (admin)
+POST /api/auth/mfa/setup               begin enrolment + QR  (admin)
+POST /api/auth/mfa/enable              confirm + recovery    (admin)
+POST /api/auth/mfa/disable             turn off              (admin)
+POST /api/auth/mfa/verify              login 2nd factor      (@Public, challenge token)
+```
+
+Verified end to end against the running API (22/22): consent owed at first
+login, cleared by `POST /auth/consent`, reflected on `/auth/me`; MFA setup →
+QR, wrong enable code 422, enable returns 10 recovery codes, login then returns
+`mfa_required` with no cookie, verify by TOTP and by recovery code both issue a
+session, a spent recovery code is refused, disable returns login to normal.
 
 ## 11. Adding a new module — checklist
 

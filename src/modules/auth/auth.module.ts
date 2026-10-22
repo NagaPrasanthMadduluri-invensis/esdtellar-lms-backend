@@ -8,6 +8,9 @@ import { OrganizationsModule } from '../organizations/organizations.module';
 import { AuthController } from './auth.controller';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
+import { MfaController } from './mfa.controller';
+import { MfaRepository } from './mfa.repository';
+import { MfaService } from './mfa.service';
 import { PasswordResetModule } from './password-reset.module';
 import { TokenService } from './token.service';
 
@@ -17,11 +20,13 @@ import { TokenService } from './token.service';
  */
 @Module({
   imports: [OrganizationsModule, ActivityModule, OrgOptionsModule, EmailModule, PasswordResetModule, MediaModule],
-  controllers: [AuthController],
+  controllers: [AuthController, MfaController],
   providers: [
     AuthService,
     AuthRepository,
     TokenService,
+    MfaService,
+    MfaRepository,
   ],
   // PasswordResetService is exported so UsersService can send the welcome
   // email: it mints the same one-time token, and a second implementation

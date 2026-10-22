@@ -158,6 +158,8 @@ export class AuthRepository {
         isActive: users.isActive,
         organizationId: users.organizationId,
         avatarUrl: users.avatarUrl,
+        consentVersion: users.consentVersion,
+        consentedAt: users.consentedAt,
       })
       .from(users)
       .where(and(eq(users.email, email), eq(users.isActive, 1)))
@@ -213,12 +215,22 @@ export class AuthRepository {
         isActive: users.isActive,
         organizationId: users.organizationId,
         avatarUrl: users.avatarUrl,
+        consentVersion: users.consentVersion,
+        consentedAt: users.consentedAt,
       })
       .from(users)
       .where(and(eq(users.id, id), eq(users.isActive, 1)))
       .limit(1);
 
     return rows[0] ?? null;
+  }
+
+  /** Record that the caller accepted the current privacy notice (0057). */
+  async recordConsent(userId: number, version: string): Promise<void> {
+    await this.db
+      .update(users)
+      .set({ consentVersion: version, consentedAt: sql`now()` })
+      .where(eq(users.id, userId));
   }
 
   /**

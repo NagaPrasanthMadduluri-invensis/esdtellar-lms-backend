@@ -22,6 +22,7 @@ import { authCookieOptions, clearCookieOptions } from './cookie.util';
 import { ChangePasswordDto } from '@/modules/learner/dto/change-password.dto';
 import { ImpersonateDto } from './dto/impersonate.dto';
 import { LoginDto } from './dto/login.dto';
+import { MfaVerifyDto } from './dto/mfa.dto';
 import { UpdateProfileDto } from './dto/profile.dto';
 import {
   RequestPasswordResetDto,
@@ -56,7 +57,7 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<{ user: PublicUser }> {
+  ): Promise<{ user: PublicUser } | { mfa_required: true; mfa_token: string }> {
     /*
      * ATTRIBUTE THE SIGN-IN, succeeded or refused.
      *
@@ -76,11 +77,49 @@ export class AuthController {
     (request as unknown as Record<symbol, unknown>)[AUDIT_ACTOR] =
       await this.authService.auditActorFor(dto.email);
 
-    const { user, token } = await this.authService.login(dto);
-    this.setAuthCookie(response, token);
+    const result = await this.authService.login(dto);
+
+    // MFA-enabled admin: the password was correct, but no session is issued
+    // until the second factor is proven at /auth/mfa/verify. No cookie here.
+    if ('mfaRequired' in result) {
+      return { mfa_required: true, mfa_token: result.mfaToken };
+    }
+
+    this.setAuthCookie(response, result.token);
     // The token is deliberately NOT in the body — it lives only in the
     // HttpOnly cookie, so client JavaScript never holds a credential.
+    return { user: result.user };
+  }
+
+  /**
+   * Complete the MFA second factor (0058). `@Public()` because the caller has
+   * no session yet — authorisation is the short-lived challenge token minted by
+   * `login`, plus the code. Issues the real session cookie on success.
+   */
+  @Public()
+  @Post('mfa/verify')
+  @HttpCode(HttpStatus.OK)
+  async mfaVerify(
+    @Body() dto: MfaVerifyDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ user: PublicUser }> {
+    const { user, token } = await this.authService.mfaVerify(
+      dto.mfa_token,
+      dto.code,
+    );
+    this.setAuthCookie(response, token);
     return { user };
+  }
+
+  /**
+   * Record that the caller accepted the current privacy notice (0057).
+   * Authenticated, any role — every portal gates on it. Identity comes from the
+   * token, so a caller can only ever consent for themselves.
+   */
+  @Post('consent')
+  @HttpCode(HttpStatus.OK)
+  async consent(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.recordConsent(user.userId, user);
   }
 
   @Public()

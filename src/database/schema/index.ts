@@ -53,3 +53,6 @@ export * from './audit.schema';
 
 /** Data-subject correction/deletion requests, filed from My Data (0056). */
 export * from './data-requests.schema';
+
+/** Admin TOTP multi-factor enrolment (0058). */
+export * from './user-mfa.schema';
