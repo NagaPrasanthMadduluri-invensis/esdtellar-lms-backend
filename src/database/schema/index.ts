@@ -50,3 +50,6 @@ export * from './direct-messages.schema';
 /** The email outbox, suppressions, preferences and reset tokens (0037). */
 export * from './email.schema';
 export * from './audit.schema';
+
+/** Data-subject correction/deletion requests, filed from My Data (0056). */
+export * from './data-requests.schema';

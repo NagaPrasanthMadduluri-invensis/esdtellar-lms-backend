@@ -613,6 +613,7 @@ Update this table with every module you move.
 | learning community (learner feed/compose/reply/like; admin moderation) | 12 | `server/src/modules/community` |
 | referrals (tenant files/reads; platform queue + convert) | 6 | `server/src/modules/referrals` |
 | direct messages (learner inbox, thread, send, unread) | 4 | `server/src/modules/messages` |
+| my data (PDPA export, correction/deletion requests, admin queue) | 6 | `server/src/modules/my-data` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4268,6 +4269,90 @@ course and session self-enrol each send the learner's email and the admins'
 bell; a virtual enrol's email button is "Join the session" → the meeting URL
 while an in-person one is "See my sessions" → `/my-sessions`; waitlist and
 give-up-place both confirm; and `self_enrolment` writes no outbox row.
+
+### 10.38 My Data — PDPA self-service
+
+`0056_data_requests.sql` adds the "My Data" self-service: a data subject exports
+everything the platform holds about them, and files a correction or deletion
+request. It is the first of the Singapore-PDPA technical-readiness features (the
+others, built alongside, are consent capture and admin MFA). Read the migration
+header first; the summary:
+
+**THE EXPORT IS STRICTLY THE CALLER'S OWN DATA.** Every read in
+`MyDataRepository` is keyed by the caller's `user_id` (taken from the verified
+token, never a parameter), and where a table has no direct user column
+(`user_assessment_answers`) it is reached through a row that does. No select
+list includes `users.password` or anything from `password_reset_tokens` — the
+two genuinely sensitive columns never enter scope, the same discipline §3.1
+names `...WithSecret` to enforce elsewhere. It spans ~22 user-keyed tables
+(profile, assignments, completions, video progress, assessment attempts +
+answers, SCORM assignment/tracking/attempts, certificates, journey enrolments,
+badges, external certifications, session roster/waitlist/attendance, session +
+course feedback, community posts/replies/reactions, direct messages,
+notifications, email history + preferences), assembled into one machine-readable
+JSON document (PDPA portability). It joins only to resolve the human-readable
+name of the course / lesson / session a row points at.
+
+**Two high-volume telemetry logs are deliberately EXCLUDED, and the export says
+so in words.** `scorm_datamodel_log` (one row per SetValue, §10.9 calls it the
+hottest write path) and `audit_log` are left out — the same reasoning §10.32
+gives for the audit page: one row per keystroke buries everything a person can
+actually read. An export that quietly omitted a category would be worse than one
+that states what it omits, so the summary's `note` names the exclusion and says
+they are available on request.
+
+**The download reuses the reports exporter's header contract** — `Content-Type`,
+`Content-Disposition`, and crucially `Access-Control-Expose-Headers:
+Content-Disposition` so the cross-origin fetch in `client/lib/download.js` can
+read the filename (§10.12 records why that header is load-bearing). It is a
+`@Res()` route returning the JSON as a stream, the same shape as an xlsx export.
+
+**A REQUEST IS LOGGED, NOT EXECUTED.** A correction or deletion writes one
+`data_requests` row and touches nothing else. Deleting learning records reaches
+certificates, hours, analytics and the audit trail, so a deletion is reviewed
+and actioned by an admin — PDPA allows a reasonable process, not an instant
+self-service hard delete. Most profile fields are already self-editable
+(§10.17's `UpdateProfileDto`); a correction request is for the learning records
+that are not.
+
+**ACTIVITY, so `orgScope` on the admin queue.** A request belongs to the
+subject's org; the admin queue reads only its own tenant's (§10.12), and a PATCH
+to a request in another org 404s exactly as a non-existent one does. There is no
+cross-tenant view.
+
+**No `@Roles()` on the subject's half.** Every authenticated person is a data
+subject, so `my-data` serves learners, trainers and admins alike — the same
+reasoning as change-password and the email-preference routes. The subject is
+always the caller, so no route takes a user-id parameter.
+
+**No new permission.** The admin queue read reuses `view_employees` and the
+write `manage_users`, so deploying this does not bump `perm_version` or sign an
+organization out (§10.17). Actioning a correction/deletion is the same weight as
+managing a user.
+
+**Known follow-up, deliberately out of this slice:** a new request does not yet
+ring the admins' bell. A notification needs a catalogue entry (`as const
+satisfies Record<...>`) and a worker restart (§10.30), so it is a separate
+change rather than a line quietly added here. The admin works the queue; the
+bell is the enhancement.
+
+Routes:
+
+```
+GET  /api/my-data                      summary: subject + per-category counts
+GET  /api/my-data/export               the full JSON download
+GET  /api/my-data/requests             the caller's own requests
+POST /api/my-data/requests             file a correction/deletion request (201)
+GET   /api/admin/data-requests         the org's queue + counts   (view_employees)
+PATCH /api/admin/data-requests/:id     action one                 (manage_users)
+```
+
+Verified end to end against the running API: a learner's summary returned real
+counts, the export streamed 24 KB of JSON with the right `Content-Disposition`,
+a deletion request was filed and listed; a learner got 403 on the admin route,
+the admin (same org) saw the request with the subject named, a PATCH recorded
+the handler and the learner saw the new status; a cross-org id 404'd and an
+invalid type 400'd. The test row was removed afterwards.
 
 ## 11. Adding a new module — checklist
 

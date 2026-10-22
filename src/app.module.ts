@@ -28,6 +28,7 @@ import { SeatsModule } from './modules/seats/seats.module';
 import { CommunityModule } from './modules/community/community.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
+import { MyDataModule } from './modules/my-data/my-data.module';
 import { BadgesModule } from './modules/badges/badges.module';
 import { CertificatesModule } from './modules/certificates/certificates.module';
 import { CoursesModule } from './modules/courses/courses.module';
@@ -87,6 +88,7 @@ import { AuditMiddleware } from '@/modules/audit/audit.middleware';
     CommunityModule,
     MessagesModule,
     ReferralsModule,
+    MyDataModule,
   ],
   providers: [
     // Order matters, and all four are global so a new controller is covered
