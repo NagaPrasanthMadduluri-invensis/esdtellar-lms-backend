@@ -1,7 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
+import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { DATA_REQUEST_STATUSES } from '@/common/data-requests';
+import { PRIVACY_POLICY_URL } from '@/common/consent';
+import { actorLabel } from '@/common/notifications';
+import { NotificationsService } from '@/modules/notifications/notifications.service';
 
 import { MyDataRepository } from './my-data.repository';
 import type {
@@ -10,6 +14,12 @@ import type {
 } from './dto/data-request.dto';
 
 const DEFAULT_LIMIT = 50;
+
+/** Human labels for the request type, used in notification copy. */
+const TYPE_LABEL: Record<string, string> = {
+  correction: 'correction',
+  deletion: 'deletion',
+};
 
 /**
  * "My Data" self-service (0056) — PDPA Access, Portability and the request side
@@ -21,7 +31,11 @@ const DEFAULT_LIMIT = 50;
  */
 @Injectable()
 export class MyDataService {
-  constructor(private readonly repository: MyDataRepository) {}
+  constructor(
+    private readonly repository: MyDataRepository,
+    /** Best-effort (§8.4) — notify never throws, every call is voided. */
+    private readonly notifications: NotificationsService,
+  ) {}
 
   /* ── The subject's own view ───────────────────────────────────────────── */
 
@@ -177,6 +191,7 @@ export class MyDataService {
   async createRequest(
     userId: number,
     organizationId: number,
+    actor: AuthenticatedUser,
     dto: CreateDataRequestDto,
   ) {
     const created = await this.repository.createRequest({
@@ -185,7 +200,88 @@ export class MyDataService {
       type: dto.type,
       details: dto.details ?? null,
     });
+
+    // Alert the org's admins, and confirm to the subject. Best-effort (§8.4).
+    void this.notifyOnCreate(userId, organizationId, actor, dto);
+
     return { request: this.shapeRequest(created) };
+  }
+
+  /**
+   * Tell the organization's admins a request landed, and confirm to the person
+   * who filed it. Both are transactional emails + bell (the catalogue decides),
+   * and both are best-effort — a notification failure must not fail the request.
+   */
+  private async notifyOnCreate(
+    userId: number,
+    organizationId: number,
+    actor: AuthenticatedUser,
+    dto: CreateDataRequestDto,
+  ): Promise<void> {
+    const typeLabel = TYPE_LABEL[dto.type] ?? dto.type;
+    const action = dto.type === 'deletion' ? 'delete' : 'correct';
+    const name = actorLabel(actor);
+
+    // Department is not on the token; read it for the admin's facts panel.
+    const profile = await this.repository.profile(userId).catch(() => null);
+    const department =
+      (profile?.department as string | null | undefined) ?? null;
+    const email = actor.email ?? (profile?.email as string | undefined) ?? '';
+
+    /* ── The admins ── */
+    const adminIds = await this.notifications.adminsOf(organizationId);
+    const adminFacts = [
+      { label: 'Requested by', value: name },
+      { label: 'Department', value: department || 'Not set' },
+      { label: 'Request type', value: `Data ${typeLabel}` },
+      { label: 'Email', value: email },
+    ];
+    const adminBody = [
+      `${name} has raised a request to ${action} their personal data held in Spectra LMS.`,
+      dto.details
+        ? `In their words:\n"${dto.details}"`
+        : 'They did not add any further detail.',
+      `Please review this in the Data Requests queue and record the outcome. Under data-protection rules a request like this should be acknowledged and actioned within a reasonable time, and the person kept informed.`,
+    ].join('\n\n');
+
+    void this.notifications.notify({
+      userIds: adminIds,
+      organizationId,
+      type: 'data_request_received',
+      title: `Data ${typeLabel} request from ${name}`,
+      subjectName: name,
+      body: adminBody,
+      facts: adminFacts,
+      link: '/admin/data-requests',
+      actorName: name,
+      subjectType: 'data_request',
+      // An admin filing about their own data should not be pinged as the
+      // reviewer of their own request.
+      exceptUserId: actor.userId,
+    });
+
+    /* ── The subject ── */
+    const learnerBody = [
+      `We have received your request to ${action} your personal data, and it is now with your organisation's administrator for review.`,
+      `Why we hold your data: we process your personal information, such as your profile, learning activity, assessments, certificates and related records, to deliver training, track your progress and completions, issue certificates, and meet our legal and reporting obligations. We keep it only as long as it is needed for those purposes.`,
+      `What happens next: an administrator will review your request and act on it, and you can check the status at any time on your My Data page. We will not change or remove anything without completing that review.`,
+      `You can read more about how we handle your information in our Privacy Policy: ${PRIVACY_POLICY_URL}`,
+    ].join('\n\n');
+
+    void this.notifications.notify({
+      userIds: [actor.userId],
+      organizationId,
+      type: 'data_request_submitted',
+      title: `Your data ${typeLabel} request has been received`,
+      body: learnerBody,
+      facts: [
+        { label: 'Request type', value: `Data ${typeLabel}` },
+        { label: 'Status', value: 'Under review' },
+      ],
+      link: '/my-data',
+      actorName: 'Spectra LMS',
+      subjectType: 'data_request',
+    });
   }
 
   async listMyRequests(userId: number, limit = DEFAULT_LIMIT, offset = 0) {

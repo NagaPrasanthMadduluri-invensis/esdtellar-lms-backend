@@ -13,6 +13,14 @@
 export const CURRENT_PRIVACY_VERSION = '2026-10-22';
 
 /**
+ * Where the privacy notice lives, referenced from the consent screen, the
+ * My Data page and the data-request emails. A PLACEHOLDER (`#`) until the page
+ * exists — change it here (and in `client/lib/consent.js`) once it does, and
+ * every reference updates at once.
+ */
+export const PRIVACY_POLICY_URL = '#';
+
+/**
  * Whether the caller must accept the current notice before using the app.
  *
  * True when they have never consented, or consented to an older version.

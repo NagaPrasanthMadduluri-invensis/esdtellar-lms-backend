@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 
 import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
@@ -79,11 +79,19 @@ export class OrganizationsRepository {
     return rows[0] ?? null;
   }
 
-  async slugExists(slug: string): Promise<boolean> {
+  /**
+   * Whether a slug is taken. `exceptId` excludes one org's own row, so a tenant
+   * re-saving its unchanged identifier is not reported as a collision.
+   */
+  async slugExists(slug: string, exceptId?: number): Promise<boolean> {
     const rows = await this.db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.slug, slug))
+      .where(
+        exceptId
+          ? and(eq(organizations.slug, slug), ne(organizations.id, exceptId))
+          : eq(organizations.slug, slug),
+      )
       .limit(1);
 
     return rows.length > 0;
@@ -220,6 +228,7 @@ export class OrganizationsRepository {
     id: number,
     input: {
       name?: string;
+      slug?: string;
       isActive?: number;
       industry?: string | null;
       region?: string | null;
@@ -241,6 +250,7 @@ export class OrganizationsRepository {
   ): Promise<OrganizationRow | null> {
     const values: Record<string, unknown> = {};
     if (input.name !== undefined) values.name = input.name;
+    if (input.slug !== undefined) values.slug = input.slug;
     if (input.communityEnabled !== undefined)
       values.communityEnabled = input.communityEnabled;
     if (input.logoUrl !== undefined) values.logoUrl = input.logoUrl;

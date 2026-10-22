@@ -252,10 +252,22 @@ export class OrganizationsService implements OnModuleInit {
 
   /** `PATCH /api/admin/organization` — name, industry, region. Nothing else. */
   async updateOwnOrganization(scope: OrgScope, dto: UpdateOrgSettingsDto) {
+    // The identifier is unique platform-wide — reject a collision with another
+    // org before writing, excluding this org's own current value so re-saving
+    // an unchanged slug is not a false conflict.
+    if (dto.slug !== undefined) {
+      if (await this.repository.slugExists(dto.slug, scope.organizationId)) {
+        throw new ConflictException(
+          `Identifier "${dto.slug}" is already in use by another organization`,
+        );
+      }
+    }
+
     // Passed field by field rather than spread, so widening the DTO can never
     // silently widen what a tenant may write to its own row.
     await this.repository.update(scope.organizationId, {
       name: dto.name,
+      slug: dto.slug,
       industry: dto.industry,
       region: dto.region,
       logoUrl: dto.logo_url,
@@ -304,7 +316,9 @@ export class OrganizationsService implements OnModuleInit {
   async createOrganization(
     dto: CreateOrganizationDto,
   ): Promise<{ organization: OrganizationDto }> {
-    const slug = dto.slug ?? this.deriveSlug(dto.name);
+    // Entered by the superadmin, not derived — validated and lower-cased by the
+    // DTO. The uniqueness check below is what turns a collision into a sentence.
+    const slug = dto.slug;
 
     /*
      * Both conflicts are checked BEFORE anything is written.
@@ -754,20 +768,6 @@ export class OrganizationsService implements OnModuleInit {
     return { byOrganization, totals };
   }
 
-  /**
-   * lowercase, non-alphanumerics collapsed to single hyphens, no leading or
-   * trailing hyphen. Used only when `POST /platform/organizations` omits
-   * `slug` — a duplicate result is still rejected with 409 by the caller.
-   */
-  private deriveSlug(name: string): string {
-    const slug = name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '');
-
-    return slug.length > 0 ? slug : 'org';
-  }
 
   private toOrganization(row: OrganizationRow): OrganizationDto {
     return {

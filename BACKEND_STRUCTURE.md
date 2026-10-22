@@ -2485,11 +2485,23 @@ role that manages users without being able to rename the company.
 The GET returns the contract, plan, billing cycle and seat limit READ-ONLY.
 The customer signed the contract and is entitled to see its terms without
 asking; they are not entitled to rewrite them, and a tenant raising its own
-seat cap would make the enforcement decorative. `UpdateOrgSettingsDto` carries
-three fields and `updateOwnOrganization` passes them one by one rather than
-spreading, so widening the DTO can never silently widen what a tenant may
-write to its own row. Verified: a tenant PATCH naming `plan`, `slug`,
-`contractEnd`, `seatLimit` and `isActive` changed none of them.
+seat cap would make the enforcement decorative. `updateOwnOrganization` passes
+the DTO's fields one by one rather than spreading, so widening the DTO can never
+silently widen what a tenant may write to its own row. Verified: a tenant PATCH
+naming `plan`, `contractEnd`, `seatLimit` and `isActive` changed none of them.
+
+**The `slug` (account identifier) is now BOTH entered at creation and editable
+by the tenant admin** (owner's request, reversing two earlier decisions).
+Provisioning no longer derives it from the name — `CreateOrganizationDto.slug`
+is REQUIRED and the superadmin enters it (the client suggests one from the name,
+editable; `deriveSlug` is gone). `UpdateOrgSettingsDto` now carries `slug`, and
+`updateOwnOrganization` checks `slugExists(slug, exceptId)` first — excluding the
+org's own row, so re-saving an unchanged value is not a false 409. It is still
+unique platform-wide and URL-safe (the DTO's pattern rejects a bad format with
+400 before the uniqueness check). Safe to change at runtime because the slug is
+not used in any URL or at login (identity is per-email, §10.34 uses `public_id`
+for URLs); ops tooling (`seed.mjs` ORG_SLUG, the isolation fixture) keys on it,
+which is the one thing to know before renaming one.
 
 **`manage_organization` is the third catalogue addition to ship with its own
 grant migration** (after 0016 and 0022) — read 0022's header for why the
@@ -4332,11 +4344,17 @@ write `manage_users`, so deploying this does not bump `perm_version` or sign an
 organization out (§10.17). Actioning a correction/deletion is the same weight as
 managing a user.
 
-**Known follow-up, deliberately out of this slice:** a new request does not yet
-ring the admins' bell. A notification needs a catalogue entry (`as const
-satisfies Record<...>`) and a worker restart (§10.30), so it is a separate
-change rather than a line quietly added here. The admin works the queue; the
-bell is the enhancement.
+**Filing a request now notifies both sides** (added after the first slice).
+`MyDataService.notifyOnCreate` fires, best-effort (§8.4): `data_request_received`
+to the org's admins (`NotificationsService.adminsOf`, excepting the requester),
+and `data_request_submitted` to the subject. Both are transactional (bell +
+email), two new catalogue types in `common/notifications.ts`. The admin email
+names the person, department and request type, quotes their description, and
+carries a facts panel; the subject's email confirms the request is under review,
+explains why the data is held and how it is used, and links the privacy notice
+(`PRIVACY_POLICY_URL`, a `#` placeholder until the page exists). `MyDataModule`
+imports `NotificationsModule` for this, so a deploy needs a **worker restart**
+(new catalogue types) but no schema change.
 
 Routes:
 

@@ -85,6 +85,11 @@ export class MyDataController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateDataRequestDto,
   ) {
-    return this.myData.createRequest(user.userId, user.organizationId, dto);
+    return this.myData.createRequest(
+      user.userId,
+      user.organizationId,
+      user,
+      dto,
+    );
   }
 }

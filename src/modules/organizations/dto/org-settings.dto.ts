@@ -17,14 +17,25 @@ const nullable = ({ value }: { value: unknown }) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+const lower = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.toLowerCase().trim() : value;
+
+/** URL-safe: lowercase letters, digits and single hyphens, no leading/trailing. */
+const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
 /**
  * What a TENANT admin may change about their own organization.
  *
  * The omissions are the design:
  *
- *   * **No `slug`.** It is the account's stable identifier and is unique
- *     platform-wide; letting a tenant change it invites a collision that only
- *     the platform can adjudicate.
+ *   * **`slug` IS now editable (reversing what this used to say).** The owner
+ *     asked that the account identifier be entered by the superadmin at
+ *     creation and be editable by the tenant admin here. It is still unique
+ *     platform-wide, so the service rejects a collision with a 409 (checked
+ *     excluding the org's own current value). It is not used in any URL or at
+ *     login (identity is per-email), so changing it is safe at runtime — but it
+ *     is a stable identifier, so the form warns that ops references to it
+ *     (seed/tooling) use the slug.
  *   * **No `isActive`.** Suspending an account is Edstellar's decision, and
  *     a tenant deactivating its own organization would lock every one of its
  *     users out with no way back in from their side.
@@ -47,6 +58,21 @@ export class UpdateOrgSettingsDto {
   @MaxLength(120)
   @Transform(trim)
   name?: string;
+
+  /**
+   * The account identifier. Editable here by the tenant admin (the superadmin
+   * sets it at creation). URL-safe and unique platform-wide; the service
+   * refuses a collision with a 409.
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(1, { message: 'identifier cannot be empty' })
+  @MaxLength(120)
+  @Matches(SLUG_PATTERN, {
+    message: 'identifier must be lowercase letters, digits and hyphens only',
+  })
+  @Transform(lower)
+  slug?: string;
 
   @IsOptional() @MaxLength(80) @Transform(nullable) industry?: string | null;
   @IsOptional() @MaxLength(80) @Transform(nullable) region?: string | null;

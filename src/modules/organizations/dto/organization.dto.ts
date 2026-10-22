@@ -81,17 +81,20 @@ export class CreateOrganizationDto {
   name!: string;
 
   /**
-   * Optional — `OrganizationsService.deriveSlug` derives one from `name` when
-   * omitted. When supplied it must already be URL-safe; a duplicate is a 409,
-   * never a 422, since the conflict is with existing data, not malformed input.
+   * REQUIRED — the superadmin enters the account identifier; it is no longer
+   * derived from the name. It must be URL-safe (lowercase letters, digits and
+   * single hyphens), and a duplicate is a 409, never a 422, since the conflict
+   * is with existing data, not malformed input. The client suggests one from
+   * the name, but the superadmin confirms or changes it before submitting.
    */
-  @IsOptional()
   @IsString()
+  @MinLength(1, { message: 'identifier is required' })
   @Matches(SLUG_PATTERN, {
-    message: 'slug must be lowercase letters, digits and hyphens only',
+    message:
+      'identifier must be lowercase letters, digits and hyphens only',
   })
   @Transform(lower)
-  slug?: string;
+  slug!: string;
 
   /*
    * `@IsDefined` is load-bearing, not belt-and-braces.

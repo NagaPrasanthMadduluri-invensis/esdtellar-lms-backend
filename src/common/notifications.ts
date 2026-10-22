@@ -374,6 +374,29 @@ export const NOTIFICATION_TYPES = {
     cta: 'View sessions',
   },
 
+  /* Data-subject requests (0056). A learner asks to correct or delete their
+     personal data from My Data; the org's admins are told so they can action
+     it, and the learner gets a confirmation that it is under review. Both
+     transactional — a request and an obligation addressed to named people, not
+     broadcast news. */
+  data_request_received: {
+    label: 'Data request to review',
+    group: 'people',
+    icon: 'ShieldCheck',
+    audience: ['admin'],
+    email: 'transactional',
+    cta: 'Review the request',
+  },
+  data_request_submitted: {
+    label: 'Your data request was received',
+    group: 'people',
+    icon: 'ShieldCheck',
+    audience: ['learner', 'trainer', 'admin'],
+    email: 'transactional',
+    cta: 'View my request',
+    aspiration: 'Your privacy matters to us — your request is with your administrator now.',
+  },
+
   /* ── Commercial, both directions ── */
   service_requested: {
     label: 'Service request raised',
