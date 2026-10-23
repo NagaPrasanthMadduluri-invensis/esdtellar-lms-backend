@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 import type { OrgScope } from '@/database/org-scope';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
@@ -31,11 +32,18 @@ const TYPE_LABEL: Record<string, string> = {
  */
 @Injectable()
 export class MyDataService {
+  private readonly clientOrigin: string;
+
   constructor(
     private readonly repository: MyDataRepository,
     /** Best-effort (§8.4) — notify never throws, every call is voided. */
     private readonly notifications: NotificationsService,
-  ) {}
+    config: ConfigService,
+  ) {
+    // The canonical public UI origin, for building an absolute privacy link in
+    // the email (body text is not auto-linked, so a relative path is useless).
+    this.clientOrigin = config.get<string>('clientOrigin') ?? '';
+  }
 
   /* ── The subject's own view ───────────────────────────────────────────── */
 
@@ -265,7 +273,7 @@ export class MyDataService {
       `We have received your request to ${action} your personal data, and it is now with your organisation's administrator for review.`,
       `Why we hold your data: we process your personal information, such as your profile, learning activity, assessments, certificates and related records, to deliver training, track your progress and completions, issue certificates, and meet our legal and reporting obligations. We keep it only as long as it is needed for those purposes.`,
       `What happens next: an administrator will review your request and act on it, and you can check the status at any time on your My Data page. We will not change or remove anything without completing that review.`,
-      `You can read more about how we handle your information in our Privacy Policy: ${PRIVACY_POLICY_URL}`,
+      `You can read more about how we handle your information in our Privacy Policy: ${this.clientOrigin}${PRIVACY_POLICY_URL}`,
     ].join('\n\n');
 
     void this.notifications.notify({
