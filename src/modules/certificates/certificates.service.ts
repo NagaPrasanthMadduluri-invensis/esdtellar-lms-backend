@@ -7,8 +7,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import { ConfigService } from '@nestjs/config';
+import * as QRCode from 'qrcode';
+
 import type { OrgScope } from '@/database/org-scope';
-import { certificatePrefix, codeHash } from '@/common/certificate-branding';
+import { buildCertificateCode } from '@/common/certificate-branding';
 import { ActivityService } from '@/modules/activity/activity.service';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
@@ -39,43 +42,55 @@ export class CertificatesService {
     private readonly activity: ActivityService,
     /** Best-effort (§8.4) — `notify` cannot throw. */
     private readonly notifications: NotificationsService,
+    /** For the canonical UI origin the verify QR/link is built from. */
+    private readonly config: ConfigService,
   ) {}
 
   /**
-   * Server-side only. A client-supplied code is never accepted anywhere —
-   * the code is the thing the public verify endpoint trusts.
+   * A fresh, unique certificate code — server-side only (a client-supplied
+   * code is never accepted; the code is what the public verify endpoint trusts).
    *
-   * ## The course and user ids are no longer in the code
+   * ## Short codes, so uniqueness is guaranteed by RETRY, not by entropy
    *
-   * It used to read `EDS-19-18-EFC3E4E1`, where 19 and 18 were the course
-   * and the learner. They are gone: a code is printed on a document the
-   * learner shows to other people, and it published two internal row ids
-   * and let anyone holding two certificates work out roughly how many
-   * learners and courses the tenant has.
+   * The code is `<org-prefix><random hex>`, ten characters for a 3-4 letter
+   * prefix (`EDSA2F9BD3`). That is short enough to read aloud and type, and too
+   * short to lean on the hash for uniqueness the way the old 16-char code did.
+   * So `certificate_code` (UNIQUE NOT NULL) is protected by a generate-check
+   * loop: on the rare clash we mint another. Bounded, so a misconfiguration
+   * (e.g. a tiny exhausted space) fails loudly rather than looping forever.
    *
-   * THAT MOVED WHERE UNIQUENESS COMES FROM, which is the part not to
-   * undo. `certificate_code` is UNIQUE NOT NULL, and with the ids present
-   * two different (course, learner) pairs could never collide whatever the
-   * hash did. Without them the hash is the only thing keeping codes apart,
-   * so it went from 8 hex characters to `CODE_HASH_CHARS` — see the note
-   * there. Shortening it back reintroduces a collision that surfaces as a
-   * learner's certificate failing to issue.
+   * The kind (course / path / session) is NOT encoded — it is derived from the
+   * row (`journey_id`, `courses.session_id`), so one format serves all three.
    */
-  generateCode(courseId: number, userId: number, prefix?: string | null): string {
-    return `${certificatePrefix(prefix)}-${codeHash(`${courseId}:${userId}`)}`;
+  private async generateUniqueCode(scope: OrgScope): Promise<string> {
+    const prefix = await this.repository.findCertificatePrefix(scope);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const code = buildCertificateCode(prefix);
+      if (!(await this.repository.codeExists(code))) return code;
+    }
+    throw new Error('Could not allocate a unique certificate code');
   }
 
-  /**
-   * A journey certificate's code — same hash construction as `generateCode`,
-   * with the `J` (and the journey id in the `J<id>` slot rather than a course
-   * id) so the two are tellable apart by eye in a support ticket (§3.4).
-   */
-  generateJourneyCode(
-    journeyId: number,
-    userId: number,
-    prefix?: string | null,
-  ): string {
-    return `${certificatePrefix(prefix)}-J-${codeHash(`J${journeyId}:${userId}`)}`;
+  /** The public scan-to-verify URL for a code, on the canonical UI origin. */
+  verifyUrl(code: string): string {
+    const origin = (
+      this.config.get<string>('clientOrigin') ?? 'http://localhost:3000'
+    ).replace(/\/+$/, '');
+    return `${origin}/verify/${encodeURIComponent(code)}`;
+  }
+
+  /** A self-contained PNG data URL of the verify QR, embedded straight into the
+   *  certificate document (which is printed and saved, so it cannot fetch). */
+  private async qrDataUrl(code: string): Promise<string | null> {
+    try {
+      return await QRCode.toDataURL(this.verifyUrl(code), {
+        margin: 1,
+        width: 240,
+        errorCorrectionLevel: 'M',
+      });
+    } catch {
+      return null; // a missing QR must never block showing the certificate
+    }
   }
 
   /**
@@ -162,9 +177,8 @@ export class CertificatesService {
       // `certificates` is an activity table — it takes the learner's org,
       // which is exactly what `scope` is here: the caller is the learner
       // completing their own lesson/assessment.
-      const prefix = await this.repository.findCertificatePrefix(scope);
       // Held in a variable because the email quotes it back to the learner.
-      const code = this.generateCode(courseId, userId, prefix);
+      const code = await this.generateUniqueCode(scope);
       const certificateId = await this.repository.insert(scope, {
         userId,
         courseId,
@@ -270,11 +284,10 @@ export class CertificatesService {
       );
       if (existing) return null;
 
-      const prefix = await this.repository.findCertificatePrefix(scope);
       return await this.repository.insertJourney(scope, {
         userId,
         journeyId,
-        certificateCode: this.generateJourneyCode(journeyId, userId, prefix),
+        certificateCode: await this.generateUniqueCode(scope),
         issuedAt: new Date().toISOString(),
         finalScore: null,
       });
@@ -340,11 +353,10 @@ export class CertificatesService {
       return { ...reinstated, reinstated: true, hadCompleted: verdict.complete };
     }
 
-    const prefix = await this.repository.findCertificatePrefix(scope);
     const id = await this.repository.insert(scope, {
       userId,
       courseId,
-      certificateCode: this.generateCode(courseId, userId, prefix),
+      certificateCode: await this.generateUniqueCode(scope),
       issuedAt: new Date().toISOString(),
       finalScore: verdict.finalScore,
     });
@@ -418,6 +430,11 @@ export class CertificatesService {
     return {
       id: row.id,
       certificateCode: row.certificateCode,
+      // The scan-to-verify link and a self-contained QR PNG, printed on the
+      // document. The QR is a data URL so a saved/printed certificate carries
+      // it with no network fetch.
+      verifyUrl: this.verifyUrl(row.certificateCode),
+      qrDataUrl: await this.qrDataUrl(row.certificateCode),
       learnerName: `${row.firstName} ${row.lastName}`,
       courseName: row.courseName,
       journeyName: row.journeyName,
@@ -522,13 +539,9 @@ export class CertificatesService {
       throw new ConflictException('Certificate is not revoked');
     }
 
-    // Exactly one of the two is set (§3.4's CHECK constraint) — the journey
-    // code format is picked the same way `verify()` tells the two apart.
-    const prefix = await this.repository.findCertificatePrefix(scope);
-    const certificateCode =
-      cert.journeyId !== null
-        ? this.generateJourneyCode(cert.journeyId, cert.userId, prefix)
-        : this.generateCode(cert.courseId, cert.userId, prefix);
+    // One format serves course and journey alike — the kind is derived from the
+    // row, not parsed from the code, so a reissue just mints a fresh unique one.
+    const certificateCode = await this.generateUniqueCode(scope);
     const issuedAt = new Date().toISOString();
     await this.repository.reinstate(scope, id, certificateCode, issuedAt);
 
@@ -545,22 +558,56 @@ export class CertificatesService {
   async verify(code: string) {
     const row = await this.repository.findByCodeForVerification(code);
     if (!row) {
+      // Unknown codes return the same shape with `found: false` rather than a
+      // 404, so the endpoint cannot be used to tell a real code from a typo.
       return {
+        found: false,
         valid: false,
-        courseName: null,
-        journeyName: null,
+        certificateCode: code,
+        kind: null,
+        title: null,
+        learnerName: null,
+        organizationName: null,
+        category: null,
+        durationMinutes: null,
         issuedAt: null,
         isRevoked: null,
+        session: null,
+        pathTag: null,
       };
     }
 
+    const kind = this.certificateKind(row);
     const isRevoked = row.isRevoked === 1;
+    const title =
+      kind === 'path' ? row.journeyName : row.courseName;
+
     return {
+      found: true,
       valid: !isRevoked,
-      courseName: row.courseName,
-      journeyName: row.journeyName,
+      certificateCode: row.certificateCode,
+      kind,
+      title,
+      // The owner's decision (2026-10-23): a scan-to-verify page shows the
+      // holder and issuer, because the QR is on a document they already present.
+      learnerName: `${row.learnerFirstName} ${row.learnerLastName}`,
+      organizationName: row.organizationName,
+      category: row.category ?? null,
+      durationMinutes:
+        row.durationMinutes === null || row.durationMinutes === undefined
+          ? null
+          : Number(row.durationMinutes),
       issuedAt: row.issuedAt,
       isRevoked,
+      pathTag: kind === 'path' ? (row.journeyTag ?? null) : null,
+      session:
+        kind === 'session'
+          ? {
+              format: row.sessionType === 'Virtual' ? 'Virtual' : 'In person',
+              date: row.sessionDate ?? null,
+              trainer: row.sessionTrainer ?? null,
+            }
+          : null,
     };
   }
 }

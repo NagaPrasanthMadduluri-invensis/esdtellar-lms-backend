@@ -5,12 +5,15 @@ import { Public } from '@/common/decorators';
 import { CertificatesService } from './certificates.service';
 
 /**
- * Unauthenticated by design so a third party can validate a certificate code.
+ * Unauthenticated by design so a third party can validate a certificate code
+ * by scanning the QR printed on the document (or opening /verify/:code).
  *
- * PII rule: this response must never carry a learner name, email, employee id
- * or department. The repository query behind it selects no user column at all,
- * so the constraint is enforced by the query shape rather than by remembering
- * to strip fields here.
+ * It DOES return the holder's name and issuing organisation (owner's decision,
+ * 2026-10-23) — a scan-to-verify page shows what the certificate shows, since
+ * whoever scans it is already holding that document. It still returns no email,
+ * employee id or department. Because PII is now reachable by code, this
+ * endpoint should be rate-limited (a tracked follow-up): short codes plus a
+ * named holder make enumeration worth guarding against.
  */
 @Controller('certificates')
 export class PublicCertificatesController {

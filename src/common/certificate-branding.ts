@@ -57,6 +57,47 @@ export function certificatePrefix(stored?: string | null): string {
 }
 
 /**
+ * A short, scannable certificate code: the organisation's prefix followed by
+ * random uppercase hex, TEN characters in all for the common 3- or 4-letter
+ * prefix — `EDSA2F9BD3`, or `INVA2F9BD3` when a tenant sets its own.
+ *
+ * ## Length is `prefix + fill`, and the fill absorbs the prefix length
+ *
+ * A 3-letter prefix leaves 7 hex, a 4-letter prefix leaves 6 — both land on
+ * ten. A longer prefix keeps the `MIN` floor of random rather than shrinking
+ * to nothing, so the code stays unique at the cost of running past ten; the
+ * admin UI keeps prefixes to the 2-4 the owner asked for, so that is the edge,
+ * not the norm.
+ *
+ * ## Short codes trade entropy for a UNIQUE column, so the caller RETRIES
+ *
+ * The old code carried 12 hex precisely because uniqueness rested entirely on
+ * the hash. Ten characters cannot: 7 hex is 268M values, a birthday clash
+ * around 16k certificates. The guarantee therefore moves OFF the entropy and
+ * onto a generate-check-retry loop against the UNIQUE column (see
+ * `CertificatesService.generateUniqueCode`): on the rare clash we simply mint
+ * another. That is why this returns a candidate, not a promise of uniqueness.
+ */
+export const CERTIFICATE_CODE_LENGTH = 10;
+export const CERTIFICATE_CODE_MIN_FILL = 6;
+
+/** Random uppercase hex of `chars` length, from the CSPRNG. No ambiguous
+ *  glyphs — hex has no O/0 or I/1 to misread down a phone line. */
+function randomHex(chars: number): string {
+  return randomBytes(Math.ceil(chars / 2))
+    .toString('hex')
+    .slice(0, chars)
+    .toUpperCase();
+}
+
+/** A fresh candidate code for the given stored prefix (see the doc above). */
+export function buildCertificateCode(stored?: string | null): string {
+  const prefix = certificatePrefix(stored);
+  const fill = Math.max(CERTIFICATE_CODE_LENGTH - prefix.length, CERTIFICATE_CODE_MIN_FILL);
+  return `${prefix}${randomHex(fill)}`;
+}
+
+/**
  * How many hex characters of randomness a certificate code carries.
  *
  * TWELVE, and the number is load-bearing rather than a taste.

@@ -1908,6 +1908,64 @@ never just that the server restarted. A fresh `npm run build` or process start
 copies it normally — this only bites a migration added to a running dev
 server.
 
+### 10.23.2 Short certificate IDs, a QR, and a public scan-to-verify page
+
+The owner's request (2026-10-23): a short, human certificate ID; a QR on the
+document; and a mobile verification page the QR opens.
+
+**The code is now `<prefix><hex>`, ten characters.** `EDSA2F9BD3` by default,
+`INVA2F9BD3` when a tenant sets its own prefix (the `organizations.certificate_prefix`
+that already existed, §10.23.1). `buildCertificateCode` in
+`common/certificate-branding.ts` fills `10 - prefix.length` hex characters, so a
+3-letter prefix lands on 7 random, a 4-letter on 6 — both ten in all, with a
+`MIN_FILL` floor so a longer prefix stays unique rather than shrinking to nothing.
+
+**Uniqueness moved from entropy to RETRY, and that is the load-bearing change.**
+The old 16-char code leaned on 12 hex because `certificate_code` is UNIQUE NOT
+NULL and the hash was the only thing keeping codes apart (§10.23.1's own note
+argued for the length). Ten characters cannot: 7 hex clashes around 16k rows by
+the birthday bound, and a clash is not cosmetic — the insert fails and a learner
+gets no certificate. So `CertificatesService.generateUniqueCode` loops
+build → `repository.codeExists` → retry (bounded at 20), and the UNIQUE column
+is the backstop. The old `generateCode` / `generateJourneyCode` /
+`codeHash`-based construction is gone; one format serves course, path and
+session because the KIND is derived from the row (`journey_id`,
+`courses.session_id`), never parsed from the code. Old long codes still verify
+unchanged — nothing parses a code.
+
+**Two ops scripts still mint the OLD long format** (`backfill-certificates.mjs`,
+`seed-history.mjs`): they carry their own inline copy because a `.mjs` cannot
+import the TS helper, and both produce valid, unique codes. Not updated here to
+avoid a collision risk in a script without the app's retry loop; a backfilled
+certificate therefore carries a long code while app-issued ones are short. Both
+verify identically. Worth aligning when either script is next touched.
+
+**The QR is generated server-side and embedded as a data URL.** `getForLearner`
+now returns `verifyUrl` (`<clientOrigin>/verify/<code>`, the canonical origin,
+same source as email links) and `qrDataUrl` (a PNG via `qrcode`, already a
+dependency from MFA §10.39). A data URL because the certificate is printed and
+saved — it cannot fetch. Generation is best-effort: a QR failure returns null
+and the document still renders. The client document (`certificate-print-view.jsx`)
+draws the QR bottom-left with a "Scan to verify" caption, and a small line:
+*"This certificate is digitally generated and does not require a signature. Scan
+the QR code to verify its authenticity."*
+
+**The verify page shows the full credential — reversing §10.23's no-PII rule,
+on the owner's explicit call.** `GET /api/certificates/verify/:code` (still
+`@Public`, still unknown-code-returns-a-shape so it is not a 404 oracle) now
+also returns the holder's name, issuing organisation, kind, title, category,
+duration and (for a session) format/date/trainer. The justification: the QR is
+printed ON a document the holder is already presenting, so the page shows what
+the document shows. It still returns no email, employee id or department.
+
+**The consequence to track: enumeration is now real.** Short codes plus a named
+holder make `GET /verify/:code` worth rate-limiting — it moves from the §10.3
+"nice to have" follow-up to a required one. Codes are random hex (not
+sequential), so bulk guessing is hard but no longer pointless. The public page
+lives at `client/app/(legal)/verify/[code]` (plain shell, no auth; `/verify`
+added to the middleware `OPEN_PATHS`), mobile-first, with a valid / revoked /
+not-found banner.
+
 ### 10.22 A reporting line, and Team Learning built on it
 
 `0033_user_manager.sql` adds `users.manager_id` and changes what a team means.

@@ -540,24 +540,65 @@ export class CertificatesRepository {
       .orderBy(desc(certificates.issuedAt));
   }
 
+  /** Whether a candidate certificate code is already taken (the retry backstop
+   *  behind the short 10-char codes — see `buildCertificateCode`). Unscoped,
+   *  because `certificate_code` is globally unique. */
+  async codeExists(code: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ n: count() })
+      .from(certificates)
+      .where(eq(certificates.certificateCode, code));
+    return (rows[0]?.n ?? 0) > 0;
+  }
+
   /**
-   * Verification lookup. Selects no learner-identifying column at all.
+   * Verification lookup for the public scan-to-verify page.
+   *
+   * It DOES carry the holder's name and issuing organisation now — the owner's
+   * decision (2026-10-23), reversing the original no-PII rule. The justification
+   * is that the QR is printed ON a certificate the holder is already showing,
+   * so the page shows what the document shows. The enumeration risk the old
+   * rule guarded against is now real (short codes + PII), so rate-limiting this
+   * endpoint moved from "nice to have" to a required follow-up.
    *
    * Deliberately NOT scoped, unlike every other method here: the public verify
-   * endpoint is cross-tenant by design (§3.6, §6.16) and `certificate_code`
-   * stays globally unique for exactly that reason.
+   * endpoint is cross-tenant by design and `certificate_code` is globally unique.
    */
   async findByCodeForVerification(code: string) {
     const rows = await this.db
       .select({
+        certificateCode: certificates.certificateCode,
+        learnerFirstName: users.firstName,
+        learnerLastName: users.lastName,
+        organizationName: organizations.name,
         courseName: courses.name,
         journeyName: journeys.title,
+        journeyTag: journeys.tag,
+        category: courses.category,
         issuedAt: certificates.issuedAt,
+        finalScore: certificates.finalScore,
         isRevoked: certificates.isRevoked,
+        durationMinutes: sql<number | null>`(
+          SELECT SUM(l.duration_minutes)
+            FROM lessons l
+            JOIN course_modules cm ON cm.id = l.module_id
+           WHERE cm.course_id = ${certificates.courseId}
+             AND l.is_active = 1 AND cm.is_active = 1
+        )`,
+        // A session certificate is issued against the companion course (§10.7);
+        // `courses.session_id` is what marks it, the sitting's facts come from
+        // `sessions`. All null for any other kind — the service derives `kind`.
+        sessionId: courses.sessionId,
+        sessionType: sessions.sessionType,
+        sessionDate: sessions.date,
+        sessionTrainer: sessions.trainer,
       })
       .from(certificates)
       .leftJoin(courses, eq(courses.id, certificates.courseId))
       .leftJoin(journeys, eq(journeys.id, certificates.journeyId))
+      .leftJoin(sessions, eq(sessions.id, courses.sessionId))
+      .innerJoin(users, eq(users.id, certificates.userId))
+      .innerJoin(organizations, eq(organizations.id, certificates.organizationId))
       .where(eq(certificates.certificateCode, code))
       .limit(1);
 
