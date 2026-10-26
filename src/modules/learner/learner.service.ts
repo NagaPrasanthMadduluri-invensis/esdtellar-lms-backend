@@ -1652,6 +1652,9 @@ export class LearnerService {
       id: e.id,
       name: e.name,
       initials: initialsOf(e.firstName, e.lastName),
+      // The uploaded profile picture, shown in place of the coloured initials
+      // when the learner has one (My Profile). Null falls back to initials.
+      avatarUrl: e.avatarUrl ?? null,
       dept: e.dept,
       color: avatarColor(e.name),
       allTimeRank: e.rank,
