@@ -616,6 +616,7 @@ Update this table with every module you move.
 | direct messages (learner inbox, thread, send, unread) | 4 | `server/src/modules/messages` |
 | my data (PDPA export, correction/deletion requests, admin queue) | 6 | `server/src/modules/my-data` |
 | consent capture + admin MFA (TOTP enrol/verify, login second factor) | 6 | `server/src/modules/auth` |
+| community kudos + hashtags (give, people search, kudos board, tag suggest/trending) | 6 | `server/src/modules/community` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4507,6 +4508,85 @@ login, cleared by `POST /auth/consent`, reflected on `/auth/me`; MFA setup →
 QR, wrong enable code 422, enable returns 10 recovery codes, login then returns
 `mfa_required` with no cookie, verify by TOTP and by recovery code both issue a
 session, a spent recovery code is refused, disable returns login to normal.
+
+### 10.40 Community kudos and hashtags
+
+Two additions to the Learning Community (§10.35), both built on the ONE engine
+rather than beside it. `0059_community_kudos.sql` and `0060_community_hashtags.sql`.
+
+#### Kudos — a kudos IS a post
+
+A kudos is a `community_posts` row of `type = 'kudos'` with a new
+`recipient_user_id` (0059), nothing more. The giver is `user_id`, the message is
+`body`, there is no title. That reuse is the whole design: a kudos rides the
+existing feed, likes, replies, soft-delete and moderation with no parallel
+table, and My Courses-style "teach nothing new" means the feed card, the bell
+and the admin moderation feed all pick it up through code that already works.
+`type` is plain text validated per route, so 'kudos' needed no enum change.
+
+- **`giveKudos` validates the recipient is an ACTIVE learner-portal account in
+  the caller's org** (`isKudosRecipient`, joined to `roles.portal = 'learner'`,
+  `orgScope`), and not the caller. A cross-tenant or non-learner id resolves to
+  nothing and returns 404 — not 403 — so the id cannot probe who exists
+  elsewhere. "Any employee including managers, regardless of role" means the
+  community audience: a Manager rides the learner portal and so qualifies; an
+  admin/trainer is not in the community and is not a recipient.
+- **The Kudos leaderboard is SEPARATE from the points board** (owner's call):
+  `kudosLeaderboard` ranks recipients by `COUNT(*)` of non-deleted kudos,
+  org-scoped. Nothing touches `LeaderboardRepository.pointEvents` — kudos is
+  recognition, not a gameable point source (§10.5.1).
+- **People and kudos surfaces show first name + last initial** like the rest of
+  the community (§10.24), EXCEPT the picker search (`searchPeople`), which shows
+  the full name + department because the giver is choosing a specific person and
+  two "Priya"s must be distinguishable; that read is private to the giver.
+- **`kudos_received` is a new notification type** (`common/notifications.ts`,
+  group `recognition`, `transactional`) — a deploy needs a **worker restart**
+  (new catalogue entry) but no migration beyond 0059/0060.
+
+#### Hashtags — normalised, required, trending
+
+`community_hashtags` (per-org, unique normalised `tag`, first-seen `label`,
+`usage_count`) and `community_post_hashtags` (0060).
+
+- **Normalisation is the feature** and lives in ONE shared place,
+  `common/community-hashtags.ts` (mirrored by `client/lib/community-hashtags.js`):
+  strip the `#`, keep letters/digits/underscore, lower-case. `#Renewables`,
+  `renewables` and ` Renewables ` collapse to the one stored tag, so a tenant
+  never gets case-duplicates. `label` keeps the first casing for the chip.
+- **Every post requires at least one** (question / achievement / discussion);
+  **kudos is exempt** (the spec's four categories do not include it, and a kudos
+  has no title to tag). The service merges the chip input with any `#tokens`
+  typed inline in the title/body, de-duplicates, and 400s an empty result.
+- **Reuse, not duplication:** `upsertHashtags` is one `INSERT ... VALUES (…) ON
+  CONFLICT (org, tag) DO UPDATE usage_count + 1` (not one round trip per tag),
+  and `linkPostHashtags` is one multi-row insert (§7.1). Autocomplete
+  (`suggestHashtags`, prefix match ordered by `usage_count`) reuses existing
+  tags so the chip input never mints a near-duplicate.
+- **Trending reads the LIVE join**, not `usage_count`: top tags by count of
+  non-deleted posts in the last 30 days. `usage_count` is only an autocomplete
+  popularity hint and is deliberately not decremented on a post's soft-delete —
+  a deleted post drops out of trending and of the hashtag feed filter
+  (`feedFor` joins against `deleted_at IS NULL`) regardless.
+- **The feed filter is `?hashtag=`** on the existing feed read, normalised the
+  same way before matching, org-scoped on the hashtag row. A post's hashtags
+  ride on every post read as a `json_agg` of `{tag,label}` (`[]` when none), so
+  the feed, the detail and the card never disagree and never need a second query.
+
+New routes, all on `learner/community`, the static ones declared BEFORE
+`:postId` so Express does not capture them as a post id:
+
+```
+GET  /people                 people search for the kudos picker
+POST /kudos                  give kudos (201)
+GET  /kudos/summary          the caller's own received (count + recent), for My Profile
+GET  /kudos/leaderboard      most kudos received
+GET  /hashtags?q=            autocomplete
+GET  /hashtags/trending      trending (30 days)
+GET  / (…&hashtag=)          the feed, now filterable by tag
+```
+
+No new permission (participation is not an org-granted capability, §10.35), and
+the whole module stays gated by `organizations.community_enabled`.
 
 ## 11. Adding a new module — checklist
 

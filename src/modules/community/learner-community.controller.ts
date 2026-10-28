@@ -16,7 +16,7 @@ import { type OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
 
 import { CommunityService } from './community.service';
-import { CreatePostDto, CreateReplyDto } from './dto/community.dto';
+import { CreateKudosDto, CreatePostDto, CreateReplyDto } from './dto/community.dto';
 
 /**
  * The learner's Learning Community. Open to the learner audience (participating
@@ -37,11 +37,13 @@ export class LearnerCommunityController {
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
     @Query('type') type?: string,
+    @Query('hashtag') hashtag?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
     return this.community.feed(scope, user, {
       type,
+      hashtag,
       cursor,
       limit: limit ? Number(limit) : undefined,
     });
@@ -54,6 +56,60 @@ export class LearnerCommunityController {
     @Body() dto: CreatePostDto,
   ) {
     return this.community.createPost(scope, user, dto);
+  }
+
+  // ── Static routes, declared BEFORE ':postId' so they are not captured as a
+  //    post id (Express matches in registration order). ──
+
+  /** People search for the kudos picker. */
+  @Get('people')
+  async people(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('q') q?: string,
+  ) {
+    return this.community.searchPeople(scope, user, q);
+  }
+
+  /** Hashtag autocomplete. */
+  @Get('hashtags')
+  async hashtags(@CurrentScope() scope: OrgScope, @Query('q') q?: string) {
+    return this.community.hashtagSuggest(scope, q);
+  }
+
+  /** Trending hashtags. */
+  @Get('hashtags/trending')
+  async trending(@CurrentScope() scope: OrgScope) {
+    return this.community.hashtagTrending(scope);
+  }
+
+  /** Give kudos to a colleague. */
+  @Post('kudos')
+  @HttpCode(201)
+  async giveKudos(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateKudosDto,
+  ) {
+    return this.community.giveKudos(scope, user, dto);
+  }
+
+  /** The caller's own kudos received — count + recent, for My Profile. */
+  @Get('kudos/summary')
+  async kudosSummary(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.community.kudosSummary(scope, user);
+  }
+
+  /** The Kudos leaderboard — most kudos received. */
+  @Get('kudos/leaderboard')
+  async kudosLeaderboard(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.community.kudosLeaderboard(scope, user);
   }
 
   @Get(':postId')

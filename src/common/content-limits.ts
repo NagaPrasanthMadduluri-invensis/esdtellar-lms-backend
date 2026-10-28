@@ -33,6 +33,21 @@ export const COMMUNITY_TITLE_MAX = 160;
 export const COMMUNITY_BODY_MAX = 4000;
 
 /**
+ * Hashtags on a community post: at least one is required on every post
+ * (question / achievement / discussion), a kudos is exempt. A tag is short, and
+ * a post carries a handful, not a cloud. `client/lib/content-limits.js` mirrors
+ * these — change both.
+ */
+export const COMMUNITY_HASHTAG_MAX = 50;
+export const COMMUNITY_HASHTAGS_PER_POST_MAX = 8;
+
+/**
+ * A kudos message — a line or two of recognition, shorter than a post body.
+ * `client/lib/content-limits.js` mirrors it — change both.
+ */
+export const KUDOS_MESSAGE_MAX = 500;
+
+/**
  * A direct message between two people. Shorter than a community post — a DM is
  * a line or two, not an essay — but longer than a card description. Its column
  * is `text`, same reasoning as the others. `client/lib/content-limits.js`

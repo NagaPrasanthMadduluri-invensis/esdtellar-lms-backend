@@ -29,6 +29,12 @@ export interface PostRow {
   cert_code: string | null;
   cert_revoked: number | null;
   liked_by_me: boolean;
+  hashtags: { tag: string; label: string }[] | null;
+  // Set only for a kudos post (type='kudos') — the person recognised, shown as
+  // first name + last initial like every other community surface.
+  recipient_first_name: string | null;
+  recipient_last_initial: string | null;
+  recipient_avatar: string | null;
 }
 
 export interface ReplyRow {
@@ -75,13 +81,46 @@ export class CommunityRepository {
       ${a}.avatar_url`;
   }
 
+  // A post's hashtags as a JSON array of {tag,label}, ordered for display.
+  // `[]` when it has none, so the client never guards on null.
+  private hashtagsJson(postAlias: string) {
+    const p = sql.identifier(postAlias);
+    return sql`COALESCE((
+      SELECT json_agg(json_build_object('tag', h.tag, 'label', h.label) ORDER BY h.label)
+        FROM community_post_hashtags ph
+        JOIN community_hashtags h ON h.id = ph.hashtag_id
+       WHERE ph.post_id = ${p}.id
+    ), '[]'::json) AS hashtags`;
+  }
+
+  // The kudos recipient (joined as `ru`), first name + last initial like the
+  // author columns. Null on every non-kudos post.
+  private recipientColumns() {
+    return sql`
+      ru.first_name AS recipient_first_name,
+      NULLIF(UPPER(LEFT(TRIM(ru.last_name), 1)), '') AS recipient_last_initial,
+      ru.avatar_url AS recipient_avatar`;
+  }
+
   /** The feed — one org, newest first, keyset-paginated, deleted hidden. */
   async feedFor(
     scope: OrgScope,
     userId: number,
-    opts: { type?: string; cursorTs?: string; cursorId?: number; limit: number },
+    opts: {
+      type?: string;
+      hashtag?: string;
+      cursorTs?: string;
+      cursorId?: number;
+      limit: number;
+    },
   ): Promise<PostRow[]> {
     const typeFilter = opts.type ? sql` AND p.type = ${opts.type}` : sql``;
+    const hashtagFilter = opts.hashtag
+      ? sql` AND EXISTS (SELECT 1 FROM community_post_hashtags ph
+                           JOIN community_hashtags h ON h.id = ph.hashtag_id
+                          WHERE ph.post_id = p.id
+                            AND ${orgScope('h', scope)} AND h.tag = ${opts.hashtag})`
+      : sql``;
     const cursor =
       opts.cursorTs && opts.cursorId !== undefined
         ? sql` AND (p.created_at, p.id) < (${opts.cursorTs}, ${opts.cursorId})`
@@ -90,17 +129,20 @@ export class CommunityRepository {
       SELECT p.id AS post_pk, p.public_id, p.type, p.title, p.body,
              p.reply_count, p.like_count, p.created_at, p.edited_at,
              ${this.authorColumns('u')},
+             ${this.recipientColumns()},
              cert.public_id        AS cert_public_id,
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
+             ${this.hashtagsJson('p')},
              EXISTS (SELECT 1 FROM community_reactions r
                       WHERE r.post_id = p.id AND r.user_id = ${userId}) AS liked_by_me
         FROM community_posts p
         JOIN users u ON u.id = p.user_id
+   LEFT JOIN users ru ON ru.id = p.recipient_user_id
    LEFT JOIN certificates cert ON cert.id = p.certificate_id
        WHERE ${orgScope('p', scope)}
          AND p.deleted_at IS NULL
-         ${typeFilter}${cursor}
+         ${typeFilter}${hashtagFilter}${cursor}
        ORDER BY p.created_at DESC, p.id DESC
        LIMIT ${opts.limit}
     `);
@@ -127,12 +169,15 @@ export class CommunityRepository {
       SELECT p.public_id, p.type, p.title, p.body,
              p.reply_count, p.like_count, p.created_at, p.edited_at,
              ${this.authorColumns('u')},
+             ${this.recipientColumns()},
              cert.public_id        AS cert_public_id,
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
+             ${this.hashtagsJson('p')},
              false AS liked_by_me
         FROM community_posts p
         JOIN users u ON u.id = p.user_id
+   LEFT JOIN users ru ON ru.id = p.recipient_user_id
    LEFT JOIN certificates cert ON cert.id = p.certificate_id
        WHERE ${orgScope('p', scope)}
          AND p.deleted_at IS NULL
@@ -167,13 +212,16 @@ export class CommunityRepository {
       SELECT p.public_id, p.type, p.title, p.body,
              p.reply_count, p.like_count, p.created_at, p.edited_at,
              ${this.authorColumns('u')},
+             ${this.recipientColumns()},
              cert.public_id        AS cert_public_id,
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
+             ${this.hashtagsJson('p')},
              EXISTS (SELECT 1 FROM community_reactions r
                       WHERE r.post_id = p.id AND r.user_id = ${userId}) AS liked_by_me
         FROM community_posts p
         JOIN users u ON u.id = p.user_id
+   LEFT JOIN users ru ON ru.id = p.recipient_user_id
    LEFT JOIN certificates cert ON cert.id = p.certificate_id
        WHERE p.id = ${postId} AND ${orgScope('p', scope)} AND p.deleted_at IS NULL
        LIMIT 1
@@ -227,14 +275,197 @@ export class CommunityRepository {
     title: string | null;
     body: string | null;
     certificateId: number | null;
+    recipientUserId?: number | null;
   }): Promise<{ id: number; publicId: string }> {
     const rows = await this.db.all<{ id: number; public_id: string }>(sql`
-      INSERT INTO community_posts (organization_id, user_id, type, title, body, certificate_id)
+      INSERT INTO community_posts
+        (organization_id, user_id, type, title, body, certificate_id, recipient_user_id)
       VALUES (${input.scope.organizationId}, ${input.userId}, ${input.type},
-              ${input.title}, ${input.body}, ${input.certificateId})
+              ${input.title}, ${input.body}, ${input.certificateId},
+              ${input.recipientUserId ?? null})
       RETURNING id, public_id
     `);
     return { id: rows[0].id, publicId: rows[0].public_id };
+  }
+
+  // ── Hashtags ──────────────────────────────────────────────────────────────
+
+  /**
+   * Upsert the tags for this org and return their ids. One statement per call
+   * (not per tag): a VALUES list, ON CONFLICT bumps usage_count and keeps the
+   * first-seen label. The normalised `tag`/`label` pairs come from the service.
+   */
+  async upsertHashtags(
+    scope: OrgScope,
+    tags: { tag: string; label: string }[],
+  ): Promise<number[]> {
+    if (tags.length === 0) return [];
+    const values = sql.join(
+      tags.map(
+        (t) => sql`(${scope.organizationId}, ${t.tag}, ${t.label}, 1)`,
+      ),
+      sql`, `,
+    );
+    const rows = await this.db.all<{ id: number }>(sql`
+      INSERT INTO community_hashtags (organization_id, tag, label, usage_count)
+      VALUES ${values}
+      ON CONFLICT (organization_id, tag)
+        DO UPDATE SET usage_count = community_hashtags.usage_count + 1
+      RETURNING id
+    `);
+    return rows.map((r) => r.id);
+  }
+
+  /** Link a post to its hashtag ids. One multi-row insert (§7.1). */
+  async linkPostHashtags(postId: number, hashtagIds: number[]): Promise<void> {
+    if (hashtagIds.length === 0) return;
+    const values = sql.join(
+      hashtagIds.map((id) => sql`(${postId}, ${id})`),
+      sql`, `,
+    );
+    await this.db.run(sql`
+      INSERT INTO community_post_hashtags (post_id, hashtag_id)
+      VALUES ${values}
+      ON CONFLICT DO NOTHING
+    `);
+  }
+
+  /** Autocomplete: tags whose normalised form starts with `q`, popular first. */
+  async suggestHashtags(scope: OrgScope, q: string, limit: number) {
+    return this.db.all<{ tag: string; label: string; count: number }>(sql`
+      SELECT tag, label, usage_count AS count
+        FROM community_hashtags
+       WHERE ${orgScope('community_hashtags', scope)} AND tag LIKE ${q + '%'}
+       ORDER BY usage_count DESC, tag ASC
+       LIMIT ${limit}
+    `);
+  }
+
+  /**
+   * Trending: tags on the most non-deleted posts in the recent window. Read
+   * from the live join, so a deleted post never counts — `usage_count` is only
+   * an autocomplete hint and is deliberately not used here.
+   */
+  async trendingHashtags(scope: OrgScope, days: number, limit: number) {
+    return this.db.all<{ tag: string; label: string; count: number }>(sql`
+      SELECT h.tag, h.label, COUNT(*)::int AS count
+        FROM community_post_hashtags ph
+        JOIN community_hashtags h ON h.id = ph.hashtag_id
+        JOIN community_posts p ON p.id = ph.post_id
+       WHERE ${orgScope('h', scope)}
+         AND p.deleted_at IS NULL
+         AND p.created_at >= now() - (${days} || ' days')::interval
+       GROUP BY h.id, h.tag, h.label
+       ORDER BY count DESC, h.tag ASC
+       LIMIT ${limit}
+    `);
+  }
+
+  // ── Kudos + people ────────────────────────────────────────────────────────
+
+  /**
+   * Is this user a valid kudos recipient — an ACTIVE learner-portal account in
+   * the caller's org? Org-scoped, so a cross-tenant id resolves to nothing.
+   */
+  async isKudosRecipient(scope: OrgScope, userId: number): Promise<boolean> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+       WHERE u.id = ${userId}
+         AND ${orgScope('u', scope)}
+         AND u.is_active = 1
+         AND r.portal = 'learner'
+    `);
+    return (rows[0]?.n ?? 0) > 0;
+  }
+
+  /** People search for the kudos picker — active learner-portal users, not the
+   *  caller. Full name + dept here (the giver is choosing a specific person). */
+  async searchPeople(
+    scope: OrgScope,
+    q: string | undefined,
+    excludeUserId: number,
+    limit: number,
+  ) {
+    const search = q
+      ? sql` AND (u.first_name ILIKE ${'%' + q + '%'}
+                   OR u.last_name ILIKE ${'%' + q + '%'}
+                   OR TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) ILIKE ${'%' + q + '%'})`
+      : sql``;
+    return this.db.all<{
+      id: number;
+      name: string;
+      department: string | null;
+      avatar_url: string | null;
+    }>(sql`
+      SELECT u.id,
+             TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS name,
+             u.department,
+             u.avatar_url
+        FROM users u
+        JOIN roles r ON r.id = u.role_id
+       WHERE ${orgScope('u', scope)}
+         AND u.is_active = 1
+         AND r.portal = 'learner'
+         AND u.id <> ${excludeUserId}
+         ${search}
+       ORDER BY name ASC
+       LIMIT ${limit}
+    `);
+  }
+
+  /** A learner's own kudos: the count received and the most recent few. */
+  async kudosForUser(scope: OrgScope, userId: number, recentLimit: number) {
+    const countRows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM community_posts p
+       WHERE ${orgScope('p', scope)} AND p.type = 'kudos'
+         AND p.recipient_user_id = ${userId} AND p.deleted_at IS NULL
+    `);
+    const recent = await this.db.all<{
+      public_id: string;
+      body: string | null;
+      created_at: string;
+      first_name: string;
+      last_initial: string | null;
+      avatar_url: string | null;
+    }>(sql`
+      SELECT p.public_id, p.body, p.created_at,
+             u.first_name,
+             NULLIF(UPPER(LEFT(TRIM(u.last_name), 1)), '') AS last_initial,
+             u.avatar_url
+        FROM community_posts p
+        JOIN users u ON u.id = p.user_id
+       WHERE ${orgScope('p', scope)} AND p.type = 'kudos'
+         AND p.recipient_user_id = ${userId} AND p.deleted_at IS NULL
+       ORDER BY p.created_at DESC, p.id DESC
+       LIMIT ${recentLimit}
+    `);
+    return { received: countRows[0]?.n ?? 0, recent };
+  }
+
+  /** The Kudos leaderboard — recipients ranked by kudos received, org-scoped. */
+  async kudosLeaderboard(scope: OrgScope, limit: number) {
+    return this.db.all<{
+      user_id: number;
+      first_name: string;
+      last_initial: string | null;
+      department: string | null;
+      avatar_url: string | null;
+      received: number;
+    }>(sql`
+      SELECT u.id AS user_id, u.first_name,
+             NULLIF(UPPER(LEFT(TRIM(u.last_name), 1)), '') AS last_initial,
+             u.department, u.avatar_url,
+             COUNT(*)::int AS received
+        FROM community_posts p
+        JOIN users u ON u.id = p.recipient_user_id
+       WHERE ${orgScope('p', scope)} AND p.type = 'kudos'
+         AND p.deleted_at IS NULL AND u.is_active = 1
+       GROUP BY u.id, u.first_name, u.last_name, u.department, u.avatar_url
+       ORDER BY received DESC, u.first_name ASC
+       LIMIT ${limit}
+    `);
   }
 
   async createReply(input: {

@@ -490,6 +490,15 @@ export const NOTIFICATION_TYPES = {
     cta: 'Open the discussion',
     aspiration: 'Someone joined a post you started.',
   },
+  kudos_received: {
+    label: 'You received kudos',
+    group: 'recognition',
+    icon: 'Award',
+    audience: ['learner'],
+    email: 'transactional',
+    cta: 'See it in the community',
+    aspiration: 'A colleague recognised you.',
+  },
   community_post_removed: {
     label: 'A community post was removed',
     group: 'people',

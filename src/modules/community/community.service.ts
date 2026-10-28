@@ -7,6 +7,7 @@ import {
 
 import { actorLabel } from '@/common/notifications';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import { collectHashtags, extractInlineHashtags } from '@/common/community-hashtags';
 import { type OrgScope } from '@/database/org-scope';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 
@@ -18,9 +19,14 @@ import {
 import {
   COMMUNITY_POST_TYPES,
   type CommunityPostType,
+  type CreateKudosDto,
   type CreatePostDto,
   type CreateReplyDto,
 } from './dto/community.dto';
+
+// Types a learner can FILTER the feed by — the three compose types plus kudos
+// (which is created through its own endpoint, never the compose picker).
+const FEED_FILTER_TYPES = [...COMMUNITY_POST_TYPES, 'kudos'] as const;
 
 @Injectable()
 export class CommunityService {
@@ -34,14 +40,19 @@ export class CommunityService {
   async feed(
     scope: OrgScope,
     user: AuthenticatedUser,
-    query: { type?: string; cursor?: string; limit?: number },
+    query: { type?: string; hashtag?: string; cursor?: string; limit?: number },
   ) {
     await this.assertEnabled(scope);
     const limit = clampLimit(query.limit);
-    const type = this.safeType(query.type);
+    const type = this.safeFilterType(query.type);
+    // Normalise the hashtag filter the same way it was stored, so #Renewables
+    // and renewables both match.
+    const [tag] = collectHashtags([query.hashtag ?? '']);
+    const hashtag = tag?.tag;
     const cur = query.cursor ? decodeCursor(query.cursor) : {};
     const rows = await this.repository.feedFor(scope, user.userId, {
       type,
+      hashtag,
       cursorTs: cur.cursorTs,
       cursorId: cur.cursorId,
       limit: limit + 1,
@@ -102,6 +113,17 @@ export class CommunityService {
       throw new BadRequestException('A title is required');
     }
 
+    // Hashtags: the chip input plus any #tokens typed inline in the title/body,
+    // normalised and de-duplicated. Every post requires at least one.
+    const tags = collectHashtags([
+      ...(dto.hashtags ?? []),
+      ...extractInlineHashtags(title),
+      ...extractInlineHashtags(body),
+    ]);
+    if (tags.length === 0) {
+      throw new BadRequestException('Add at least one hashtag');
+    }
+
     const { id } = await this.repository.createPost({
       scope,
       userId: user.userId,
@@ -110,8 +132,127 @@ export class CommunityService {
       body,
       certificateId,
     });
+    const hashtagIds = await this.repository.upsertHashtags(scope, tags);
+    await this.repository.linkPostHashtags(id, hashtagIds);
     const post = await this.repository.getPost(scope, id, user.userId);
     return { post: this.shapePost(post as PostRow, user.userId) };
+  }
+
+  // ── Kudos ──────────────────────────────────────────────────────────────────
+
+  async giveKudos(
+    scope: OrgScope,
+    user: AuthenticatedUser,
+    dto: CreateKudosDto,
+  ) {
+    await this.assertEnabled(scope);
+    if (dto.recipientUserId === user.userId) {
+      throw new BadRequestException('You cannot give kudos to yourself');
+    }
+    const ok = await this.repository.isKudosRecipient(scope, dto.recipientUserId);
+    if (!ok) {
+      // A cross-tenant or non-learner id resolves to nothing — 404, not 403, so
+      // the id cannot be used to probe who exists in another org.
+      throw new NotFoundException('That person could not be found');
+    }
+
+    // A kudos is a community_posts row of type 'kudos' (one engine): the giver
+    // is the author, the recipient is recipient_user_id, the message is body.
+    // Kudos carries no hashtag and no title.
+    const { id } = await this.repository.createPost({
+      scope,
+      userId: user.userId,
+      type: 'kudos',
+      title: null,
+      body: dto.message,
+      certificateId: null,
+      recipientUserId: dto.recipientUserId,
+    });
+
+    // Tell the recipient. Best-effort (§8.4).
+    const post = await this.repository.getPost(scope, id, user.userId);
+    void this.notifications.notify({
+      userIds: [dto.recipientUserId],
+      organizationId: scope.organizationId,
+      type: 'kudos_received',
+      title: 'You received kudos',
+      body: `${actorLabel(user)} recognised you: "${truncate(dto.message, 120)}"`,
+      link: post ? `/community/${post.public_id}` : '/community',
+      subjectType: 'community_post',
+      subjectId: id,
+      actorName: actorLabel(user),
+      exceptUserId: user.userId,
+    });
+
+    return { post: this.shapePost(post as PostRow, user.userId) };
+  }
+
+  async searchPeople(scope: OrgScope, user: AuthenticatedUser, q?: string) {
+    await this.assertEnabled(scope);
+    const rows = await this.repository.searchPeople(scope, q?.trim(), user.userId, 10);
+    return {
+      people: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        department: r.department,
+        avatar: r.avatar_url,
+      })),
+    };
+  }
+
+  async kudosSummary(scope: OrgScope, user: AuthenticatedUser) {
+    await this.assertEnabled(scope);
+    const { received, recent } = await this.repository.kudosForUser(
+      scope,
+      user.userId,
+      5,
+    );
+    return {
+      received,
+      recent: recent.map((r) => ({
+        id: r.public_id,
+        message: r.body,
+        createdAt: r.created_at,
+        from: {
+          name: r.last_initial
+            ? `${r.first_name} ${r.last_initial}.`
+            : r.first_name,
+          avatar: r.avatar_url,
+        },
+      })),
+    };
+  }
+
+  async kudosLeaderboard(scope: OrgScope, user: AuthenticatedUser) {
+    await this.assertEnabled(scope);
+    const rows = await this.repository.kudosLeaderboard(scope, 50);
+    return {
+      entries: rows.map((r, i) => ({
+        rank: i + 1,
+        userId: r.user_id,
+        name: r.last_initial
+          ? `${r.first_name} ${r.last_initial}.`
+          : r.first_name,
+        department: r.department,
+        avatarUrl: r.avatar_url,
+        received: r.received,
+        isYou: r.user_id === user.userId,
+      })),
+    };
+  }
+
+  async hashtagSuggest(scope: OrgScope, q?: string) {
+    await this.assertEnabled(scope);
+    const [tag] = collectHashtags([q ?? '']);
+    if (!tag) return { hashtags: [] };
+    const rows = await this.repository.suggestHashtags(scope, tag.tag, 10);
+    return { hashtags: rows };
+  }
+
+  async hashtagTrending(scope: OrgScope) {
+    await this.assertEnabled(scope);
+    const rows = await this.repository.trendingHashtags(scope, 30, 12);
+    return { hashtags: rows };
   }
 
   async reply(
@@ -335,6 +476,13 @@ export class CommunityService {
       : undefined;
   }
 
+  // Like safeType, but also lets the feed be filtered to kudos.
+  private safeFilterType(type?: string): string | undefined {
+    return type && (FEED_FILTER_TYPES as readonly string[]).includes(type)
+      ? type
+      : undefined;
+  }
+
   private shapePost(row: PostRow, meId: number, admin = false) {
     const name = admin
       ? row.author_name
@@ -364,6 +512,17 @@ export class CommunityService {
             revoked: row.cert_revoked === 1,
           }
         : null,
+      hashtags: row.hashtags ?? [],
+      // Present only on a kudos post; the person recognised (first + initial).
+      recipient:
+        row.type === 'kudos' && row.recipient_first_name
+          ? {
+              name: row.recipient_last_initial
+                ? `${row.recipient_first_name} ${row.recipient_last_initial}.`
+                : row.recipient_first_name,
+              avatar: row.recipient_avatar,
+            }
+          : null,
     };
   }
 
@@ -389,6 +548,11 @@ const DEFAULT_LIMIT = 20;
 function clampLimit(limit?: number): number {
   if (!limit || Number.isNaN(limit)) return DEFAULT_LIMIT;
   return Math.min(Math.max(Math.trunc(limit), 1), MAX_LIMIT);
+}
+
+function truncate(s: string, n: number): string {
+  const t = s.trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
 function encodeCursor(ts: string, id: number): string {

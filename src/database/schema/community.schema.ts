@@ -4,6 +4,7 @@ import {
   index,
   integer,
   pgTable,
+  primaryKey,
   serial,
   text,
   timestamp,
@@ -52,6 +53,12 @@ export const communityPosts = pgTable(
     certificateId: integer('certificate_id').references(() => certificates.id, {
       onDelete: 'set null',
     }),
+    // Set ONLY for type='kudos' (0059): the person being recognised. The giver
+    // is `user_id`, the message is `body`. ON DELETE SET NULL so removing the
+    // recipient's account does not delete the recognition.
+    recipientUserId: integer('recipient_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     // Denormalised counters, kept in step with the insert/delete in one
     // transaction, so the feed never counts rows per card (§7.1).
     replyCount: integer('reply_count').notNull().default(0),
@@ -70,6 +77,50 @@ export const communityPosts = pgTable(
     index('idx_community_posts_feed').on(table.organizationId, table.createdAt),
     index('idx_community_posts_org_type').on(table.organizationId, table.type),
     index('idx_community_posts_user').on(table.userId),
+    index('idx_community_posts_recipient').on(
+      table.organizationId,
+      table.recipientUserId,
+    ),
+  ],
+);
+
+/**
+ * Hashtags (0060). Per-organization, NORMALISED so #Renewables and #renewables
+ * are one tag. `tag` is lower-cased with the leading # stripped and unique per
+ * org; `label` keeps the first-seen display casing. `usage_count` is an
+ * approximate popularity signal for autocomplete ordering.
+ */
+export const communityHashtags = pgTable(
+  'community_hashtags',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id').notNull(),
+    tag: text('tag').notNull(),
+    label: text('label').notNull(),
+    usageCount: integer('usage_count').notNull().default(0),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('community_hashtags_org_tag').on(table.organizationId, table.tag),
+    index('idx_community_hashtags_usage').on(table.organizationId, table.usageCount),
+  ],
+);
+
+export const communityPostHashtags = pgTable(
+  'community_post_hashtags',
+  {
+    postId: integer('post_id')
+      .notNull()
+      .references(() => communityPosts.id, { onDelete: 'cascade' }),
+    hashtagId: integer('hashtag_id')
+      .notNull()
+      .references(() => communityHashtags.id, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.postId, table.hashtagId] }),
+    index('idx_community_post_hashtags_tag').on(table.hashtagId),
   ],
 );
 
@@ -139,3 +190,6 @@ export type CommunityReplyRow = typeof communityReplies.$inferSelect;
 export type NewCommunityReplyRow = typeof communityReplies.$inferInsert;
 export type CommunityReactionRow = typeof communityReactions.$inferSelect;
 export type NewCommunityReactionRow = typeof communityReactions.$inferInsert;
+export type CommunityHashtagRow = typeof communityHashtags.$inferSelect;
+export type NewCommunityHashtagRow = typeof communityHashtags.$inferInsert;
+export type CommunityPostHashtagRow = typeof communityPostHashtags.$inferSelect;
