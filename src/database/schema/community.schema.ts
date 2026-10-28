@@ -59,6 +59,9 @@ export const communityPosts = pgTable(
     recipientUserId: integer('recipient_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
+    // The group this post belongs to (0061), or NULL for the main feed. A post
+    // lives in exactly one place. ON DELETE CASCADE with the group.
+    groupId: integer('group_id'),
     // Denormalised counters, kept in step with the insert/delete in one
     // transaction, so the feed never counts rows per card (§7.1).
     replyCount: integer('reply_count').notNull().default(0),
@@ -193,3 +196,53 @@ export type NewCommunityReactionRow = typeof communityReactions.$inferInsert;
 export type CommunityHashtagRow = typeof communityHashtags.$inferSelect;
 export type NewCommunityHashtagRow = typeof communityHashtags.$inferInsert;
 export type CommunityPostHashtagRow = typeof communityPostHashtags.$inferSelect;
+
+/**
+ * Groups (0061): admin-created sub-communities. A learner joins; posts carry a
+ * `group_id` (above) that is NULL for the main feed or set for a group's feed.
+ */
+export const communityGroups = pgTable(
+  'community_groups',
+  {
+    id: serial('id').primaryKey(),
+    publicId: uuid('public_id').defaultRandom(),
+    organizationId: integer('organization_id').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    createdBy: integer('created_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    archivedAt: timestamp('archived_at', { mode: 'string', withTimezone: true }),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('community_groups_public_id_key').on(table.publicId),
+    index('idx_community_groups_org').on(table.organizationId, table.archivedAt),
+  ],
+);
+
+export const communityGroupMembers = pgTable(
+  'community_group_members',
+  {
+    groupId: integer('group_id')
+      .notNull()
+      .references(() => communityGroups.id, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    organizationId: integer('organization_id').notNull(),
+    joinedAt: timestamp('joined_at', { mode: 'string', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.groupId, table.userId] }),
+    index('idx_community_group_members_user').on(table.userId),
+  ],
+);
+
+export type CommunityGroupRow = typeof communityGroups.$inferSelect;
+export type NewCommunityGroupRow = typeof communityGroups.$inferInsert;
+export type CommunityGroupMemberRow = typeof communityGroupMembers.$inferSelect;

@@ -617,6 +617,7 @@ Update this table with every module you move.
 | my data (PDPA export, correction/deletion requests, admin queue) | 6 | `server/src/modules/my-data` |
 | consent capture + admin MFA (TOTP enrol/verify, login second factor) | 6 | `server/src/modules/auth` |
 | community kudos + hashtags (give, people search, kudos board, tag suggest/trending) | 6 | `server/src/modules/community` |
+| community groups + admin discussions (learner groups/join/leave; admin groups CRUD + discussion create) | 8 | `server/src/modules/community` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4587,6 +4588,66 @@ GET  / (…&hashtag=)          the feed, now filterable by tag
 
 No new permission (participation is not an org-granted capability, §10.35), and
 the whole module stays gated by `organizations.community_enabled`.
+
+### 10.41 Community: admin-curated discussions, and Groups
+
+`0061_community_groups.sql`. Two changes to the Learning Community: the
+Discussion type becomes admin-only, and Groups (admin-created sub-communities) are
+added. Both reuse the one engine rather than a parallel system.
+
+**Discussions are admin-curated.** A learner's `createPost` rejects
+`type='discussion'` (403, with a sentence pointing them at asking a question or
+replying). Admins create discussions via `POST /admin/community/discussions`
+(`moderate_community`), which forces the type, requires a hashtag like any post,
+and may target a group. Learners still VIEW and REPLY to discussions — only
+starting a thread is restricted. The learner composer drops the Discussion
+option; the "Discussions" filter tab stays (for viewing).
+
+**A group is an admin-created sub-community a learner joins, with its own feed.**
+`community_groups` (name, description, `public_id`, soft-remove `archived_at`)
+and `community_group_members`. A post carries a nullable `community_posts.group_id`:
+NULL is the main feed, set is that group's feed — **a post lives in exactly one
+place**, so the main feed is `group_id IS NULL` and a group feed is
+`group_id = X`. Kudos and the achievement/question composer all stay in the main
+feed unless posted from inside a group.
+
+- **Reading a group feed is open to the org; POSTING requires membership**
+  (checked in `createPost`). Joining is self-serve (`POST
+  /learner/community/groups/:id/join`), no permission — participation is not an
+  org-granted capability (§10.35). An admin curates a group's discussions
+  WITHOUT joining it.
+- **Group CRUD is `moderate_community`** (the same permission as moderation —
+  curating and moderating go together, no new grant migration, §10.40's choice).
+  Archive is the soft-remove; there is no hard-delete route (the FK cascade
+  exists only as a safety).
+- **Id exposure follows §10.34's split:** a learner addresses a group by its
+  `public_id` (it rides in `?group=` and the join routes, resolved via
+  `PublicIdService` — `community_groups` is now whitelisted); the ADMIN screens
+  use the integer id, because they carry no id in a browser URL. So
+  `adminListGroups` returns the integer id while `listGroups` (learner) returns
+  the `public_id`. The learner's post `groupId` is a public id resolved in the
+  controller; the admin's is an integer.
+
+New routes:
+
+```
+# learner
+GET    /learner/community?group=<public_id>     a group's feed (org-readable)
+GET    /learner/community/groups                browse + joined state + counts
+POST   /learner/community/groups/:id/join       join (200)
+DELETE /learner/community/groups/:id/join       leave
+POST   /learner/community                        groupId (public id) → posts into a group (member only)
+
+# admin  (moderate_community on the writes)
+GET    /admin/community/groups                  manage list (incl. archived), int ids
+POST   /admin/community/groups                   create (201)
+PATCH  /admin/community/groups/:groupId          rename / describe / archive / restore
+POST   /admin/community/discussions              create a discussion (201), optional group
+```
+
+The static admin and learner group routes are declared BEFORE `:postId` so
+Express does not capture them as a post id. No new permission; still gated by
+`organizations.community_enabled`.
 
 ## 11. Adding a new module — checklist
 

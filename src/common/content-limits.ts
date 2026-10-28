@@ -47,6 +47,10 @@ export const COMMUNITY_HASHTAGS_PER_POST_MAX = 8;
  */
 export const KUDOS_MESSAGE_MAX = 500;
 
+/** A community group's name. Its description uses DESCRIPTION_MAX_LENGTH.
+ *  `client/lib/content-limits.js` mirrors it — change both. */
+export const COMMUNITY_GROUP_NAME_MAX = 80;
+
 /**
  * A direct message between two people. Shorter than a community post — a DM is
  * a line or two, not an essay — but longer than a card description. Its column

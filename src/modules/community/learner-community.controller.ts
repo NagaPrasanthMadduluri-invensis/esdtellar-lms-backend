@@ -38,12 +38,17 @@ export class LearnerCommunityController {
     @CurrentUser() user: AuthenticatedUser,
     @Query('type') type?: string,
     @Query('hashtag') hashtag?: string,
+    @Query('group') group?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
+    const groupId = group
+      ? await this.publicId.resolveIdOrThrow('community_groups', group)
+      : undefined;
     return this.community.feed(scope, user, {
       type,
       hashtag,
+      groupId,
       cursor,
       limit: limit ? Number(limit) : undefined,
     });
@@ -55,7 +60,10 @@ export class LearnerCommunityController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreatePostDto,
   ) {
-    return this.community.createPost(scope, user, dto);
+    const groupId = dto.groupId
+      ? await this.publicId.resolveIdOrThrow('community_groups', dto.groupId)
+      : undefined;
+    return this.community.createPost(scope, user, dto, groupId);
   }
 
   // ── Static routes, declared BEFORE ':postId' so they are not captured as a
@@ -81,6 +89,36 @@ export class LearnerCommunityController {
   @Get('hashtags/trending')
   async trending(@CurrentScope() scope: OrgScope) {
     return this.community.hashtagTrending(scope);
+  }
+
+  /** Groups the learner can browse and join. */
+  @Get('groups')
+  async groups(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.community.listGroups(scope, user);
+  }
+
+  @Post('groups/:groupId/join')
+  @HttpCode(200)
+  async joinGroup(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('groupId') groupIdParam: string,
+  ) {
+    const groupId = await this.publicId.resolveIdOrThrow('community_groups', groupIdParam);
+    return this.community.joinGroup(scope, user, groupId);
+  }
+
+  @Delete('groups/:groupId/join')
+  async leaveGroup(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('groupId') groupIdParam: string,
+  ) {
+    const groupId = await this.publicId.resolveIdOrThrow('community_groups', groupIdParam);
+    return this.community.leaveGroup(scope, user, groupId);
   }
 
   /** Give kudos to a colleague. */

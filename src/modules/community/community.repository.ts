@@ -109,12 +109,18 @@ export class CommunityRepository {
     opts: {
       type?: string;
       hashtag?: string;
+      groupId?: number;
       cursorTs?: string;
       cursorId?: number;
       limit: number;
     },
   ): Promise<PostRow[]> {
     const typeFilter = opts.type ? sql` AND p.type = ${opts.type}` : sql``;
+    // A post lives in one place: the main feed (group_id NULL) or one group.
+    const groupFilter =
+      opts.groupId !== undefined
+        ? sql` AND p.group_id = ${opts.groupId}`
+        : sql` AND p.group_id IS NULL`;
     const hashtagFilter = opts.hashtag
       ? sql` AND EXISTS (SELECT 1 FROM community_post_hashtags ph
                            JOIN community_hashtags h ON h.id = ph.hashtag_id
@@ -142,7 +148,7 @@ export class CommunityRepository {
    LEFT JOIN certificates cert ON cert.id = p.certificate_id
        WHERE ${orgScope('p', scope)}
          AND p.deleted_at IS NULL
-         ${typeFilter}${hashtagFilter}${cursor}
+         ${typeFilter}${hashtagFilter}${groupFilter}${cursor}
        ORDER BY p.created_at DESC, p.id DESC
        LIMIT ${opts.limit}
     `);
@@ -276,16 +282,133 @@ export class CommunityRepository {
     body: string | null;
     certificateId: number | null;
     recipientUserId?: number | null;
+    groupId?: number | null;
   }): Promise<{ id: number; publicId: string }> {
     const rows = await this.db.all<{ id: number; public_id: string }>(sql`
       INSERT INTO community_posts
-        (organization_id, user_id, type, title, body, certificate_id, recipient_user_id)
+        (organization_id, user_id, type, title, body, certificate_id, recipient_user_id, group_id)
       VALUES (${input.scope.organizationId}, ${input.userId}, ${input.type},
               ${input.title}, ${input.body}, ${input.certificateId},
-              ${input.recipientUserId ?? null})
+              ${input.recipientUserId ?? null}, ${input.groupId ?? null})
       RETURNING id, public_id
     `);
     return { id: rows[0].id, publicId: rows[0].public_id };
+  }
+
+  // ── Groups ──────────────────────────────────────────────────────────────────
+
+  async createGroup(input: {
+    scope: OrgScope;
+    name: string;
+    description: string | null;
+    createdBy: number;
+  }): Promise<{ id: number; public_id: string }> {
+    const rows = await this.db.all<{ id: number; public_id: string }>(sql`
+      INSERT INTO community_groups (organization_id, name, description, created_by)
+      VALUES (${input.scope.organizationId}, ${input.name}, ${input.description}, ${input.createdBy})
+      RETURNING id, public_id
+    `);
+    return rows[0];
+  }
+
+  async updateGroup(
+    scope: OrgScope,
+    id: number,
+    patch: { name?: string; description?: string | null; archived?: boolean },
+  ): Promise<void> {
+    const sets = [];
+    if (patch.name !== undefined) sets.push(sql`name = ${patch.name}`);
+    if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`);
+    if (patch.archived !== undefined) {
+      sets.push(patch.archived ? sql`archived_at = now()` : sql`archived_at = NULL`);
+    }
+    if (sets.length === 0) return;
+    await this.db.run(sql`
+      UPDATE community_groups SET ${sql.join(sets, sql`, `)}
+       WHERE id = ${id} AND ${orgScope('community_groups', scope)}
+    `);
+  }
+
+  /** A group row, org-scoped — for ownership/existence checks. */
+  async findGroup(scope: OrgScope, id: number) {
+    const rows = await this.db.all<{
+      id: number;
+      public_id: string;
+      name: string;
+      description: string | null;
+      archived_at: string | null;
+    }>(sql`
+      SELECT id, public_id, name, description, archived_at
+        FROM community_groups
+       WHERE id = ${id} AND ${orgScope('community_groups', scope)}
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /** Groups for a learner: active ones, with member + post counts and whether
+   *  the caller has joined. */
+  async listGroupsForLearner(scope: OrgScope, userId: number) {
+    return this.db.all<{
+      id: number;
+      public_id: string;
+      name: string;
+      description: string | null;
+      member_count: number;
+      post_count: number;
+      joined: boolean;
+    }>(sql`
+      SELECT g.id, g.public_id, g.name, g.description,
+             (SELECT COUNT(*)::int FROM community_group_members m WHERE m.group_id = g.id) AS member_count,
+             (SELECT COUNT(*)::int FROM community_posts p WHERE p.group_id = g.id AND p.deleted_at IS NULL) AS post_count,
+             EXISTS (SELECT 1 FROM community_group_members m WHERE m.group_id = g.id AND m.user_id = ${userId}) AS joined
+        FROM community_groups g
+       WHERE ${orgScope('g', scope)} AND g.archived_at IS NULL
+       ORDER BY g.name ASC
+    `);
+  }
+
+  /** Groups for the admin manager: all (including archived), with counts. */
+  async listGroupsForAdmin(scope: OrgScope) {
+    return this.db.all<{
+      id: number;
+      public_id: string;
+      name: string;
+      description: string | null;
+      archived: boolean;
+      member_count: number;
+      post_count: number;
+    }>(sql`
+      SELECT g.id, g.public_id, g.name, g.description,
+             (g.archived_at IS NOT NULL) AS archived,
+             (SELECT COUNT(*)::int FROM community_group_members m WHERE m.group_id = g.id) AS member_count,
+             (SELECT COUNT(*)::int FROM community_posts p WHERE p.group_id = g.id AND p.deleted_at IS NULL) AS post_count
+        FROM community_groups g
+       WHERE ${orgScope('g', scope)}
+       ORDER BY (g.archived_at IS NOT NULL) ASC, g.name ASC
+    `);
+  }
+
+  async isGroupMember(groupId: number, userId: number): Promise<boolean> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM community_group_members
+       WHERE group_id = ${groupId} AND user_id = ${userId}
+    `);
+    return (rows[0]?.n ?? 0) > 0;
+  }
+
+  async joinGroup(scope: OrgScope, groupId: number, userId: number): Promise<void> {
+    await this.db.run(sql`
+      INSERT INTO community_group_members (group_id, user_id, organization_id)
+      VALUES (${groupId}, ${userId}, ${scope.organizationId})
+      ON CONFLICT (group_id, user_id) DO NOTHING
+    `);
+  }
+
+  async leaveGroup(groupId: number, userId: number): Promise<void> {
+    await this.db.run(sql`
+      DELETE FROM community_group_members WHERE group_id = ${groupId} AND user_id = ${userId}
+    `);
   }
 
   // ── Hashtags ──────────────────────────────────────────────────────────────

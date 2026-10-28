@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -13,8 +14,10 @@ import {
 
 import {
   COMMUNITY_BODY_MAX,
+  COMMUNITY_GROUP_NAME_MAX,
   COMMUNITY_HASHTAGS_PER_POST_MAX,
   COMMUNITY_TITLE_MAX,
+  DESCRIPTION_MAX_LENGTH,
   KUDOS_MESSAGE_MAX,
 } from '@/common/content-limits';
 
@@ -61,6 +64,73 @@ export class CreatePostDto {
   @ArrayMaxSize(COMMUNITY_HASHTAGS_PER_POST_MAX * 2)
   @IsString({ each: true })
   hashtags?: string[];
+
+  // The group this post goes into (its public id from the groups list), or
+  // omitted for the main feed. Resolved in the controller; membership + org are
+  // re-checked in the service.
+  @IsOptional()
+  @IsString()
+  groupId?: string;
+}
+
+export class CreateGroupDto {
+  @IsString()
+  @MinLength(1, { message: 'a group needs a name' })
+  @MaxLength(COMMUNITY_GROUP_NAME_MAX)
+  @Transform(trim)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(DESCRIPTION_MAX_LENGTH)
+  @Transform(trim)
+  description?: string;
+}
+
+export class UpdateGroupDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(COMMUNITY_GROUP_NAME_MAX)
+  @Transform(trim)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(DESCRIPTION_MAX_LENGTH)
+  @Transform(trim)
+  description?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  archived?: boolean;
+}
+
+/** Admin-only discussion creation (the Discussion type is admin-curated). */
+export class CreateDiscussionDto {
+  @IsString()
+  @MinLength(1, { message: 'a title is required' })
+  @MaxLength(COMMUNITY_TITLE_MAX)
+  @Transform(trim)
+  title!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(COMMUNITY_BODY_MAX)
+  @Transform(trim)
+  body?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(COMMUNITY_HASHTAGS_PER_POST_MAX * 2)
+  @IsString({ each: true })
+  hashtags?: string[];
+
+  // Target group (integer id), or omitted for the main feed.
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  groupId?: number;
 }
 
 export class CreateKudosDto {

@@ -1,9 +1,13 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
+  Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 
@@ -18,6 +22,11 @@ import { type OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
 
 import { CommunityService } from './community.service';
+import {
+  CreateDiscussionDto,
+  CreateGroupDto,
+  UpdateGroupDto,
+} from './dto/community.dto';
 
 /**
  * Admin moderation of the Learning Community. The READ is open to the admin
@@ -47,6 +56,47 @@ export class AdminCommunityController {
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
     });
+  }
+
+  // ── Groups + discussion creation. Static routes BEFORE ':postId'. ──
+
+  /** Manage the org's groups (including archived), with counts. */
+  @Get('groups')
+  async groups(@CurrentScope() scope: OrgScope) {
+    return this.community.adminListGroups(scope);
+  }
+
+  @Post('groups')
+  @Permissions('moderate_community')
+  @HttpCode(201)
+  async createGroup(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+    @Body() dto: CreateGroupDto,
+  ) {
+    return this.community.adminCreateGroup(scope, admin, dto);
+  }
+
+  @Patch('groups/:groupId')
+  @Permissions('moderate_community')
+  async updateGroup(
+    @CurrentScope() scope: OrgScope,
+    @Param('groupId', ParseIntPipe) groupId: number,
+    @Body() dto: UpdateGroupDto,
+  ) {
+    return this.community.adminUpdateGroup(scope, groupId, dto);
+  }
+
+  /** Create a discussion thread (the admin-curated type). */
+  @Post('discussions')
+  @Permissions('moderate_community')
+  @HttpCode(201)
+  async createDiscussion(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+    @Body() dto: CreateDiscussionDto,
+  ) {
+    return this.community.adminCreateDiscussion(scope, admin, dto);
   }
 
   @Get(':postId')

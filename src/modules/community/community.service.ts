@@ -40,7 +40,13 @@ export class CommunityService {
   async feed(
     scope: OrgScope,
     user: AuthenticatedUser,
-    query: { type?: string; hashtag?: string; cursor?: string; limit?: number },
+    query: {
+      type?: string;
+      hashtag?: string;
+      groupId?: number;
+      cursor?: string;
+      limit?: number;
+    },
   ) {
     await this.assertEnabled(scope);
     const limit = clampLimit(query.limit);
@@ -49,10 +55,26 @@ export class CommunityService {
     // and renewables both match.
     const [tag] = collectHashtags([query.hashtag ?? '']);
     const hashtag = tag?.tag;
+
+    // A group feed is readable by the org; posting into it needs membership
+    // (checked in createPost). The main feed is group_id IS NULL.
+    let group = null;
+    if (query.groupId !== undefined) {
+      const g = await this.repository.findGroup(scope, query.groupId);
+      if (!g || g.archived_at) throw new NotFoundException('Group not found');
+      group = {
+        id: g.public_id,
+        name: g.name,
+        description: g.description,
+        joined: await this.repository.isGroupMember(query.groupId, user.userId),
+      };
+    }
+
     const cur = query.cursor ? decodeCursor(query.cursor) : {};
     const rows = await this.repository.feedFor(scope, user.userId, {
       type,
       hashtag,
+      groupId: query.groupId,
       cursorTs: cur.cursorTs,
       cursorId: cur.cursorId,
       limit: limit + 1,
@@ -66,6 +88,7 @@ export class CommunityService {
     return {
       posts: rows.map((r) => this.shapePost(r, user.userId)),
       nextCursor,
+      group,
     };
   }
 
@@ -87,8 +110,32 @@ export class CommunityService {
     scope: OrgScope,
     user: AuthenticatedUser,
     dto: CreatePostDto,
+    resolvedGroupId?: number,
   ) {
     await this.assertEnabled(scope);
+
+    // Discussions are admin-curated (§10.41): a learner creates questions,
+    // achievements and kudos, and replies to everything, but does not start a
+    // discussion thread. Admins create those via the admin controller.
+    if (dto.type === 'discussion') {
+      throw new ForbiddenException(
+        'Discussions are started by your admins. You can reply to them, or ask a question instead.',
+      );
+    }
+
+    // Posting into a group requires membership; the main feed (no group) does
+    // not. The group must exist in this org. `resolvedGroupId` is the integer
+    // the controller resolved from the post's public group id.
+    let groupId: number | null = null;
+    if (resolvedGroupId !== undefined) {
+      const g = await this.repository.findGroup(scope, resolvedGroupId);
+      if (!g || g.archived_at) throw new NotFoundException('Group not found');
+      if (!(await this.repository.isGroupMember(resolvedGroupId, user.userId))) {
+        throw new ForbiddenException('Join the group to post in it');
+      }
+      groupId = resolvedGroupId;
+    }
+
     let title: string | null = dto.title ?? null;
     const body: string | null = dto.body ?? null;
     let certificateId: number | null = null;
@@ -131,11 +178,142 @@ export class CommunityService {
       title,
       body,
       certificateId,
+      groupId,
     });
     const hashtagIds = await this.repository.upsertHashtags(scope, tags);
     await this.repository.linkPostHashtags(id, hashtagIds);
     const post = await this.repository.getPost(scope, id, user.userId);
     return { post: this.shapePost(post as PostRow, user.userId) };
+  }
+
+  // ── Groups ──────────────────────────────────────────────────────────────────
+
+  /** Groups a learner can see (active), with counts and their join state. */
+  async listGroups(scope: OrgScope, user: AuthenticatedUser) {
+    await this.assertEnabled(scope);
+    const rows = await this.repository.listGroupsForLearner(scope, user.userId);
+    return {
+      groups: rows.map((g) => ({
+        id: g.public_id,
+        name: g.name,
+        description: g.description,
+        memberCount: g.member_count,
+        postCount: g.post_count,
+        joined: g.joined,
+      })),
+    };
+  }
+
+  async joinGroup(scope: OrgScope, user: AuthenticatedUser, groupId: number) {
+    await this.assertEnabled(scope);
+    const g = await this.repository.findGroup(scope, groupId);
+    if (!g || g.archived_at) throw new NotFoundException('Group not found');
+    await this.repository.joinGroup(scope, groupId, user.userId);
+    return { joined: true };
+  }
+
+  async leaveGroup(scope: OrgScope, user: AuthenticatedUser, groupId: number) {
+    await this.assertEnabled(scope);
+    const g = await this.repository.findGroup(scope, groupId);
+    if (!g) throw new NotFoundException('Group not found');
+    await this.repository.leaveGroup(groupId, user.userId);
+    return { joined: false };
+  }
+
+  // ── Admin: groups + discussions ─────────────────────────────────────────────
+
+  async adminListGroups(scope: OrgScope) {
+    const rows = await this.repository.listGroupsForAdmin(scope);
+    return {
+      // Integer ids: the admin screens carry no id in a browser URL (§10.34).
+      groups: rows.map((g) => ({
+        id: g.id,
+        name: g.name,
+        description: g.description,
+        archived: g.archived,
+        memberCount: g.member_count,
+        postCount: g.post_count,
+      })),
+    };
+  }
+
+  async adminCreateGroup(
+    scope: OrgScope,
+    admin: AuthenticatedUser,
+    dto: { name: string; description?: string },
+  ) {
+    const { id } = await this.repository.createGroup({
+      scope,
+      name: dto.name,
+      description: dto.description ?? null,
+      createdBy: admin.userId,
+    });
+    const g = await this.repository.findGroup(scope, id);
+    return {
+      group: {
+        id: g!.id,
+        name: g!.name,
+        description: g!.description,
+        archived: false,
+        memberCount: 0,
+        postCount: 0,
+      },
+    };
+  }
+
+  async adminUpdateGroup(
+    scope: OrgScope,
+    groupId: number,
+    dto: { name?: string; description?: string; archived?: boolean },
+  ) {
+    const g = await this.repository.findGroup(scope, groupId);
+    if (!g) throw new NotFoundException('Group not found');
+    await this.repository.updateGroup(scope, groupId, dto);
+    return { ok: true };
+  }
+
+  /** Admin-only discussion creation (the Discussion type is admin-curated). */
+  async adminCreateDiscussion(
+    scope: OrgScope,
+    admin: AuthenticatedUser,
+    dto: {
+      title: string;
+      body?: string;
+      hashtags?: string[];
+      groupId?: number;
+    },
+  ) {
+    await this.assertEnabled(scope);
+
+    let groupId: number | null = null;
+    if (dto.groupId !== undefined) {
+      const g = await this.repository.findGroup(scope, dto.groupId);
+      if (!g || g.archived_at) throw new NotFoundException('Group not found');
+      groupId = dto.groupId; // an admin curates a group without joining it
+    }
+
+    const tags = collectHashtags([
+      ...(dto.hashtags ?? []),
+      ...extractInlineHashtags(dto.title),
+      ...extractInlineHashtags(dto.body),
+    ]);
+    if (tags.length === 0) {
+      throw new BadRequestException('Add at least one hashtag');
+    }
+
+    const { id } = await this.repository.createPost({
+      scope,
+      userId: admin.userId,
+      type: 'discussion',
+      title: dto.title,
+      body: dto.body ?? null,
+      certificateId: null,
+      groupId,
+    });
+    const hashtagIds = await this.repository.upsertHashtags(scope, tags);
+    await this.repository.linkPostHashtags(id, hashtagIds);
+    const post = await this.repository.getPost(scope, id, admin.userId);
+    return { post: this.shapePost(post as PostRow, admin.userId) };
   }
 
   // ── Kudos ──────────────────────────────────────────────────────────────────
