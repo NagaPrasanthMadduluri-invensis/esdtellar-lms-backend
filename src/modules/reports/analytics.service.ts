@@ -486,6 +486,11 @@ export class AnalyticsService {
         // `score` stays the field the SCORE column bars on — it is points.
         score: entry.points,
         points: entry.points,
+        // `allTimePoints` + `lastEarnedAt` let the admin client re-derive the
+        // SAME hybrid within a department filter as the learner board does
+        // (§10.5), so the two boards never diverge.
+        allTimePoints: entry.points,
+        lastEarnedAt: entry.lastEarnedAt,
         monthPoints: entry.monthPoints,
         badges: entry.badges,
         attempts: entry.attempts,

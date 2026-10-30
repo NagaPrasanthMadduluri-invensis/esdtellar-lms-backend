@@ -618,6 +618,7 @@ Update this table with every module you move.
 | consent capture + admin MFA (TOTP enrol/verify, login second factor) | 6 | `server/src/modules/auth` |
 | community kudos + hashtags (give, people search, kudos board, tag suggest/trending) | 6 | `server/src/modules/community` |
 | community groups + admin discussions (learner groups/join/leave; admin groups CRUD + discussion create) | 8 | `server/src/modules/community` |
+| shared files (community Resource posts + DM attachments; one disk store) | 4 | `server/src/modules/files`, `community`, `messages` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4648,6 +4649,49 @@ POST   /admin/community/discussions              create a discussion (201), opti
 The static admin and learner group routes are declared BEFORE `:postId` so
 Express does not capture them as a post id. No new permission; still gated by
 `organizations.community_enabled`.
+
+### 10.42 Sharing files: community Resources and DM attachments
+
+`0062_shared_attachments.sql`. Two surfaces gain file sharing — a community
+**Resource** post (a link OR a PDF/image file) and a **direct-message
+attachment** — over ONE shared file store.
+
+**One store, two callers.** `SharedFileService` (`modules/files`, a
+dependency-free module both import) writes to `UPLOAD_STORAGE_PATH/shared/` with
+UUID names, exactly the external-cert disk pattern (§10.26) and for the same
+reasons: the bytes are private (served only through an authenticated route that
+checks the caller), and R2 is optional config so a local disk is what always
+works. `common/shared-files.ts` is the one allow-list + sniffer: **PDF and
+raster images only** (PNG/JPG/WebP/GIF), magic-byte verified, 15 MiB cap (under
+the 20 MiB nginx origin body limit). NOT SVG (script-carrying XML on our origin,
+§10.10) and NOT Office docs (zip containers whose bytes cannot be told apart —
+share those as a LINK). `store()` validates type → size → magic bytes, then
+writes; a failed row discards the file (§10.26's rollback).
+
+**A Resource is a post type**, so it rides the whole community engine. Columns on
+`community_posts` (0062): `resource_url` for a link, or `file_path/name/mime/size`
+for a file (exactly one). It is created via `POST /learner/community/resources`
+(multipart, learner-creatable — unlike discussions) with a title, a link OR a
+file, and a hashtag like every post; `file_path` is never selected into the feed
+(internal), and the file streams from `GET /learner/community/:postId/file` after
+an org-scope check (a resource is shared with the whole community). v1 is
+main-feed only (not into a group). The composer and the "Resources" filter tab
+are new; `resource` is in `FEED_FILTER_TYPES` but NOT `COMMUNITY_POST_TYPES`, so
+the JSON create cannot mint one without a file.
+
+**A DM attachment** is `file_path/name/mime/size` on `direct_messages` (body
+stays NOT NULL — an attachment-only message has an empty body). `POST
+/learner/messages/:userId` is now multipart (body OR file required); the file
+streams from `GET /learner/messages/attachments/:messageId/file`, entitled to the
+message's **sender or recipient only** (checked in the service, §5.3). Links in a
+message already render clickable (Linkify), so the new capability is files.
+Attachment file sends are NOT optimistic on the client (no local URL to preview);
+text-only sends keep the optimistic+Retry path.
+
+Both download routes set `Content-Disposition: inline` + `Access-Control-Expose-Headers`
+(§10.12). The client builds the file URL from `SERVER_URL` and the id; the auth
+cookie rides along because the API is same-site (shared parent domain), so an
+`<img>` or a top-level open carries it.
 
 ## 11. Adding a new module — checklist
 
