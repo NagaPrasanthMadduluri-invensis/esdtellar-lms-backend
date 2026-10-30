@@ -62,6 +62,12 @@ export const communityPosts = pgTable(
     // The group this post belongs to (0061), or NULL for the main feed. A post
     // lives in exactly one place. ON DELETE CASCADE with the group.
     groupId: integer('group_id'),
+    // Resource posts (type='resource', 0062): EITHER a link OR a stored file.
+    resourceUrl: text('resource_url'),
+    filePath: text('file_path'),
+    fileName: text('file_name'),
+    fileMime: text('file_mime'),
+    fileSize: integer('file_size'),
     // Denormalised counters, kept in step with the insert/delete in one
     // transaction, so the feed never counts rows per card (§7.1).
     replyCount: integer('reply_count').notNull().default(0),

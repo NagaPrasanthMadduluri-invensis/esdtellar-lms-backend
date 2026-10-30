@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -7,8 +8,9 @@ import {
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { SharedFileService } from '@/modules/files/shared-file.service';
 
-import { MessagesRepository } from './messages.repository';
+import { MessagesRepository, type MessageRow } from './messages.repository';
 
 const CONVERSATION_LIMIT = 50;
 const THREAD_LIMIT = 200;
@@ -35,7 +37,16 @@ export class MessagesService {
     private readonly repository: MessagesRepository,
     /** Best-effort (§8.4) — a failed bell must not fail the send. */
     private readonly notifications: NotificationsService,
+    private readonly files: SharedFileService,
   ) {}
+
+  /** The attachment shape a bubble renders, or null. `file_path` never leaves
+   *  the server — the client fetches the file by the message id. */
+  private attachmentOf(m: MessageRow) {
+    return m.file_name
+      ? { name: m.file_name, mime: m.file_mime ?? null, size: m.file_size ?? null }
+      : null;
+  }
 
   async conversations(scope: OrgScope, userId: number) {
     const rows = await this.repository.conversations(scope, userId, CONVERSATION_LIMIT);
@@ -47,7 +58,9 @@ export class MessagesService {
         ...presenceOf(r.last_seen_at),
         unread: Number(r.unread),
         last_message: {
-          body: r.last_body,
+          // An attachment-only message previews as its file name.
+          body: r.last_body || r.last_file_name || "",
+          has_attachment: !!r.last_file_name,
           at: r.last_at,
           from_me: Number(r.last_sender_id) === userId,
         },
@@ -78,24 +91,48 @@ export class MessagesService {
         at: m.created_at,
         from_me: Number(m.sender_id) === user.userId,
         read: m.read_at !== null,
+        attachment: this.attachmentOf(m),
       })),
     };
   }
 
-  async send(scope: OrgScope, user: AuthenticatedUser, otherId: number, body: string) {
+  async send(
+    scope: OrgScope,
+    user: AuthenticatedUser,
+    otherId: number,
+    body: string,
+    file?: Express.Multer.File,
+  ) {
     if (otherId === user.userId) {
       throw new BadRequestException('You cannot message yourself');
+    }
+    const text = (body ?? '').trim();
+    if (!text && !file) {
+      throw new BadRequestException('Type a message or attach a file');
     }
     const other = await this.repository.findActiveUser(scope, otherId);
     if (!other) throw new NotFoundException('Person not found');
 
-    const created = await this.repository.insert(scope, {
-      senderId: user.userId,
-      recipientId: otherId,
-      body,
-    });
+    // Store the file first; if the insert then fails, discard it (§10.26).
+    const stored = file ? await this.files.store(file) : null;
+    let created: MessageRow;
+    try {
+      created = await this.repository.insert(scope, {
+        senderId: user.userId,
+        recipientId: otherId,
+        body: text,
+        filePath: stored?.path ?? null,
+        fileName: stored?.name ?? null,
+        fileMime: stored?.mime ?? null,
+        fileSize: stored?.size ?? null,
+      });
+    } catch (error) {
+      await this.files.discard(stored?.path);
+      throw error;
+    }
 
     const fromName = shortName(user.firstName, user.lastName);
+    const preview = text || (stored ? `Shared a file: ${stored.name}` : '');
     // Bell only (email: 'none' in the catalogue) — a DM is read on the Messages
     // page, and emailing every line would flood an inbox. The link opens the
     // thread with the sender.
@@ -104,7 +141,7 @@ export class MessagesService {
       organizationId: scope.organizationId,
       type: 'direct_message',
       title: `New message from ${fromName}`,
-      body: body.length > 90 ? `${body.slice(0, 90)}…` : body,
+      body: preview.length > 90 ? `${preview.slice(0, 90)}…` : preview,
       link: `/messages?with=${user.userId}`,
       subjectType: 'message',
       subjectId: created.id,
@@ -118,7 +155,22 @@ export class MessagesService {
         at: created.created_at,
         from_me: true,
         read: false,
+        attachment: this.attachmentOf(created),
       },
+    };
+  }
+
+  /** Stream a message's attachment — only its sender or recipient may read it. */
+  async messageFile(scope: OrgScope, user: AuthenticatedUser, messageId: number) {
+    const row = await this.repository.findMessageFile(scope, messageId);
+    if (!row || !row.file_path) throw new NotFoundException('File not found');
+    if (row.sender_id !== user.userId && row.recipient_id !== user.userId) {
+      throw new ForbiddenException('This attachment is not yours to view');
+    }
+    return {
+      stream: this.files.open(row.file_path),
+      fileName: row.file_name ?? 'file',
+      mime: row.file_mime ?? 'application/octet-stream',
     };
   }
 

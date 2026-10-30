@@ -106,6 +106,39 @@ export class UpdateGroupDto {
   archived?: boolean;
 }
 
+/**
+ * A Resource post — something worth keeping, shared with the whole community:
+ * a link OR a PDF/image file. Multipart, so `hashtags` arrives as a
+ * comma/space-separated STRING (the service splits it) rather than an array,
+ * and the file rides alongside as `file`. A resource is main-feed only in v1.
+ */
+export class CreateResourceDto {
+  @IsString()
+  @MinLength(1, { message: 'a title is required' })
+  @MaxLength(COMMUNITY_TITLE_MAX)
+  @Transform(trim)
+  title!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(COMMUNITY_BODY_MAX)
+  @Transform(trim)
+  body?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  @Transform(trim)
+  hashtags?: string;
+
+  // A link resource. Validated as http(s) in the service. Omitted for a file.
+  @IsOptional()
+  @IsString()
+  @MaxLength(2048)
+  @Transform(trim)
+  link?: string;
+}
+
 /** Admin-only discussion creation (the Discussion type is admin-curated). */
 export class CreateDiscussionDto {
   @IsString()

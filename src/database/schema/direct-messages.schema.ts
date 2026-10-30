@@ -26,6 +26,12 @@ export const directMessages = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     body: text('body').notNull(),
+    // An optional attachment (0062): a PDF or image in the shared file store.
+    // body stays NOT NULL — an attachment-only message carries an empty body.
+    filePath: text('file_path'),
+    fileName: text('file_name'),
+    fileMime: text('file_mime'),
+    fileSize: integer('file_size'),
     /** NULL until the recipient opens the thread. */
     readAt: timestamp('read_at', { mode: 'string', withTimezone: true }),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })

@@ -2,10 +2,16 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Post,
+  Res,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 
 import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
@@ -38,6 +44,23 @@ export class LearnerMessagesController {
     return this.messages.unread(scope, user.userId);
   }
 
+  /** Download/open a message's attachment — sender or recipient only (checked
+   *  in the service). Declared before ':userId'. */
+  @Get('attachments/:messageId/file')
+  @HttpCode(200)
+  async attachment(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('messageId', ParseIntPipe) messageId: number,
+    @Res() res: Response,
+  ) {
+    const { stream, fileName, mime } = await this.messages.messageFile(scope, user, messageId);
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${fileName.replace(/"/g, '')}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    stream.pipe(res);
+  }
+
   @Get(':userId')
   thread(
     @CurrentScope() scope: OrgScope,
@@ -48,12 +71,14 @@ export class LearnerMessagesController {
   }
 
   @Post(':userId')
+  @UseInterceptors(FileInterceptor('file'))
   send(
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
     @Param('userId', ParseIntPipe) userId: number,
     @Body() dto: SendMessageDto,
+    @UploadedFile() file: Express.Multer.File,
   ) {
-    return this.messages.send(scope, user, userId, dto.body);
+    return this.messages.send(scope, user, userId, dto.body ?? '', file);
   }
 }

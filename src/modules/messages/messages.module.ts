@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { NotificationsModule } from '@/modules/notifications/notifications.module';
+import { FilesModule } from '@/modules/files/files.module';
 
 import { LearnerMessagesController } from './learner-messages.controller';
 import { MessagesRepository } from './messages.repository';
@@ -12,7 +13,7 @@ import { MessagesService } from './messages.service';
  * recipient's bell when a message arrives.
  */
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, FilesModule],
   controllers: [LearnerMessagesController],
   providers: [MessagesService, MessagesRepository],
 })

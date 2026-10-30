@@ -35,6 +35,12 @@ export interface PostRow {
   recipient_first_name: string | null;
   recipient_last_initial: string | null;
   recipient_avatar: string | null;
+  // Set only for a resource post (type='resource'). file_path is NOT selected
+  // into the feed — it is internal; the file is fetched via the post's route.
+  resource_url: string | null;
+  file_name: string | null;
+  file_mime: string | null;
+  file_size: number | null;
 }
 
 export interface ReplyRow {
@@ -102,6 +108,13 @@ export class CommunityRepository {
       ru.avatar_url AS recipient_avatar`;
   }
 
+  // A resource post's attachment, for the feed. `file_path` is NOT here — it is
+  // internal; the file is streamed by the post's own route after a check.
+  private resourceColumns(postAlias: string) {
+    const p = sql.identifier(postAlias);
+    return sql`${p}.resource_url, ${p}.file_name, ${p}.file_mime, ${p}.file_size`;
+  }
+
   /** The feed — one org, newest first, keyset-paginated, deleted hidden. */
   async feedFor(
     scope: OrgScope,
@@ -136,6 +149,7 @@ export class CommunityRepository {
              p.reply_count, p.like_count, p.created_at, p.edited_at,
              ${this.authorColumns('u')},
              ${this.recipientColumns()},
+             ${this.resourceColumns('p')},
              cert.public_id        AS cert_public_id,
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
@@ -176,6 +190,7 @@ export class CommunityRepository {
              p.reply_count, p.like_count, p.created_at, p.edited_at,
              ${this.authorColumns('u')},
              ${this.recipientColumns()},
+             ${this.resourceColumns('p')},
              cert.public_id        AS cert_public_id,
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
@@ -219,6 +234,7 @@ export class CommunityRepository {
              p.reply_count, p.like_count, p.created_at, p.edited_at,
              ${this.authorColumns('u')},
              ${this.recipientColumns()},
+             ${this.resourceColumns('p')},
              cert.public_id        AS cert_public_id,
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
@@ -283,16 +299,41 @@ export class CommunityRepository {
     certificateId: number | null;
     recipientUserId?: number | null;
     groupId?: number | null;
+    resource?: {
+      url?: string | null;
+      filePath?: string | null;
+      fileName?: string | null;
+      fileMime?: string | null;
+      fileSize?: number | null;
+    } | null;
   }): Promise<{ id: number; publicId: string }> {
+    const r = input.resource ?? {};
     const rows = await this.db.all<{ id: number; public_id: string }>(sql`
       INSERT INTO community_posts
-        (organization_id, user_id, type, title, body, certificate_id, recipient_user_id, group_id)
+        (organization_id, user_id, type, title, body, certificate_id, recipient_user_id, group_id,
+         resource_url, file_path, file_name, file_mime, file_size)
       VALUES (${input.scope.organizationId}, ${input.userId}, ${input.type},
               ${input.title}, ${input.body}, ${input.certificateId},
-              ${input.recipientUserId ?? null}, ${input.groupId ?? null})
+              ${input.recipientUserId ?? null}, ${input.groupId ?? null},
+              ${r.url ?? null}, ${r.filePath ?? null}, ${r.fileName ?? null},
+              ${r.fileMime ?? null}, ${r.fileSize ?? null})
       RETURNING id, public_id
     `);
     return { id: rows[0].id, publicId: rows[0].public_id };
+  }
+
+  /** A resource post's stored file, org-scoped — for the download route. */
+  async findPostFile(scope: OrgScope, postId: number) {
+    const rows = await this.db.all<{
+      file_path: string | null;
+      file_name: string | null;
+      file_mime: string | null;
+    }>(sql`
+      SELECT file_path, file_name, file_mime FROM community_posts p
+       WHERE p.id = ${postId} AND ${orgScope('p', scope)} AND p.deleted_at IS NULL
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
   }
 
   // ── Groups ──────────────────────────────────────────────────────────────────

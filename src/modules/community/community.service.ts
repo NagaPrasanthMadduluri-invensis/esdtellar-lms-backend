@@ -10,6 +10,7 @@ import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { collectHashtags, extractInlineHashtags } from '@/common/community-hashtags';
 import { type OrgScope } from '@/database/org-scope';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
+import { SharedFileService } from '@/modules/files/shared-file.service';
 
 import {
   CommunityRepository,
@@ -22,17 +23,19 @@ import {
   type CreateKudosDto,
   type CreatePostDto,
   type CreateReplyDto,
+  type CreateResourceDto,
 } from './dto/community.dto';
 
 // Types a learner can FILTER the feed by — the three compose types plus kudos
-// (which is created through its own endpoint, never the compose picker).
-const FEED_FILTER_TYPES = [...COMMUNITY_POST_TYPES, 'kudos'] as const;
+// and resource (each created through its own endpoint, never the JSON create).
+const FEED_FILTER_TYPES = [...COMMUNITY_POST_TYPES, 'kudos', 'resource'] as const;
 
 @Injectable()
 export class CommunityService {
   constructor(
     private readonly repository: CommunityRepository,
     private readonly notifications: NotificationsService,
+    private readonly files: SharedFileService,
   ) {}
 
   // ── Learner ──────────────────────────────────────────────────────────────
@@ -314,6 +317,87 @@ export class CommunityService {
     await this.repository.linkPostHashtags(id, hashtagIds);
     const post = await this.repository.getPost(scope, id, admin.userId);
     return { post: this.shapePost(post as PostRow, admin.userId) };
+  }
+
+  // ── Resources ────────────────────────────────────────────────────────────
+
+  /**
+   * Share a resource with the whole community — a link OR a PDF/image file.
+   * Multipart; main-feed only in v1. Exactly one of file/link, a title, and at
+   * least one hashtag like every post.
+   */
+  async createResource(
+    scope: OrgScope,
+    user: AuthenticatedUser,
+    dto: CreateResourceDto,
+    file: Express.Multer.File | undefined,
+  ) {
+    await this.assertEnabled(scope);
+
+    const link = dto.link?.trim();
+    if (file && link) {
+      throw new BadRequestException('Share a file or a link, not both');
+    }
+    if (!file && !link) {
+      throw new BadRequestException('Attach a file or add a link to share');
+    }
+    if (link && !/^https?:\/\/.+/i.test(link)) {
+      throw new BadRequestException('A link must start with http:// or https://');
+    }
+
+    const tags = collectHashtags([
+      ...(dto.hashtags ? dto.hashtags.split(/[,\s]+/) : []),
+      ...extractInlineHashtags(dto.title),
+      ...extractInlineHashtags(dto.body),
+    ]);
+    if (tags.length === 0) {
+      throw new BadRequestException('Add at least one hashtag');
+    }
+
+    // A file is validated and written BEFORE the row; if the insert then fails
+    // the bytes are discarded, the external-cert rollback (§10.26).
+    const stored = file ? await this.files.store(file) : null;
+
+    let id: number;
+    try {
+      ({ id } = await this.repository.createPost({
+        scope,
+        userId: user.userId,
+        type: 'resource',
+        title: dto.title,
+        body: dto.body ?? null,
+        certificateId: null,
+        resource: stored
+          ? {
+              filePath: stored.path,
+              fileName: stored.name,
+              fileMime: stored.mime,
+              fileSize: stored.size,
+            }
+          : { url: link },
+      }));
+    } catch (error) {
+      await this.files.discard(stored?.path);
+      throw error;
+    }
+
+    const hashtagIds = await this.repository.upsertHashtags(scope, tags);
+    await this.repository.linkPostHashtags(id, hashtagIds);
+    const post = await this.repository.getPost(scope, id, user.userId);
+    return { post: this.shapePost(post as PostRow, user.userId) };
+  }
+
+  /** Stream a resource post's file — any member of the post's org may read it
+   *  (a resource is shared with the whole community). */
+  async postFile(scope: OrgScope, postId: number) {
+    await this.assertEnabled(scope);
+    const row = await this.repository.findPostFile(scope, postId);
+    if (!row || !row.file_path) throw new NotFoundException('File not found');
+    return {
+      stream: this.files.open(row.file_path),
+      fileName: row.file_name ?? 'file',
+      mime: row.file_mime ?? 'application/octet-stream',
+    };
   }
 
   // ── Kudos ──────────────────────────────────────────────────────────────────
@@ -691,6 +775,19 @@ export class CommunityService {
           }
         : null,
       hashtags: row.hashtags ?? [],
+      // Present only on a resource post: a link, or a file (streamed via the
+      // post's own route — the client builds the URL from the post id).
+      resource:
+        row.type === 'resource'
+          ? row.resource_url
+            ? { kind: 'link', url: row.resource_url }
+            : {
+                kind: 'file',
+                name: row.file_name,
+                mime: row.file_mime,
+                size: row.file_size,
+              }
+          : null,
       // Present only on a kudos post; the person recognised (first + initial).
       recipient:
         row.type === 'kudos' && row.recipient_first_name

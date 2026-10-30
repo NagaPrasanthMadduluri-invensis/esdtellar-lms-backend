@@ -8,7 +8,12 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Res,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 
 import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
@@ -16,7 +21,12 @@ import { type OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
 
 import { CommunityService } from './community.service';
-import { CreateKudosDto, CreatePostDto, CreateReplyDto } from './dto/community.dto';
+import {
+  CreateKudosDto,
+  CreatePostDto,
+  CreateReplyDto,
+  CreateResourceDto,
+} from './dto/community.dto';
 
 /**
  * The learner's Learning Community. Open to the learner audience (participating
@@ -119,6 +129,19 @@ export class LearnerCommunityController {
   ) {
     const groupId = await this.publicId.resolveIdOrThrow('community_groups', groupIdParam);
     return this.community.leaveGroup(scope, user, groupId);
+  }
+
+  /** Share a resource — a link or a PDF/image file (multipart). */
+  @Post('resources')
+  @HttpCode(201)
+  @UseInterceptors(FileInterceptor('file'))
+  async createResource(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateResourceDto,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.community.createResource(scope, user, dto, file);
   }
 
   /** Give kudos to a colleague. */
@@ -229,6 +252,23 @@ export class LearnerCommunityController {
       postIdParam,
     );
     return this.community.postLikers(scope, user, postId);
+  }
+
+  /** Download/open a resource post's file. Streamed after an org-scope check
+   *  in the service (a resource is shared with the whole community). */
+  @Get(':postId/file')
+  @HttpCode(200)
+  async file(
+    @CurrentScope() scope: OrgScope,
+    @Param('postId') postIdParam: string,
+    @Res() res: Response,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow('community_posts', postIdParam);
+    const { stream, fileName, mime } = await this.community.postFile(scope, postId);
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${fileName.replace(/"/g, '')}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    stream.pipe(res);
   }
 
   @Delete('replies/:replyId')

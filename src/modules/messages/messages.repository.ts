@@ -13,6 +13,7 @@ export interface ConversationRow {
   last_body: string;
   last_at: string;
   last_sender_id: number;
+  last_file_name: string | null;
   unread: number;
 }
 
@@ -23,6 +24,9 @@ export interface MessageRow {
   body: string;
   created_at: string;
   read_at: string | null;
+  file_name?: string | null;
+  file_mime?: string | null;
+  file_size?: number | null;
 }
 
 export interface OtherUserRow {
@@ -52,6 +56,7 @@ export class MessagesRepository {
       SELECT
         k.other_id, o.first_name, o.last_name, o.avatar_url, o.last_seen_at,
         lm.body AS last_body, lm.created_at AS last_at, lm.sender_id AS last_sender_id,
+        lm.file_name AS last_file_name,
         COALESCE(uc.unread, 0) AS unread
       FROM (
         SELECT DISTINCT
@@ -62,7 +67,7 @@ export class MessagesRepository {
       ) k
       JOIN users o ON o.id = k.other_id
       JOIN LATERAL (
-        SELECT dm.body, dm.created_at, dm.sender_id
+        SELECT dm.body, dm.created_at, dm.sender_id, dm.file_name
         FROM direct_messages dm
         WHERE ${orgScope('dm', scope)}
           AND ((dm.sender_id = ${userId} AND dm.recipient_id = k.other_id)
@@ -86,7 +91,8 @@ export class MessagesRepository {
   /** Every message between the caller and one other person, oldest first. */
   async thread(scope: OrgScope, userId: number, otherId: number, limit: number) {
     return this.db.all<MessageRow>(sql`
-      SELECT dm.id, dm.sender_id, dm.recipient_id, dm.body, dm.created_at, dm.read_at
+      SELECT dm.id, dm.sender_id, dm.recipient_id, dm.body, dm.created_at, dm.read_at,
+             dm.file_name, dm.file_mime, dm.file_size
       FROM direct_messages dm
       WHERE ${orgScope('dm', scope)}
         AND ((dm.sender_id = ${userId} AND dm.recipient_id = ${otherId})
@@ -110,14 +116,43 @@ export class MessagesRepository {
 
   async insert(
     scope: OrgScope,
-    input: { senderId: number; recipientId: number; body: string },
+    input: {
+      senderId: number;
+      recipientId: number;
+      body: string;
+      filePath?: string | null;
+      fileName?: string | null;
+      fileMime?: string | null;
+      fileSize?: number | null;
+    },
   ): Promise<MessageRow> {
     const rows = await this.db.all<MessageRow>(sql`
-      INSERT INTO direct_messages (organization_id, sender_id, recipient_id, body)
-      VALUES (${scope.organizationId}, ${input.senderId}, ${input.recipientId}, ${input.body})
-      RETURNING id, sender_id, recipient_id, body, created_at, read_at
+      INSERT INTO direct_messages
+        (organization_id, sender_id, recipient_id, body, file_path, file_name, file_mime, file_size)
+      VALUES (${scope.organizationId}, ${input.senderId}, ${input.recipientId}, ${input.body},
+              ${input.filePath ?? null}, ${input.fileName ?? null},
+              ${input.fileMime ?? null}, ${input.fileSize ?? null})
+      RETURNING id, sender_id, recipient_id, body, created_at, read_at, file_name, file_mime, file_size
     `);
     return rows[0];
+  }
+
+  /** A message's stored file + its two participants, org-scoped — for the
+   *  download route's entitlement check (caller must be sender or recipient). */
+  async findMessageFile(scope: OrgScope, messageId: number) {
+    const rows = await this.db.all<{
+      sender_id: number;
+      recipient_id: number;
+      file_path: string | null;
+      file_name: string | null;
+      file_mime: string | null;
+    }>(sql`
+      SELECT sender_id, recipient_id, file_path, file_name, file_mime
+      FROM direct_messages dm
+      WHERE dm.id = ${messageId} AND ${orgScope('dm', scope)}
+      LIMIT 1
+    `);
+    return rows[0] ?? null;
   }
 
   async unreadCount(scope: OrgScope, userId: number): Promise<number> {

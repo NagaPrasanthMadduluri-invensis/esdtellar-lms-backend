@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { NotificationsModule } from '@/modules/notifications/notifications.module';
+import { FilesModule } from '@/modules/files/files.module';
 
 import { AdminCommunityController } from './admin-community.controller';
 import { CommunityRepository } from './community.repository';
@@ -13,7 +14,7 @@ import { LearnerCommunityController } from './learner-community.controller';
  * `NotificationsModule` to tell a post's author about new replies.
  */
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, FilesModule],
   controllers: [LearnerCommunityController, AdminCommunityController],
   providers: [CommunityService, CommunityRepository],
 })
