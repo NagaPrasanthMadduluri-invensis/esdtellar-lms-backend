@@ -1,0 +1,53 @@
+name: CI
+
+# Runs in the server repo (esdtellar-lms-backend), where server/ is the root.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck · unit · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'   # matches the production box
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  deploy:
+    name: deploy (ssh)
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      # SSH into the box and run its deploy.sh (git pull + npm install + build +
+      # pm2 restart + health check). Secrets: DEPLOY_HOST, DEPLOY_USER,
+      # DEPLOY_SSH_KEY (the CI deploy key's PRIVATE half).
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            cd /var/www/frontend/edstellar_lms_api
+            before=$(git rev-parse --short HEAD)
+            sudo ./deploy.sh
+            after=$(git rev-parse --short HEAD)
+            echo "deployed: $before -> $after"
