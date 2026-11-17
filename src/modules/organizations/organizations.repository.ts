@@ -51,6 +51,20 @@ export class OrganizationsRepository {
   }
 
   /** The Learning Community toggle for one org (0049). Defaults on. */
+  /** The leaderboard switch and name display (0064), for the settings screen. */
+  async getLeaderboardSettings(
+    id: number,
+  ): Promise<{ enabled: number; nameDisplay: string }> {
+    const rows = await this.db
+      .select({
+        enabled: organizations.leaderboardEnabled,
+        nameDisplay: organizations.leaderboardNameDisplay,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, id));
+    return rows[0] ?? { enabled: 1, nameDisplay: 'initial' };
+  }
+
   async getCommunityEnabled(id: number): Promise<number> {
     const rows = await this.db
       .select({ v: organizations.communityEnabled })
@@ -246,6 +260,8 @@ export class OrganizationsRepository {
       certificateSignatoryName?: string | null;
       certificateSignatoryTitle?: string | null;
       communityEnabled?: number;
+      leaderboardEnabled?: number;
+      leaderboardNameDisplay?: string;
     },
   ): Promise<OrganizationRow | null> {
     const values: Record<string, unknown> = {};
@@ -253,6 +269,10 @@ export class OrganizationsRepository {
     if (input.slug !== undefined) values.slug = input.slug;
     if (input.communityEnabled !== undefined)
       values.communityEnabled = input.communityEnabled;
+    if (input.leaderboardEnabled !== undefined)
+      values.leaderboardEnabled = input.leaderboardEnabled;
+    if (input.leaderboardNameDisplay !== undefined)
+      values.leaderboardNameDisplay = input.leaderboardNameDisplay;
     if (input.logoUrl !== undefined) values.logoUrl = input.logoUrl;
     if (input.certificatePrefix !== undefined)
       values.certificatePrefix = input.certificatePrefix;

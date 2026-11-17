@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
 
+import {
+  leaderboardName,
+  toNameDisplay,
+  type LeaderboardNameDisplay,
+} from '@/common/leaderboard-privacy';
 import type { OrgScope } from '@/database/org-scope';
 import { POINT_RULES } from '@/modules/leaderboard/points';
 import { thisMonth } from '@/modules/learning-hours/periods';
@@ -8,7 +13,15 @@ import { LeaderboardRepository } from './leaderboard.repository';
 
 export interface LeaderboardEntry {
   id: number;
+  /** Full name. Admin screens only: an admin already sees the full record. */
   name: string;
+  /**
+   * The name COLLEAGUES see, per the organization's name display (0064).
+   * Every learner-facing surface must use this, never `name`.
+   */
+  publicName: string;
+  /** The learner opted out (0064): kept for their points, left out of ranks. */
+  hidden: boolean;
   firstName: string;
   lastName: string;
   dept: string;
@@ -32,11 +45,16 @@ export interface LeaderboardEntry {
 }
 
 export interface Recognition {
-  learnerOfMonth: { name: string; points: number; badges: number; id: number } | null;
-  quickLearner: { name: string; coursesThisMonth: number; id: number } | null;
+  learnerOfMonth:
+    | { name: string; publicName: string; points: number; badges: number; id: number }
+    | null;
+  quickLearner:
+    | { name: string; publicName: string; coursesThisMonth: number; id: number }
+    | null;
   assessmentTopper:
     | {
         name: string;
+        publicName: string;
         id: number;
         avgScore: number | null;
         passed: number;
@@ -44,6 +62,19 @@ export interface Recognition {
         attemptsPerPass: number;
       }
     | null;
+}
+
+/**
+ * The rank a learner may be SHOWN (0064): none while the organization has the
+ * leaderboard off, or when the learner has opted out. One rule, so the Home
+ * card, Achievements and the board cannot disagree about whether a rank exists.
+ */
+export function publicRank(
+  standings: { settings: { enabled: boolean } },
+  entry: LeaderboardEntry | null,
+): number | null {
+  if (!standings.settings.enabled || !entry || entry.hidden || entry.rank < 1) return null;
+  return entry.rank;
 }
 
 /**
@@ -59,7 +90,14 @@ export class LeaderboardService {
   constructor(private readonly repository: LeaderboardRepository) {}
 
   async standings(scope: OrgScope, month: string = thisMonth()) {
-    const rows = await this.repository.standings(scope, month);
+    const [rows, settingsRow] = await Promise.all([
+      this.repository.standings(scope, month),
+      this.repository.settings(scope),
+    ]);
+    const settings: { enabled: boolean; nameDisplay: LeaderboardNameDisplay } = {
+      enabled: Number(settingsRow.leaderboard_enabled) === 1,
+      nameDisplay: toNameDisplay(settingsRow.leaderboard_name_display),
+    };
 
     const entries: LeaderboardEntry[] = rows.map((row) => {
       const passed = Number(row.passed);
@@ -69,6 +107,8 @@ export class LeaderboardService {
       return {
         id: Number(row.id),
         name: `${row.first_name} ${row.last_name}`,
+        publicName: leaderboardName(row.first_name, row.last_name, settings.nameDisplay),
+        hidden: Number(row.leaderboard_hidden) === 1,
         firstName: row.first_name,
         lastName: row.last_name,
         dept: row.department || 'Unknown',
@@ -105,7 +145,15 @@ export class LeaderboardService {
       if (b.lastEarnedAt === null) return -1;
       return a.lastEarnedAt < b.lastEarnedAt ? -1 : 1;
     };
-    const byPoints = [...entries].sort(
+    /*
+     * Ranks are computed over PARTICIPANTS only (0064). An opted-out learner
+     * stays in `entries`, because badges read their points from there, but is
+     * left out of `ranked`, `byMonth` and the recognition cards, with rank 0.
+     * Ranking them and then hiding the row would leave a gap in the numbering
+     * that points straight at them.
+     */
+    const participants = entries.filter((e) => !e.hidden);
+    const byPoints = [...participants].sort(
       (a, b) => b.points - a.points || earnedFirst(a, b) || b.badges - a.badges,
     );
     const topThree = byPoints.slice(0, 3);
@@ -121,12 +169,19 @@ export class LeaderboardService {
     const ranked = [...topThree, ...rest];
     ranked.forEach((entry, index) => { entry.rank = index + 1; });
 
-    const byMonth = [...entries].sort(
+    const byMonth = [...participants].sort(
       (a, b) => b.monthPoints - a.monthPoints || b.badges - a.badges,
     );
     byMonth.forEach((entry, index) => { entry.monthRank = index + 1; });
 
-    return { entries, ranked, byMonth, recognition: this.recognise(entries, byMonth) };
+    return {
+      entries,
+      ranked,
+      byMonth,
+      recognition: this.recognise(participants, byMonth),
+      settings,
+      hiddenCount: entries.length - participants.length,
+    };
   }
 
   /**
@@ -184,17 +239,24 @@ export class LeaderboardService {
         ? {
             id: monthLeader.id,
             name: monthLeader.name,
+            publicName: monthLeader.publicName,
             points: monthLeader.monthPoints,
             badges: monthLeader.badges,
           }
         : null,
       quickLearner: quickest
-        ? { id: quickest.id, name: quickest.name, coursesThisMonth: quickest.coursesMonth }
+        ? {
+            id: quickest.id,
+            name: quickest.name,
+            publicName: quickest.publicName,
+            coursesThisMonth: quickest.coursesMonth,
+          }
         : null,
       assessmentTopper: topper
         ? {
             id: topper.id,
             name: topper.name,
+            publicName: topper.publicName,
             avgScore: topper.avgScore,
             passed: topper.badges,
             attempts: topper.attempts,

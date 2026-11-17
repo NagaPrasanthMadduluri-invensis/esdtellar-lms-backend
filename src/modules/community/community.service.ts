@@ -8,6 +8,7 @@ import {
 import { actorLabel } from '@/common/notifications';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { collectHashtags, extractInlineHashtags } from '@/common/community-hashtags';
+import { leaderboardName, toNameDisplay } from '@/common/leaderboard-privacy';
 import { type OrgScope } from '@/database/org-scope';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 import { SharedFileService } from '@/modules/files/shared-file.service';
@@ -487,14 +488,21 @@ export class CommunityService {
 
   async kudosLeaderboard(scope: OrgScope, user: AuthenticatedUser) {
     await this.assertEnabled(scope);
-    const rows = await this.repository.kudosLeaderboard(scope, 50);
+    const [rows, settings] = await Promise.all([
+      this.repository.kudosLeaderboard(scope, 50),
+      this.repository.leaderboardSettings(scope),
+    ]);
+    // The kudos board sits on the leaderboard page, so the organization's
+    // leaderboard switch turns it off too (0064).
+    if (Number(settings.leaderboard_enabled) !== 1) {
+      throw new ForbiddenException('The leaderboard is turned off for your organization');
+    }
+    const display = toNameDisplay(settings.leaderboard_name_display);
     return {
       entries: rows.map((r, i) => ({
         rank: i + 1,
         userId: r.user_id,
-        name: r.last_initial
-          ? `${r.first_name} ${r.last_initial}.`
-          : r.first_name,
+        name: leaderboardName(r.first_name, r.last_name, display),
         department: r.department,
         avatarUrl: r.avatar_url,
         received: r.received,

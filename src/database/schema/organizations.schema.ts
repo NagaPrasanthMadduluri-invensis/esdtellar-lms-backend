@@ -92,6 +92,9 @@ export const organizations = pgTable(
     // Per-tenant Learning Community switch (0049). Default 1 = on; an admin can
     // turn the whole module off from Organization settings.
     communityEnabled: integer('community_enabled').notNull().default(1),
+    /** Leaderboard switch + how colleagues are named on it (0064). */
+    leaderboardEnabled: integer('leaderboard_enabled').notNull().default(1),
+    leaderboardNameDisplay: text('leaderboard_name_display').notNull().default('initial'),
     /** Non-sequential PUBLIC id for URLs (/platform/organizations/:publicId). 0046. */
     publicId: uuid('public_id').defaultRandom(),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })

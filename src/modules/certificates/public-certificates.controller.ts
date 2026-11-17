@@ -1,4 +1,5 @@
 import { Controller, Get, Param } from '@nestjs/common';
+import { RateLimit } from '@/common/rate-limit/rate-limit';
 
 import { Public } from '@/common/decorators';
 
@@ -20,6 +21,11 @@ export class PublicCertificatesController {
   constructor(private readonly certificates: CertificatesService) {}
 
   @Public()
+  // The open item from §10.23.2: short codes plus a named holder make this
+  // worth enumerating. 30 a minute is plenty for a person scanning QR codes
+  // and far too slow to walk a code space.
+  @RateLimit({ name: 'certificate-verify', by: 'ip', limit: 30, windowSeconds: 60,
+    message: 'Too many verification lookups.' })
   @Get('verify/:code')
   async verify(@Param('code') code: string) {
     return this.certificates.verify(code);

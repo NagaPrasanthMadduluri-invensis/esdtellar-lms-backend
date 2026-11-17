@@ -35,6 +35,7 @@ export class MyDataRepository {
       SELECT u.id, u.first_name, u.last_name, u.email, u.department,
              u.employee_id, u.job_role, u.job_level, u.location, u.phone,
              u.role, u.is_active, u.created_at, u.last_seen_at,
+             u.leaderboard_hidden, u.consent_version, u.consented_at,
              o.name AS organization_name
         FROM users u
         JOIN organizations o ON o.id = u.organization_id
@@ -336,7 +337,8 @@ export class MyDataRepository {
         (SELECT COUNT(*) FROM community_replies WHERE user_id = ${userId})::int AS community_replies,
         (SELECT COUNT(*) FROM direct_messages WHERE sender_id = ${userId} OR recipient_id = ${userId})::int AS direct_messages,
         (SELECT COUNT(*) FROM notifications WHERE user_id = ${userId})::int AS notifications,
-        (SELECT COUNT(*) FROM email_outbox WHERE user_id = ${userId})::int AS emails
+        (SELECT COUNT(*) FROM email_outbox WHERE user_id = ${userId})::int AS emails,
+        (SELECT COUNT(*) FROM consent_events WHERE user_id = ${userId})::int AS consent_events
     `);
     return rows[0] ?? {};
   }

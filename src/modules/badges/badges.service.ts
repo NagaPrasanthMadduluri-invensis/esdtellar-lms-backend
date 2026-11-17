@@ -152,7 +152,13 @@ export class BadgesService {
     void (async () => {
       try {
         const standings = await this.leaderboard.standings(scope);
-        const rank = standings.entries.findIndex((e) => e.id === userId) + 1;
+        // The rank from the ranking itself. This used to be the person's
+        // position in `entries`, which is database order rather than the
+        // board's order, so the bell could name a rank the board did not show.
+        // An opted-out learner has no public rank (0), and an organization
+        // with the leaderboard off gets no rank news at all (0064).
+        if (!standings.settings.enabled) return;
+        const rank = standings.ranked.find((e) => e.id === userId)?.rank ?? 0;
         if (rank < 1 || rank > 3) return;
         void this.notifications.notifyOnce({
           userIds: [userId],

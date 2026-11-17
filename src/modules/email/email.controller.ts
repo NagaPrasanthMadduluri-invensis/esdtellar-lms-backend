@@ -6,10 +6,18 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Response } from 'express';
+import { RateLimit } from '@/common/rate-limit/rate-limit';
+import type { Request, Response } from 'express';
+
+import {
+  ConsentLogService,
+  requestMeta,
+  type RequestMeta,
+} from '@/modules/consent/consent-log.service';
 
 import { CurrentUser, Public } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
@@ -35,6 +43,8 @@ export class EmailController {
   constructor(
     private readonly repository: EmailOutboxRepository,
     private readonly config: ConfigService,
+    /** Opting out of email is a privacy choice, so a change is logged (0065). */
+    private readonly consentLog: ConsentLogService,
   ) {}
 
   @Get('auth/email-preferences')
@@ -53,6 +63,7 @@ export class EmailController {
   async update(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateEmailPreferencesDto,
+    @Req() request: Request,
   ) {
     const current = await this.repository.preferences(user.userId);
     const allOff = dto.all_off === undefined ? current.all_off : dto.all_off ? 1 : 0;
@@ -64,6 +75,7 @@ export class EmailController {
             .join(',');
 
     await this.repository.savePreferences(user.userId, allOff, groupsOff);
+    await this.logChange(user.userId, current, { all_off: allOff, groups_off: groupsOff }, 'email_preferences', requestMeta(request));
     return {
       preferences: {
         all_off: allOff === 1,
@@ -85,8 +97,12 @@ export class EmailController {
    */
   @Public()
   @Get('email/unsubscribe')
-  async unsubscribeGet(@Query('t') token: string, @Res() res: Response) {
-    const ok = await this.apply(token);
+  async unsubscribeGet(
+    @Query('t') token: string,
+    @Req() request: Request,
+    @Res() res: Response,
+  ) {
+    const ok = await this.apply(token, requestMeta(request));
     res.status(ok ? 200 : 400).type('html').send(this.page(ok));
   }
 
@@ -97,21 +113,61 @@ export class EmailController {
    * damages the sending domain for every other tenant on it.
    */
   @Public()
+  // Gmail and Yahoo send one-click unsubscribes from their own servers, so
+  // many people's requests share a handful of addresses. Loose on purpose:
+  // a refused unsubscribe turns into a spam complaint.
+  @RateLimit({ name: 'unsubscribe-post', by: 'ip', limit: 1000, windowSeconds: 60 })
   @Post('email/unsubscribe')
   @HttpCode(200)
-  async unsubscribePost(@Query('t') token: string) {
-    await this.apply(token);
+  async unsubscribePost(@Query('t') token: string, @Req() request: Request) {
+    await this.apply(token, requestMeta(request));
     // Always 200. Telling a mail provider that a token was bad achieves
     // nothing and some of them retry on an error.
     return { ok: true };
   }
 
-  private async apply(token: string): Promise<boolean> {
+  private async apply(token: string, meta: RequestMeta): Promise<boolean> {
     const secret = this.config.get<string>('auth.jwtSecret') ?? '';
     const parsed = readUnsubscribeToken(secret, token);
     if (!parsed) return false;
+    const before = await this.repository.preferences(parsed.userId);
     await this.repository.unsubscribe(parsed.userId, parsed.purpose);
+    const after = await this.repository.preferences(parsed.userId);
+    // Best-effort HERE only: a mail provider's one-click POST must succeed even
+    // if the log write does not, because an unsubscribe that errors is worse
+    // than one recorded without its log line.
+    await this.logChange(parsed.userId, before, after, 'unsubscribe_link', meta).catch(() => undefined);
     return true;
+  }
+
+  /**
+   * One consent-log row when the email choices actually moved (0065). Compared
+   * as sets so a reordered groups list is not a change.
+   */
+  private async logChange(
+    userId: number,
+    before: { all_off: number; groups_off: string },
+    after: { all_off: number; groups_off: string },
+    source: string,
+    meta: RequestMeta,
+  ): Promise<void> {
+    const norm = (g: string) => g.split(',').filter(Boolean).sort().join(',');
+    if (
+      Number(before.all_off) === Number(after.all_off) &&
+      norm(before.groups_off) === norm(after.groups_off)
+    ) {
+      return;
+    }
+    await this.consentLog.record({
+      userId,
+      event: 'choice_changed',
+      details: {
+        email_all_off: Number(after.all_off) === 1,
+        email_groups_off: after.groups_off.split(',').filter(Boolean),
+      },
+      source,
+      meta,
+    });
   }
 
   /**

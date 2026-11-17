@@ -379,6 +379,21 @@ export const NOTIFICATION_TYPES = {
      it, and the learner gets a confirmation that it is under review. Both
      transactional — a request and an obligation addressed to named people, not
      broadcast news. */
+  /**
+   * A security incident affecting this organization (0066), sent by Edstellar
+   * to the tenant's admins from the platform incident register. They are the
+   * data CONTROLLER and may owe their own regulator and staff a notice, so
+   * this is a legal duty of ours as processor: it is in UNSUPPRESSABLE
+   * (email-types.ts) and ignores the email master switch.
+   */
+  security_incident_notice: {
+    label: 'Security incident notice',
+    group: 'people',
+    icon: 'ShieldAlert',
+    audience: ['admin'],
+    email: 'transactional',
+    cta: 'Read the notice',
+  },
   data_request_received: {
     label: 'Data request to review',
     group: 'people',

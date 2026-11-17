@@ -7,6 +7,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 
 import { AppModule } from './app.module';
+import { securityHeaders } from './common/http/security-headers';
 import { setReferenceDate } from './modules/learning-hours/periods';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ScormContentHandler } from './modules/scorm/scorm-content.handler';
@@ -51,6 +52,11 @@ async function bootstrap(): Promise<void> {
   }
 
   app.setGlobalPrefix('api');
+
+  // Security headers on EVERY response, including /scorm and /uploads, so
+  // registered before either is mounted (common/http/security-headers.ts).
+  app.disable('x-powered-by');
+  app.use(securityHeaders(config.getOrThrow<string[]>('clientOrigins')));
 
   app.use(cookieParser());
 

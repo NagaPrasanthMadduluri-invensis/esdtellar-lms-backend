@@ -10,6 +10,7 @@ import { PgBoss } from 'pg-boss';
 import { RemindersService } from '@/modules/reminders/reminders.service';
 import { EmailFailureAlertsService } from '@/modules/reminders/email-failure-alerts.service';
 import { PasswordResetService } from '@/modules/auth/password-reset.service';
+import { RetentionService } from '@/modules/retention/retention.service';
 
 import { OutboxDrainJob } from './outbox-drain.job';
 
@@ -58,6 +59,7 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     private readonly reminders: RemindersService,
     private readonly failureAlerts: EmailFailureAlertsService,
     private readonly passwordReset: PasswordResetService,
+    private readonly retention: RetentionService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -90,10 +92,11 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     await this.registerDueToday();
     await this.registerFailureAlerts();
     await this.registerWelcomeReconcile();
+    await this.registerRetentionSweep();
 
     this.logger.log(
       'Worker started — email drain every minute, due-today at 08:00 and ' +
-        'due-soon at 09:00 UTC, prune at 03:00 UTC.',
+        'due-soon at 09:00 UTC, prune at 03:00 UTC, retention sweep at 04:00 UTC.',
     );
   }
 
@@ -207,6 +210,23 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     });
     await boss.schedule(queue, '*/10 * * * *', undefined, {
       singletonKey: 'welcome-reconcile',
+    });
+  }
+
+  /**
+   * Data-retention sweep (PDPA #7). Daily at 04:00 UTC — a quiet hour after the
+   * 03:00 prune, and the sweep is a no-op unless RETENTION_ENABLED is set, so an
+   * idle schedule costs nothing. It anonymises long-deactivated users' PII.
+   */
+  private async registerRetentionSweep(): Promise<void> {
+    const boss = this.boss!;
+    const queue = 'retention-sweep';
+    await boss.createQueue(queue);
+    await boss.work(queue, async () => {
+      await this.retention.sweep();
+    });
+    await boss.schedule(queue, '0 4 * * *', undefined, {
+      singletonKey: 'retention-sweep',
     });
   }
 

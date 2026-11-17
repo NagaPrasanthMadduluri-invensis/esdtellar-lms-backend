@@ -462,6 +462,7 @@ why the filter exists.
 | 404 | Resource does not exist | `NotFoundException` |
 | 409 | Conflicts with current state | `ConflictException` |
 | 422 | Well-formed but fails a business rule | `UnprocessableEntityException` |
+| 429 | Over a rate limit; carries `Retry-After` (§10.47) | `RateLimitGuard` |
 
 ### 8.3 Never leak internals
 
@@ -539,6 +540,9 @@ paragraphs. That is courtesy; this is enforcement.
 | `DOCUMENT_MAX_BYTES` | no (100 MiB) | Cap for an uploaded document — a slide deck, not a feature film |
 | `UPLOAD_STORAGE_PATH` | no (`./storage/uploads`) | Root for files this process stores and serves itself — course thumbnails (§10.10) |
 | `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
+| `RETENTION_ENABLED` | no (`false`) | Master switch for the data-retention sweep (§10.43). Off = the daily job is a no-op |
+| `RETENTION_DRY_RUN` | no (`true`) | When enabled, `true` only COUNTS and logs; set `false` to actually anonymise. Review the dry-run count first |
+| `RETENTION_DEACTIVATED_USER_DAYS` | no (365) | Days after deactivation before a user's PII is anonymised |
 | `ORG_NAME` | no (`Edstellar`) | Name of the first real organization created by `db:migrate:tenancy` |
 | `ORG_SLUG` | no (`edstellar`) | Organization `db:seed` seeds into |
 | `EMAIL_ENABLED` | no (`false`) | Master switch. False writes no outbox rows at all |
@@ -619,6 +623,11 @@ Update this table with every module you move.
 | community kudos + hashtags (give, people search, kudos board, tag suggest/trending) | 6 | `server/src/modules/community` |
 | community groups + admin discussions (learner groups/join/leave; admin groups CRUD + discussion create) | 8 | `server/src/modules/community` |
 | shared files (community Resource posts + DM attachments; one disk store) | 4 | `server/src/modules/files`, `community`, `messages` |
+| retention sweep (deactivated-user PII anonymisation; cron, no HTTP) | 0 | `server/src/modules/retention` |
+| leaderboard privacy (learner opt-out, org name display + on/off switch; fields on existing routes) | 0 | `server/src/modules/leaderboard`, `learner`, `organizations`, `auth`, `community` |
+| consent log + consent withdrawal (history read; withdrawal as a data-request type; choices on POST /auth/consent) | 1 | `server/src/modules/consent`, `my-data`, `auth`, `email` |
+| security incident register (platform: list, options, get, create, update, note, notify clients) | 7 | `server/src/modules/incidents` |
+| request rate limiting + security headers (global guard, per-route budgets; no new routes) | 0 | `server/src/common/guards/rate-limit.guard.ts`, `common/http` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4040,8 +4049,7 @@ you compare old and new behaviour:
   before flipping the switch in production.
 - `TokenService` can move to `@nestjs/jwt` once §10 reaches zero pending
   modules and the legacy verifier is deleted (§6.4).
-- Rate-limit the public verify endpoint (`@nestjs/throttler`).
-- Add `helmet` for security headers.
+- ~~Rate-limit the public verify endpoint.~~ ~~Add security headers.~~ **Done, without either library: see §10.47.**
 
 ### 10.34 Public UUIDs in URLs, without touching the primary keys
 
@@ -4692,6 +4700,234 @@ Both download routes set `Content-Disposition: inline` + `Access-Control-Expose-
 (§10.12). The client builds the file URL from `SERVER_URL` and the id; the auth
 cookie rides along because the API is same-site (shared parent domain), so an
 `<img>` or a top-level open carries it.
+
+### 10.43 Retention sweep (PDPA #7 — Retention Limitation)
+
+`0063_user_retention.sql`. A deactivated user's PII was kept indefinitely; this
+adds a scheduled sweep that ANONYMISES it after a window. The PDPA gap analysis
+(scenario #7) is the driver. Read the migration header first; the summary:
+
+**It ANONYMISES, it does not delete.** The `users` row stays so certificates,
+completions, attempts and roster rows keep their foreign key; every PII column
+is stripped (`first_name`/`last_name` → tombstone, `email` →
+`deleted+<id>@retention.invalid` so the UNIQUE holds, `password` → a value that
+is not a valid scrypt `<hex>.<hex>` so it can never verify, and
+phone/avatar/location/job_role/job_level/employee_id/consent nulled).
+`anonymized_at` is set so a row is swept once. A hard delete would cascade
+across ~20 tables and destroy the aggregate history the product reports on;
+anonymisation satisfies the obligation without that.
+
+**TWO guards, both off by default, because it is irreversible.**
+`RETENTION_ENABLED` must be `true` or the daily job is a no-op, and
+`RETENTION_DRY_RUN` must be `false` or it only COUNTS and logs what it would do.
+The intended rollout is: enable, watch the dry-run count in the worker log for a
+few days, then turn dry-run off. Defaults in `config/configuration.ts`
+(`retention.*`).
+
+**The clock is `users.deactivated_at`**, stamped by `UsersRepository.setActive`
+on deactivation and cleared on reactivation (so a re-enabled account is never
+swept). Existing inactive users had no such timestamp and there is no
+`updated_at` to approximate one, so the migration backfills `deactivated_at =
+now()` — the clock starts at DEPLOY, never retroactively, which cannot anonymise
+a long-tenured user the moment this ships.
+
+**Platform-org users are excluded.** The sweep joins `organizations` and skips
+`is_platform` — a product operator is not a customer's ex-employee and does not
+belong on the same schedule.
+
+**Worker-only, on the cron.** `RetentionModule` is imported by `WorkerModule`
+(not `AppModule`), and `PgBossService` schedules `retention-sweep` daily at
+04:00 UTC — a quiet hour after the 03:00 prune, and free when disabled. No HTTP
+surface, no new permission. The service batches the UPDATE (500 at a time) so
+one run never holds an unbounded lock.
+
+**Known follow-ups (not in this slice):** purge/anonymise of other PII that
+outlives its purpose — old direct messages, read notifications, assessment
+attempts for anonymised users — and a per-category retention policy. The
+framework (`RetentionService` + `RetentionRepository`) is shaped to take more
+categories; this slice does the deactivated-user case the gap analysis names.
+
+### 10.44 Leaderboard privacy (PDPA readiness, gamification)
+
+`0064_leaderboard_privacy.sql`. Three controls over what colleagues see on
+the leaderboard, decided with the owner on 2026-11-17: visible by default with
+a personal opt-out; names shown as first name + last initial by default, as an
+organization setting; and an organization on/off switch.
+
+**An opted-out learner keeps their points; only the RANKS leave them out.**
+`users.leaderboard_hidden` does not filter the standings query. `standings()`
+still returns every learner in `entries`, because `BadgesService.pointsFor`
+reads points from there, and dropping someone would have zeroed their
+points-based badges. `ranked`, `byMonth` and `recognition` are built from
+`participants` (entries minus the hidden), and a hidden entry keeps `rank 0`.
+Ranking everyone and then hiding a row was rejected: the gap in the numbering
+would point straight at the person who asked not to be seen. The kudos board
+applies the same filter in SQL.
+
+**`publicRank()` is the one rule for whether a rank may be shown**: null while
+the organization has the board off or the learner opted out. Home, Achievements
+and the board read it, so they cannot disagree. `rankOf` / `rank_of` count
+`ranked`, not `entries`.
+
+**`name` vs `publicName` on a `LeaderboardEntry`.** `name` is the full name and
+is for ADMIN screens only (an admin already sees the full record). Every
+learner-facing surface must use `publicName`, built by `leaderboardName()` in
+`common/leaderboard-privacy.ts` from `organizations.leaderboard_name_display`
+(`initial` default, or `full`). Recognition cards carry both; the learner
+service swaps in the public one.
+
+**The switch refuses, like the community's.** `organizations.leaderboard_enabled = 0`
+makes `GET /learner/leaderboard` and the kudos board answer 403 ("The leaderboard
+is turned off for your organization"), `cohort_leaderboard` on the dashboard
+becomes null, and rank-news notifications stop. Points and badges still accrue
+and `GET /admin/leaderboard` keeps working; it reports `hiddenCount` so the admin
+board is not mistaken for the full headcount.
+
+**A bug fixed on the way past.** The weekly "You are #N on the leaderboard"
+notification took N from the person's index in `entries`, which is database
+order, not the board's order, so the bell could name a rank the board did not
+show. It now reads `rank` from `ranked`.
+
+Writes: the learner's own flag rides on `PATCH /api/auth/profile`
+(`leaderboard_hidden`), because it is a choice about themselves; the
+organization's two settings ride on `PATCH /api/admin/organization`
+(`manage_organization`). No new route and no new permission, so no
+`perm_version` bump. `leaderboard.service.spec.ts` pins the guarantees above.
+
+### 10.45 Consent log, and withdrawing consent (PDPA / DPDP)
+
+`0065_consent_events.sql`. Two gaps from the privacy review: consent was one
+bundled "I accept" with no history, and there was no way to withdraw it in the
+product. Read the migration header first; the summary:
+
+**The notice screen is an ACKNOWLEDGEMENT, not consent to the core training.**
+The employer runs workplace learning on its own basis (PDPA employment
+purposes with notification, DPDP section 7 legitimate use, GDPR legitimate
+interests / contract). Asking the person to "consent" to it made the consent
+bundled and not freely given, and a withdrawal would have had to stop their
+training. What the person genuinely chooses (leaderboard visibility,
+recognition emails) is offered as separate switches. `users.consent_version` /
+`consented_at` still drive the gate exactly as before (§10.39).
+
+**`consent_events` is append-only history**: `acknowledged`, `choice_changed`,
+`withdrawal_requested`, `withdrawal_resolved`, `withdrawal_rejected`
+(`CONSENT_EVENTS` in `common/consent.ts`), with the notice version, a small
+jsonb payload, where it happened (`source`), IP and user agent. Existing
+acknowledgements were backfilled once (`source = 'backfill'`).
+
+**`ConsentLogService.record()` awaits and throws, unlike the activity log
+(§8.4).** It is the proof. `recordConsent` writes the log row BEFORE the users
+row, so an acknowledged account without evidence cannot exist; the reverse
+failure only re-shows the notice. The one best-effort caller is the public
+unsubscribe link, because a mail provider's one-click POST must not fail.
+
+**One writer per setting.** The notice screen saves a changed choice through
+its own route (`PATCH /auth/profile`, `PATCH /auth/email-preferences`), and
+those routes log `choice_changed` only on a REAL change. `POST /auth/consent`
+records a snapshot of the choices beside the acknowledgement and applies
+nothing. A support session is refused (403) so no row is written that nobody
+gave.
+
+**Withdrawal is a `data_requests` type, logged, not executed** (§10.38's rule).
+Filing one writes `withdrawal_requested`; the admin closing it as resolved or
+rejected writes the matching event on the TRANSITION only. The optional choices
+are already instant switches, so the request is for the core processing, which
+is the organization's decision (usually deactivation).
+
+`ConsentModule` is dependency-free and exports the service only, so EmailModule
+can import it without breaking its no-cycle property. The retention sweep nulls
+`ip_address` / `user_agent` when it anonymises a user and keeps the rows.
+
+```
+POST /api/auth/consent    body { leaderboard_visible?, recognition_emails? }  (snapshot)
+GET  /api/my-data/consent the notice version acknowledged + the consent log
+POST /api/my-data/requests  type 'withdrawal' added
+```
+
+The export gains `privacy.consent_events` and the counts gain `consent_events`.
+No new permission. `CURRENT_PRIVACY_VERSION` was NOT raised: the new notice
+wording reaches existing users only when legal signs it off and the version
+moves, which re-shows the screen to everyone.
+
+### 10.46 Security incident register (data breach notification)
+
+`0066_security_incidents.sql`. The privacy review found no breach process at
+all. The written plan is `Spectra-LMS-Privacy-Pack` document 10; this is the
+register it runs on, in the platform portal at `/platform/incidents`.
+
+**Platform data, so no tenancy predicate and no tenant route.** An incident can
+span several organizations, the register names them, and only
+`@PlatformAdmin()` reads it. A tenant learns of an incident through the notice
+it is sent. Affected organizations are a join table; the timeline
+(`security_incident_events`) is append-only and every write adds a line, so the
+review can see what was known when.
+
+**The clocks are DERIVED, never stored** (`common/incidents.ts`, pinned by
+`incidents.spec.ts`): assessment 30 days from discovery; clients 24 hours from
+discovery (our processor target, to be aligned with the DPA); GDPR and DPDP
+72 hours from discovery unless assessed not notifiable; PDPC 3 calendar days
+from the ASSESSMENT once notifiable; individuals "as soon as practicable". The
+assessment time is stamped when the outcome changes, because the PDPC clock
+runs from it. The browser renders the states the API sends.
+
+**Notify clients** sends `security_incident_notice` (bell + email) to every
+admin of every affected organization, one `notify()` per organization so each
+row is filed under it. The type is in `UNSUPPRESSABLE`: a breach notice to a
+controller is our legal duty and a preference must not swallow it. A
+suppressed (bounced) address still gets nothing, as for any type. The first
+send stamps `clients_notified_at`; a later one is recorded as an update.
+
+```
+GET   /api/platform/incidents[/options|/:id]
+POST  /api/platform/incidents                    log one (201)
+PATCH /api/platform/incidents/:id                field-by-field
+POST  /api/platform/incidents/:id/notes          timeline note (201)
+POST  /api/platform/incidents/:id/notify-clients bell + email (200)
+```
+
+New notification type, so a deploy needs a **worker restart**.
+
+### 10.47 Rate limiting and security headers
+
+**Rate limiting is a global guard written here, not `@nestjs/throttler`,**
+because the KEY is the design (`common/rate-limit/rate-limit.ts`). Learners
+share corporate NAT addresses, so a per-IP budget on signed-in traffic would
+lock out a client at 9am. `RateLimitGuard` runs directly after AuthGuard: a
+signed-in request counts per USER (600/min default), a public one per IP
+(300/min). Routes declare their own with `@RateLimit(...)`:
+
+| Route | Budget |
+|---|---|
+| POST /auth/login | 10 / 15 min per IP + email, and 300 / 15 min per IP |
+| POST /auth/mfa/verify | 30 / 15 min per IP |
+| POST /auth/forgot-password | 20 / hour per IP (the service also caps per account) |
+| reset-password check / submit | 60 and 30 / 15 min per IP |
+| POST /auth/change-password | 10 / 15 min per user |
+| GET /certificates/verify/:code | 30 / min per IP (the §10.23.2 follow-up) |
+| GET /my-data/export | 10 / hour per user |
+| POST /email/unsubscribe | 1000 / min per IP (mail providers share addresses) |
+
+A 429 carries `Retry-After` and says when to try again. The client IP is
+`CF-Connecting-IP`, then the first `X-Forwarded-For` hop, then the socket.
+**Counters are in process memory**: correct for today's single API process; a
+second instance would double every budget and a restart clears them. Move them
+to Postgres or Redis when the API is scaled out. Forged forwarding headers
+can dodge a per-IP limit only if the origin is reachable without Cloudflare.
+
+**Security headers are set by hand** (`common/http/security-headers.ts`), not
+with `helmet`, whose defaults would break this API: `same-origin` resource
+policy would block avatars and attachments loaded by the app origin (they are
+same-SITE), and its script CSP would stop SCORM packages tracking. Set:
+`nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy:
+same-site`, a `Permissions-Policy` denying camera, microphone, location and
+payment, HSTS only when the request arrived over HTTPS, and
+`Content-Security-Policy: frame-ancestors 'self' <CLIENT_ORIGIN...>`.
+**Not `X-Frame-Options`**: a PDF lesson is an iframe of an API URL inside the
+app origin, so SAMEORIGIN would blank every PDF lesson. Verified in a browser:
+the app origin may frame the API, an unlisted origin is refused.
+`X-Powered-By` is removed. The client sets its own equivalents in
+`next.config.mjs` (`frame-ancestors 'self'`, no script CSP yet: Next's inline
+bootstrap would need nonces).
 
 ## 11. Adding a new module — checklist
 

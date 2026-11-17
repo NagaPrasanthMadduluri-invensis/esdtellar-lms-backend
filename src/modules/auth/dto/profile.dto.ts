@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 
 const trim = ({ value }: { value: unknown }) =>
@@ -77,4 +77,12 @@ export class UpdateProfileDto {
    */
   @IsOptional() @IsString() @MaxLength(1024) @Transform(nullable)
   avatar_url?: string | null;
+
+  /**
+   * The person's own leaderboard opt-out (0064). True leaves them out of every
+   * ranking colleagues see; they keep earning points and badges. This is the
+   * one privacy choice a learner makes for themselves, so it lives here
+   * rather than behind an admin.
+   */
+  @IsOptional() @IsBoolean() leaderboard_hidden?: boolean;
 }

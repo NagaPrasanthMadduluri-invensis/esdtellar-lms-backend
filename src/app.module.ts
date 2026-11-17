@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AuthGuard } from './common/guards/auth.guard';
+import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { PlatformAdminGuard } from './common/guards/platform-admin.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -29,6 +30,7 @@ import { CommunityModule } from './modules/community/community.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
 import { MyDataModule } from './modules/my-data/my-data.module';
+import { IncidentsModule } from './modules/incidents/incidents.module';
 import { BadgesModule } from './modules/badges/badges.module';
 import { CertificatesModule } from './modules/certificates/certificates.module';
 import { CoursesModule } from './modules/courses/courses.module';
@@ -89,6 +91,8 @@ import { AuditMiddleware } from '@/modules/audit/audit.middleware';
     MessagesModule,
     ReferralsModule,
     MyDataModule,
+    // 0066: security incident register (platform only).
+    IncidentsModule,
   ],
   providers: [
     // Order matters, and all four are global so a new controller is covered
@@ -100,6 +104,9 @@ import { AuditMiddleware } from '@/modules/audit/audit.middleware';
     //   4. TenantContextGuard mints request.orgScope from request.user last,
     //      once every authorization decision above it has already passed.
     { provide: APP_GUARD, useClass: AuthGuard },
+    //   1b. RateLimitGuard counts the request: per user once AuthGuard has
+    //       identified them, per IP on a public route (common/rate-limit).
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     //   3b. PermissionsGuard checks @Permissions() from the token's claim,
     //       after the role gate and before anything reads the database.

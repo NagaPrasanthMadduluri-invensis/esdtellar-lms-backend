@@ -14,7 +14,7 @@ import type { OrgScope } from '@/database/org-scope';
 import { badgeHint } from '@/modules/badges/badge-hint.util';
 import { BadgesService } from '@/modules/badges/badges.service';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
-import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
+import { LeaderboardService, publicRank } from '@/modules/leaderboard/leaderboard.service';
 // The points model itself, not the ranking: the card promises what the board
 // pays, so both read one file (see `courseReward`).
 import {
@@ -674,34 +674,41 @@ export class LearnerService {
     // figure on the dashboard is the same one the leaderboard shows.
     const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
     const points = myStanding?.points ?? 0;
-    const rank = myStanding?.rank ?? standings.entries.length + 1;
+    // A PUBLIC rank exists only while the organization's board is on and the
+    // learner takes part in it (0064). Otherwise null, never a made-up number.
+    const rank = publicRank(standings, myStanding);
 
     // Cohort leaderboard podium (Home) — the TOP 3 of the same `ranked`
     // standings the leaderboard page shows, so the two can never disagree,
     // plus the learner's own line for the "You" context when they are not in
-    // the top 3. A peer is named FIRST NAME + LAST INITIAL (the §10.24 reviews
-    // relaxation): enough to recognise a colleague, never a full directory.
+    // the top 3. Peers are named by the organization's name display (0064),
+    // first name + last initial unless the organization chose full names.
+    // Null when the organization has turned the leaderboard off.
     const shortName = (first: string, last: string) =>
       `${first ?? ''}${last ? ` ${last.charAt(0)}.` : ''}`.trim();
-    const cohortLeaderboard = {
-      podium: standings.ranked.slice(0, 3).map((e) => ({
-        id: e.id,
-        name: shortName(e.firstName, e.lastName),
-        points: e.points,
-        rank: e.rank,
-        is_you: e.id === userId,
-        avatar_url: e.avatarUrl,
-      })),
-      me: myStanding
-        ? {
-            rank,
-            points,
-            name: shortName(myStanding.firstName, myStanding.lastName),
-            in_top3: rank <= 3,
-          }
-        : null,
-      total: standings.entries.length,
-    };
+    const cohortLeaderboard = standings.settings.enabled
+      ? {
+          podium: standings.ranked.slice(0, 3).map((e) => ({
+            id: e.id,
+            name: e.publicName,
+            points: e.points,
+            rank: e.rank,
+            is_you: e.id === userId,
+            avatar_url: e.avatarUrl,
+          })),
+          me: myStanding
+            ? {
+                rank,
+                points,
+                name: myStanding.publicName,
+                in_top3: rank !== null && rank <= 3,
+                // Opted out: their line says so instead of showing a rank.
+                hidden: myStanding.hidden,
+              }
+            : null,
+          total: standings.ranked.length,
+        }
+      : null;
 
     // "Learning with you" — peers assigned to a course this learner also has.
     const learningWithYou = peers.map((p) => ({
@@ -851,7 +858,8 @@ export class LearnerService {
       },
       points,
       rank,
-      rank_of: standings.entries.length,
+      // Out of the people actually ranked (0064), the same as Achievements.
+      rank_of: standings.ranked.length,
       badges: earnedBadgeCount,
       cohort_leaderboard: cohortLeaderboard,
       learning_with_you: learningWithYou,
@@ -1595,7 +1603,8 @@ export class LearnerService {
 
     const myStanding = standings.entries.find((e) => e.id === userId) ?? null;
     const points = myStanding?.points ?? 0;
-    const rank = myStanding?.rank ?? standings.entries.length + 1;
+    // Null when the board is off or the learner opted out (0064).
+    const rank = publicRank(standings, myStanding);
 
     // Persisted on award, never recomputed (spec §4.5) — `points` is passed in
     // so this does not re-run the leaderboard's own bulk query a second time.
@@ -1632,7 +1641,12 @@ export class LearnerService {
       summary: {
         points,
         rank,
-        rankOf: standings.entries.length,
+        // Out of the people actually ranked, so "#4 of 20" counts only
+        // participants (0064).
+        rankOf: standings.ranked.length,
+        // Why `rank` may be null, so the page can say which.
+        leaderboardEnabled: standings.settings.enabled,
+        leaderboardHidden: myStanding?.hidden ?? false,
         earnedCount: badges.filter((b) => b.earned).length,
       },
       badges,
@@ -1646,11 +1660,20 @@ export class LearnerService {
   ───────────────────────────────────────────── */
 
   async leaderboard(scope: OrgScope, userId: number) {
-    const { ranked, byMonth, recognition } = await this.leaderboard_.standings(scope);
+    const { entries, ranked, byMonth, recognition, settings, hiddenCount } =
+      await this.leaderboard_.standings(scope);
+
+    // The organization's switch (0064), refused the way the community refuses
+    // when it is off, so the page can render a plain "turned off" state.
+    if (!settings.enabled) {
+      throw new ForbiddenException('The leaderboard is turned off for your organization');
+    }
 
     const decorate = (e: (typeof ranked)[number]) => ({
       id: e.id,
-      name: e.name,
+      // Colleagues see the organization's chosen name display, never the
+      // full name unless the organization chose it (0064).
+      name: e.publicName,
       initials: initialsOf(e.firstName, e.lastName),
       // The uploaded profile picture, shown in place of the coloured initials
       // when the learner has one (My Profile). Null falls back to initials.
@@ -1678,8 +1701,14 @@ export class LearnerService {
       top3[2] ? { ...top3[2], podiumPos: 3 } : null,
     ].filter(Boolean);
 
-    const withYou = (card: { id: number } | null) =>
-      card ? { ...card, isYou: card.id === userId } : null;
+    // Recognition cards carry the full name for admin use; a learner sees the
+    // public one in its place.
+    const withYou = (card: { id: number; name: string; publicName: string } | null) => {
+      if (!card) return null;
+      const { publicName, ...rest } = card;
+      return { ...rest, name: publicName, isYou: card.id === userId };
+    };
+    const mine = entries.find((e) => e.id === userId) ?? null;
 
     return {
       /* The rules, from the same constants the board pays out with
@@ -1688,6 +1717,23 @@ export class LearnerService {
       pointRules: POINT_RULES,
       pointNotes: POINTS_NOTES,
       me: allLearners.find((l) => l.isYou) ?? null,
+      /*
+       * Privacy (0064). `you` is the learner's OWN standing, given whether or
+       * not they take part, so an opted-out learner still sees their points.
+       * `hiddenCount` lets the page say that some colleagues chose not to
+       * appear, without saying who.
+       */
+      privacy: {
+        nameDisplay: settings.nameDisplay,
+        hiddenCount,
+        you: mine
+          ? {
+              hidden: mine.hidden,
+              allTimePoints: mine.points,
+              monthPoints: mine.monthPoints,
+            }
+          : null,
+      },
       recognition: {
         learnerOfMonth: withYou(recognition.learnerOfMonth),
         quickLearner: withYou(recognition.quickLearner),

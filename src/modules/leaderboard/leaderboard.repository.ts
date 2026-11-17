@@ -23,6 +23,8 @@ export interface LeaderboardRow {
   department: string | null;
   /** Profile picture path (0047), or null. */
   avatar_url: string | null;
+  /** The learner's own opt-out from every ranking colleagues see (0064). */
+  leaderboard_hidden: number;
   /** DISTINCT assessments passed — not attempts. */
   passed: number;
   /** Every attempt, passing or not — the denominator for efficiency. */
@@ -195,12 +197,32 @@ export class LeaderboardRepository {
    * `points` / `month_points` are `pointEvents` summed in SQL (§7.2), in the
    * same round trip.
    */
+  /**
+   * The organization's leaderboard switch and name display (0064). Read
+   * beside the standings, one row by primary key. A missing row (which a
+   * verified scope never produces) falls back to on + initials.
+   */
+  async settings(
+    scope: OrgScope,
+  ): Promise<{ leaderboard_enabled: number; leaderboard_name_display: string }> {
+    const rows = await this.db.all<{
+      leaderboard_enabled: number;
+      leaderboard_name_display: string;
+    }>(sql`
+      SELECT leaderboard_enabled, leaderboard_name_display
+        FROM organizations
+       WHERE id = ${scope.organizationId}
+    `);
+    return rows[0] ?? { leaderboard_enabled: 1, leaderboard_name_display: 'initial' };
+  }
+
   async standings(
     scope: OrgScope,
     thisMonth: string,
   ): Promise<LeaderboardRow[]> {
     return this.db.all<LeaderboardRow>(sql`
       SELECT u.id, u.first_name, u.last_name, u.department, u.avatar_url,
+        u.leaderboard_hidden,
         (SELECT COUNT(DISTINCT t.assessment_id) FROM user_assessment_attempts t
          WHERE t.user_id = u.id AND t.is_passed = 1) AS passed,
         (SELECT COUNT(*) FROM user_assessment_attempts t

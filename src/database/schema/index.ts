@@ -56,3 +56,9 @@ export * from './data-requests.schema';
 
 /** Admin TOTP multi-factor enrolment (0058). */
 export * from './user-mfa.schema';
+
+/** Append-only consent history: acknowledgements, choices, withdrawals (0065). */
+export * from './consent-events.schema';
+
+/** The security incident register: incidents, affected orgs, timeline (0066). */
+export * from './security-incidents.schema';

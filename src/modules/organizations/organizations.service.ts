@@ -9,6 +9,7 @@ import {
 import { hashPassword } from '@/common/crypto/password.util';
 import { SYSTEM_ROLES, type RolePortal } from '@/common/permissions';
 import { contractState } from '@/common/tenant-account';
+import { toNameDisplay } from '@/common/leaderboard-privacy';
 import { BillingService } from '@/modules/billing/billing.service';
 import { SeatsService } from '@/modules/seats/seats.service';
 import { OrgOptionsService } from '@/modules/org-options/org-options.service';
@@ -206,9 +207,10 @@ export class OrganizationsService implements OnModuleInit {
 
     const contract = contractState(row.contract_end);
     const seats = await this.seats.usage(scope);
-    const communityEnabled = await this.repository.getCommunityEnabled(
-      scope.organizationId,
-    );
+    const [communityEnabled, leaderboard] = await Promise.all([
+      this.repository.getCommunityEnabled(scope.organizationId),
+      this.repository.getLeaderboardSettings(scope.organizationId),
+    ]);
 
     return {
       organization: {
@@ -216,6 +218,9 @@ export class OrganizationsService implements OnModuleInit {
         name: row.name,
         // Learning Community switch (0049). Writable by this tenant.
         community_enabled: communityEnabled === 1,
+        // Leaderboard privacy (0064). Both writable by this tenant.
+        leaderboard_enabled: Number(leaderboard.enabled) === 1,
+        leaderboard_name_display: toNameDisplay(leaderboard.nameDisplay),
         slug: row.slug,
         industry: row.industry,
         region: row.region,
@@ -280,6 +285,13 @@ export class OrganizationsService implements OnModuleInit {
           : dto.community_enabled
             ? 1
             : 0,
+      leaderboardEnabled:
+        dto.leaderboard_enabled === undefined
+          ? undefined
+          : dto.leaderboard_enabled
+            ? 1
+            : 0,
+      leaderboardNameDisplay: dto.leaderboard_name_display,
     });
     return this.getOwnOrganization(scope);
   }

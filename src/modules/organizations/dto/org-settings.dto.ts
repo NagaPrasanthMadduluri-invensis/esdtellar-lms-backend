@@ -1,5 +1,10 @@
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+
+import {
+  LEADERBOARD_NAME_DISPLAYS,
+  type LeaderboardNameDisplay,
+} from '@/common/leaderboard-privacy';
 
 import {
   CERTIFICATE_PREFIX_MAX,
@@ -125,4 +130,16 @@ export class UpdateOrgSettingsDto {
 
   /** Learning Community switch (0049). A tenant-level feature toggle. */
   @IsOptional() @IsBoolean() community_enabled?: boolean;
+
+  /**
+   * Leaderboard privacy (0064). The switch hides the learner leaderboard, the
+   * Home podium and the kudos board; points and badges still accrue. The name
+   * display decides how colleagues are named to each other there.
+   */
+  @IsOptional() @IsBoolean() leaderboard_enabled?: boolean;
+  @IsOptional()
+  @IsIn(LEADERBOARD_NAME_DISPLAYS as unknown as string[], {
+    message: `leaderboard_name_display must be one of: ${LEADERBOARD_NAME_DISPLAYS.join(', ')}`,
+  })
+  leaderboard_name_display?: LeaderboardNameDisplay;
 }

@@ -6,6 +6,9 @@ module.exports = {
   rootDir: 'src',
   testRegex: '.*\\.spec\\.ts$',
   setupFiles: ['reflect-metadata'],
+  // Mirror the tsconfig `@/*` -> `src/*` path alias for imports pulled in by
+  // the unit under test (rootDir is already `src`).
+  moduleNameMapper: { '^@/(.*)$': '<rootDir>/$1' },
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: '<rootDir>/../tsconfig.json', isolatedModules: true }],
   },

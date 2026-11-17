@@ -3,12 +3,20 @@
  * and the states the admin queue advances through.
  *
  * A request is born `open` and only an admin moves it on. A `correction` asks
- * for a record to be fixed; a `deletion` asks for personal data to be removed.
+ * for a record to be fixed; a `deletion` asks for personal data to be removed;
+ * a `withdrawal` withdraws consent to processing.
  * Neither executes on the subject's click — see the migration header.
  *
  * `client/lib/data-requests.js` mirrors this (labels + chip tones). Change both.
  */
-export const DATA_REQUEST_TYPES = ['correction', 'deletion'] as const;
+/*
+ * `withdrawal` (0065) asks to withdraw consent. Like the other two it is LOGGED,
+ * not executed: core training runs on the employer's legitimate use, so
+ * stopping it is the organization's decision (often closing the account), and
+ * the optional choices a person CAN withdraw themselves are instant switches in
+ * My Profile. Filing and closing one also write consent_events rows.
+ */
+export const DATA_REQUEST_TYPES = ['correction', 'deletion', 'withdrawal'] as const;
 export type DataRequestType = (typeof DATA_REQUEST_TYPES)[number];
 
 export const DATA_REQUEST_STATUSES = [

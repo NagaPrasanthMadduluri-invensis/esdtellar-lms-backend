@@ -609,27 +609,47 @@ export class CommunityRepository {
   }
 
   /** The Kudos leaderboard — recipients ranked by kudos received, org-scoped. */
+  /**
+   * Most kudos received. A learner who opted out of leaderboards (0064) is
+   * left out: the kudos board is a ranking like any other. The kudos posts
+   * themselves stay in the feed, which is community content, not a ranking.
+   */
   async kudosLeaderboard(scope: OrgScope, limit: number) {
     return this.db.all<{
       user_id: number;
       first_name: string;
-      last_initial: string | null;
+      last_name: string;
       department: string | null;
       avatar_url: string | null;
       received: number;
     }>(sql`
-      SELECT u.id AS user_id, u.first_name,
-             NULLIF(UPPER(LEFT(TRIM(u.last_name), 1)), '') AS last_initial,
+      SELECT u.id AS user_id, u.first_name, u.last_name,
              u.department, u.avatar_url,
              COUNT(*)::int AS received
         FROM community_posts p
         JOIN users u ON u.id = p.recipient_user_id
        WHERE ${orgScope('p', scope)} AND p.type = 'kudos'
          AND p.deleted_at IS NULL AND u.is_active = 1
+         AND u.leaderboard_hidden = 0
        GROUP BY u.id, u.first_name, u.last_name, u.department, u.avatar_url
        ORDER BY received DESC, u.first_name ASC
        LIMIT ${limit}
     `);
+  }
+
+  /** The organization's leaderboard switch and name display (0064). */
+  async leaderboardSettings(
+    scope: OrgScope,
+  ): Promise<{ leaderboard_enabled: number; leaderboard_name_display: string }> {
+    const rows = await this.db.all<{
+      leaderboard_enabled: number;
+      leaderboard_name_display: string;
+    }>(sql`
+      SELECT leaderboard_enabled, leaderboard_name_display
+        FROM organizations
+       WHERE id = ${scope.organizationId}
+    `);
+    return rows[0] ?? { leaderboard_enabled: 1, leaderboard_name_display: 'initial' };
   }
 
   async createReply(input: {

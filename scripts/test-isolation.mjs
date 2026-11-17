@@ -372,10 +372,20 @@ async function main() {
     ['certificates', 'PATCH', `/admin/certificates/${invCertId}`],
     ['assessments', 'GET', `/admin/assessments/${invAssessmentId}`],
   ];
-  skip(
-    'SCORM packages (Edstellar admin -> Invensis id)',
-    'no Invensis-owned SCORM package exists and this suite does not fabricate a zip upload fixture for it',
+  // The reverse SCORM check runs whenever Invensis owns a package; the suite
+  // still does not upload one itself, so with none it says so and skips.
+  const invScormRow = await one(
+    'SELECT id FROM scorm_packages WHERE organization_id = $1 ORDER BY id LIMIT 1',
+    [invOrg.id],
   );
+  if (invScormRow) {
+    reverseChecks.push(['SCORM packages', 'GET', `/admin/scorm/${invScormRow.id}`]);
+  } else {
+    skip(
+      'SCORM packages (Edstellar admin -> Invensis id)',
+      'no Invensis-owned SCORM package exists and this suite does not fabricate a zip upload fixture for it',
+    );
+  }
 
   for (const [label, method, path] of reverseChecks) {
     const res = await api(edAdmin, method, path);
@@ -788,10 +798,13 @@ async function main() {
   section('9. Learning community is org-scoped');
 
   {
+    // A QUESTION, not a discussion: since §10.41 only admins start
+    // discussions (a learner gets 403), and every post needs a hashtag (§10.40).
     const created = await api(edLearner, 'POST', '/learner/community', {
-      type: 'discussion',
-      title: `Isolation suite discussion ${RUN_ID}`,
+      type: 'question',
+      title: `Isolation suite question ${RUN_ID}`,
       body: 'Visible only inside Edstellar.',
+      hashtags: ['isolation'],
     });
     check(
       'community: Edstellar learner creates a post -> 201',

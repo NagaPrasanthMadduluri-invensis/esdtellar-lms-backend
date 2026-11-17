@@ -11,6 +11,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { RateLimit } from '@/common/rate-limit/rate-limit';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 
@@ -24,6 +25,8 @@ import { ImpersonateDto } from './dto/impersonate.dto';
 import { LoginDto } from './dto/login.dto';
 import { MfaVerifyDto } from './dto/mfa.dto';
 import { UpdateProfileDto } from './dto/profile.dto';
+import { RecordConsentDto } from './dto/consent.dto';
+import { requestMeta } from '@/modules/consent/consent-log.service';
 import {
   RequestPasswordResetDto,
   ResetPasswordDto,
@@ -51,6 +54,14 @@ export class AuthController {
   }
 
   @Public()
+  // Per address AND email: the brute-force unit. Plus a per-address ceiling
+  // sized for a corporate network where hundreds sign in from one IP.
+  @RateLimit(
+    { name: 'login-account', by: 'ip+email', limit: 10, windowSeconds: 900,
+      message: 'Too many sign-in attempts for this account.' },
+    { name: 'login-ip', by: 'ip', limit: 300, windowSeconds: 900,
+      message: 'Too many sign-in attempts from your network.' },
+  )
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
@@ -97,6 +108,8 @@ export class AuthController {
    * `login`, plus the code. Issues the real session cookie on success.
    */
   @Public()
+  @RateLimit({ name: 'mfa-verify', by: 'ip', limit: 30, windowSeconds: 900,
+    message: 'Too many verification attempts.' })
   @Post('mfa/verify')
   @HttpCode(HttpStatus.OK)
   async mfaVerify(
@@ -118,8 +131,12 @@ export class AuthController {
    */
   @Post('consent')
   @HttpCode(HttpStatus.OK)
-  async consent(@CurrentUser() user: AuthenticatedUser) {
-    return this.authService.recordConsent(user.userId, user);
+  async consent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: RecordConsentDto,
+    @Req() request: Request,
+  ) {
+    return this.authService.recordConsent(user.userId, user, dto, requestMeta(request));
   }
 
   @Public()
@@ -179,8 +196,9 @@ export class AuthController {
   async updateProfile(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateProfileDto,
+    @Req() request: Request,
   ) {
-    return this.authService.updateProfile(user.userId, dto);
+    return this.authService.updateProfile(user.userId, dto, requestMeta(request));
   }
 
   /**
@@ -255,6 +273,8 @@ export class AuthController {
    * has for this. Identity comes from the token, so there is nothing here that
    * lets one user change another's.
    */
+  @RateLimit({ name: 'change-password', by: 'user', limit: 10, windowSeconds: 900,
+    message: 'Too many password change attempts.' })
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
   async changePassword(
@@ -304,6 +324,11 @@ export class AuthController {
    * free membership check against any address they like.
    */
   @Public()
+  // The service already caps sends per ACCOUNT (3 in 15 minutes); this caps
+  // one address probing many accounts. The 429 does not reveal whether any
+  // address exists.
+  @RateLimit({ name: 'forgot-password', by: 'ip', limit: 20, windowSeconds: 3600,
+    message: 'Too many reset requests.' })
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   async forgotPassword(
@@ -321,6 +346,7 @@ export class AuthController {
    * the caller already holds, and reveals nothing about any account.
    */
   @Public()
+  @RateLimit({ name: 'reset-check', by: 'ip', limit: 60, windowSeconds: 900 })
   @Get('reset-password/check')
   async checkResetToken(@Query('token') token: string) {
     if (!token) return { valid: false, reason: 'not_found' };
@@ -337,6 +363,8 @@ export class AuthController {
    * it works.
    */
   @Public()
+  @RateLimit({ name: 'reset-password', by: 'ip', limit: 30, windowSeconds: 900,
+    message: 'Too many password reset attempts.' })
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   async resetPassword(@Body() dto: ResetPasswordDto) {

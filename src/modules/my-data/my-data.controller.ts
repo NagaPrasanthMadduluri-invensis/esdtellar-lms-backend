@@ -5,9 +5,13 @@ import {
   HttpCode,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import { RateLimit } from '@/common/rate-limit/rate-limit';
+import type { Request, Response } from 'express';
+
+import { requestMeta } from '@/modules/consent/consent-log.service';
 
 import { CurrentUser } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
@@ -45,6 +49,9 @@ export class MyDataController {
    * `Access-Control-Expose-Headers: Content-Disposition` so the cross-origin
    * fetch in `client/lib/download.js` can read the filename.
    */
+  // The export reads ~25 tables; nobody needs it more than a few times an hour.
+  @RateLimit({ name: 'my-data-export', by: 'user', limit: 10, windowSeconds: 3600,
+    message: 'You have downloaded your data several times recently.' })
   @Get('export')
   async export(
     @CurrentUser() user: AuthenticatedUser,
@@ -63,6 +70,15 @@ export class MyDataController {
       .setHeader('Access-Control-Expose-Headers', 'Content-Disposition')
       .setHeader('Cache-Control', 'no-store')
       .send(body);
+  }
+
+  /**
+   * The caller's privacy record: the notice version they acknowledged, and
+   * their consent log (0065).
+   */
+  @Get('consent')
+  async consent(@CurrentUser() user: AuthenticatedUser) {
+    return this.myData.consentRecord(user.userId);
   }
 
   /** The caller's own correction/deletion requests and their status. */
@@ -84,12 +100,14 @@ export class MyDataController {
   async createRequest(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateDataRequestDto,
+    @Req() request: Request,
   ) {
     return this.myData.createRequest(
       user.userId,
       user.organizationId,
       user,
       dto,
+      requestMeta(request),
     );
   }
 }

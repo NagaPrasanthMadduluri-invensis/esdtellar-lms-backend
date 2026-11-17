@@ -261,6 +261,7 @@ export class AuthRepository {
       location: string | null;
       phone: string | null;
       avatar_url: string | null;
+      leaderboard_hidden: number;
       is_active: number;
       organization_id: number;
       organization_name: string;
@@ -270,7 +271,7 @@ export class AuthRepository {
       SELECT u.id, u.first_name, u.last_name, u.email, u.role,
              r.label AS role_label,
              u.department, u.employee_id, u.job_role, u.job_level,
-             u.location, u.phone, u.avatar_url, u.is_active,
+             u.location, u.phone, u.avatar_url, u.leaderboard_hidden, u.is_active,
              u.organization_id, o.name AS organization_name,
              u.created_at,
              -- The same GREATEST(completion, attempt) the user directory
@@ -310,9 +311,11 @@ export class AuthRepository {
       jobLevel?: string | null;
       location?: string | null;
       avatarUrl?: string | null;
+      leaderboardHidden?: number;
     },
   ) {
     const values: Record<string, unknown> = {};
+    if (input.leaderboardHidden !== undefined) values.leaderboardHidden = input.leaderboardHidden;
     if (input.firstName !== undefined) values.firstName = input.firstName;
     if (input.lastName !== undefined) values.lastName = input.lastName;
     if (input.phone !== undefined) values.phone = input.phone;

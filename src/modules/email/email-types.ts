@@ -106,4 +106,7 @@ export function isDirectEmailType(type: string): type is DirectEmailType {
 export const UNSUPPRESSABLE: ReadonlySet<string> = new Set<string>([
   'password_reset',
   'password_changed',
+  // A breach notice to a client's admins is a legal duty of ours as their
+  // processor (0066). A preference must not be able to swallow it.
+  'security_incident_notice',
 ]);

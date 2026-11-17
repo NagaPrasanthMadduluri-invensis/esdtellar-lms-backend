@@ -21,6 +21,19 @@ export const CURRENT_PRIVACY_VERSION = '2026-10-22';
 export const PRIVACY_POLICY_URL = '/privacy';
 
 /**
+ * The consent log's event vocabulary (0065). `consent_events.event` holds one of
+ * these. See the migration header for what each means.
+ */
+export const CONSENT_EVENTS = [
+  'acknowledged',
+  'choice_changed',
+  'withdrawal_requested',
+  'withdrawal_resolved',
+  'withdrawal_rejected',
+] as const;
+export type ConsentEvent = (typeof CONSENT_EVENTS)[number];
+
+/**
  * Whether the caller must accept the current notice before using the app.
  *
  * True when they have never consented, or consented to an older version.

@@ -683,7 +683,12 @@ export class UsersRepository {
   async setActive(scope: OrgScope, id: number, isActive: boolean) {
     const [updated] = await this.db
       .update(users)
-      .set({ isActive: isActive ? 1 : 0 })
+      .set({
+        isActive: isActive ? 1 : 0,
+        // Stamp the retention clock on deactivation; clear it on reactivation
+        // so the sweep (0063) never anonymises a re-enabled account.
+        deactivatedAt: isActive ? null : new Date().toISOString(),
+      })
       .where(
         and(eq(users.id, id), eq(users.organizationId, scope.organizationId)),
       )

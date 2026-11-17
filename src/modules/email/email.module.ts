@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+
+import { ConsentModule } from '@/modules/consent/consent.module';
 import { ConfigService } from '@nestjs/config';
 
 import { EmailController } from './email.controller';
@@ -18,13 +20,15 @@ import { GmailMailerService } from './mailer/gmail-mailer.service';
 /**
  * The email module.
  *
- * ## It imports nothing, and that is load-bearing
+ * ## It imports nothing with dependencies, and that is load-bearing
  *
  * `NotificationsModule` is dependency-free precisely so that the eleven
  * modules with something worth announcing can all import it without a
  * cycle. It now imports THIS one, so the same property has to hold here or
  * that carefully-kept arrangement collapses. `ConfigModule` and
- * `DatabaseModule` are both global, so neither needs importing.
+ * `DatabaseModule` are both global, so neither needs importing. The one
+ * import is `ConsentModule` (0065), which is itself dependency-free, so an
+ * email-preference change can be written to the consent log.
  *
  * It is deliberately NOT `@Global()`. `DatabaseModule`'s own docblock claims
  * to be the only global feature module in the codebase, and that claim is
@@ -43,6 +47,8 @@ import { GmailMailerService } from './mailer/gmail-mailer.service';
  * stay private.
  */
 @Module({
+  // ConsentModule is dependency-free, so importing it keeps the property above.
+  imports: [ConsentModule],
   controllers: [AdminEmailController, EmailController, SesEventsController, PlatformEmailController],
   providers: [
     EmailOutboxRepository,

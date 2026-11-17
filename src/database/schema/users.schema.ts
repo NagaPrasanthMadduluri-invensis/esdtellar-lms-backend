@@ -107,6 +107,12 @@ export const users = pgTable(
      */
     consentVersion: text('consent_version'),
     consentedAt: timestamp('consented_at', { mode: 'string', withTimezone: true }),
+    // Retention (0063): when the account was deactivated (clock for the purge
+    // sweep) and when its PII was anonymised (tombstone, so it is swept once).
+    deactivatedAt: timestamp('deactivated_at', { mode: 'string', withTimezone: true }),
+    anonymizedAt: timestamp('anonymized_at', { mode: 'string', withTimezone: true }),
+    /** The learner's own leaderboard opt-out (0064). 0 = visible. */
+    leaderboardHidden: integer('leaderboard_hidden').notNull().default(0),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -114,6 +120,9 @@ export const users = pgTable(
   (table) => [
     index('idx_users_role_active').on(table.role, table.isActive),
     index('idx_users_department').on(table.department),
+    // Retention sweep lookup (0063). The migration declares it partial
+    // (WHERE is_active = 0 AND anonymized_at IS NULL); this documents intent.
+    index('idx_users_retention').on(table.deactivatedAt),
     // Leading organization_id: the most selective predicate once tenancy is
     // live, and the leftmost prefix that supersedes idx_users_role_active
     // (spec §3.7). The single-column index above stays until the reviewed

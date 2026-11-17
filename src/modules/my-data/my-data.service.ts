@@ -4,9 +4,17 @@ import { ConfigService } from '@nestjs/config';
 import type { OrgScope } from '@/database/org-scope';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { DATA_REQUEST_STATUSES } from '@/common/data-requests';
-import { PRIVACY_POLICY_URL } from '@/common/consent';
+import {
+  CURRENT_PRIVACY_VERSION,
+  PRIVACY_POLICY_URL,
+  isConsentRequired,
+} from '@/common/consent';
 import { actorLabel } from '@/common/notifications';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
+import {
+  ConsentLogService,
+  type RequestMeta,
+} from '@/modules/consent/consent-log.service';
 
 import { MyDataRepository } from './my-data.repository';
 import type {
@@ -20,6 +28,14 @@ const DEFAULT_LIMIT = 50;
 const TYPE_LABEL: Record<string, string> = {
   correction: 'correction',
   deletion: 'deletion',
+  withdrawal: 'consent withdrawal',
+};
+
+/** What the person is asking for, as a verb phrase, for the email bodies. */
+const ACTION_PHRASE: Record<string, string> = {
+  correction: 'correct their personal data',
+  deletion: 'delete their personal data',
+  withdrawal: 'withdraw their consent to the processing of their personal data',
 };
 
 /**
@@ -38,6 +54,8 @@ export class MyDataService {
     private readonly repository: MyDataRepository,
     /** Best-effort (§8.4) — notify never throws, every call is voided. */
     private readonly notifications: NotificationsService,
+    /** Withdrawal requests are also consent-log events (0065). */
+    private readonly consentLog: ConsentLogService,
     config: ConfigService,
   ) {
     // The canonical public UI origin, for building an absolute privacy link in
@@ -80,6 +98,29 @@ export class MyDataService {
     };
   }
 
+  /**
+   * The person's privacy record (0065): which notice version they acknowledged
+   * and when, whether a newer one is waiting, and the consent log itself.
+   */
+  async consentRecord(userId: number) {
+    const [profile, events] = await Promise.all([
+      this.repository.profile(userId),
+      this.consentLog.history(userId),
+    ]);
+    if (!profile) throw new NotFoundException('User not found');
+    const version = (profile.consent_version as string | null) ?? null;
+    const at = (profile.consented_at as string | null) ?? null;
+    return {
+      notice: {
+        current_version: CURRENT_PRIVACY_VERSION,
+        acknowledged_version: version,
+        acknowledged_at: at,
+        up_to_date: !isConsentRequired(version, at),
+      },
+      events,
+    };
+  }
+
   /** The full machine-readable export (PDPA portability). */
   async exportAll(userId: number) {
     const profile = await this.repository.profile(userId);
@@ -110,6 +151,7 @@ export class MyDataService {
       notifications,
       emails,
       emailPreferences,
+      consentEvents,
     ] = await Promise.all([
       this.repository.courseAssignments(userId),
       this.repository.lessonCompletions(userId),
@@ -135,6 +177,7 @@ export class MyDataService {
       this.repository.notifications(userId),
       this.repository.emails(userId),
       this.repository.emailPreferences(userId),
+      this.consentLog.history(userId),
     ]);
 
     return {
@@ -181,6 +224,9 @@ export class MyDataService {
         emails,
         email_preferences: emailPreferences,
       },
+      privacy: {
+        consent_events: consentEvents,
+      },
     };
   }
 
@@ -201,6 +247,7 @@ export class MyDataService {
     organizationId: number,
     actor: AuthenticatedUser,
     dto: CreateDataRequestDto,
+    meta?: RequestMeta,
   ) {
     const created = await this.repository.createRequest({
       organizationId,
@@ -208,6 +255,16 @@ export class MyDataService {
       type: dto.type,
       details: dto.details ?? null,
     });
+
+    if (dto.type === 'withdrawal') {
+      await this.consentLog.record({
+        userId,
+        event: 'withdrawal_requested',
+        details: { data_request_id: created.id },
+        source: 'my_data',
+        meta,
+      });
+    }
 
     // Alert the org's admins, and confirm to the subject. Best-effort (§8.4).
     void this.notifyOnCreate(userId, organizationId, actor, dto);
@@ -227,7 +284,7 @@ export class MyDataService {
     dto: CreateDataRequestDto,
   ): Promise<void> {
     const typeLabel = TYPE_LABEL[dto.type] ?? dto.type;
-    const action = dto.type === 'deletion' ? 'delete' : 'correct';
+    const action = ACTION_PHRASE[dto.type] ?? 'act on their personal data';
     const name = actorLabel(actor);
 
     // Department is not on the token; read it for the admin's facts panel.
@@ -245,7 +302,7 @@ export class MyDataService {
       { label: 'Email', value: email },
     ];
     const adminBody = [
-      `${name} has raised a request to ${action} their personal data held in Spectra LMS.`,
+      `${name} has raised a request to ${action} held in Spectra LMS.`,
       dto.details
         ? `In their words:\n"${dto.details}"`
         : 'They did not add any further detail.',
@@ -269,8 +326,14 @@ export class MyDataService {
     });
 
     /* ── The subject ── */
+    const yourAction = action.replace(/\btheir\b/g, 'your');
     const learnerBody = [
-      `We have received your request to ${action} your personal data, and it is now with your organisation's administrator for review.`,
+      `We have received your request to ${yourAction}, and it is now with your organisation's administrator for review.`,
+      ...(dto.type === 'withdrawal'
+        ? [
+            `Your optional choices, such as appearing on leaderboards and recognition emails, can be switched off straight away in My Profile without waiting for this review. Your core training records are kept by your organisation to run workplace training, so withdrawing from that part is their decision, and it may mean your account is closed.`,
+          ]
+        : []),
       `Why we hold your data: we process your personal information, such as your profile, learning activity, assessments, certificates and related records, to deliver training, track your progress and completions, issue certificates, and meet our legal and reporting obligations. We keep it only as long as it is needed for those purposes.`,
       `What happens next: an administrator will review your request and act on it, and you can check the status at any time on your My Data page. We will not change or remove anything without completing that review.`,
       `You can read more about how we handle your information in our Privacy Policy: ${this.clientOrigin}${PRIVACY_POLICY_URL}`,
@@ -339,6 +402,26 @@ export class MyDataService {
       handledBy: adminId,
     });
     if (!updated) throw new NotFoundException('Request not found');
+
+    /*
+     * A withdrawal closing is part of the person's consent history. Logged on
+     * the TRANSITION into resolved or rejected only, so re-saving a closed
+     * request with a new note does not repeat the event.
+     */
+    if (
+      existing.type === 'withdrawal' &&
+      existing.status !== dto.status &&
+      (dto.status === 'resolved' || dto.status === 'rejected')
+    ) {
+      await this.consentLog.record({
+        userId: existing.userId,
+        event:
+          dto.status === 'resolved' ? 'withdrawal_resolved' : 'withdrawal_rejected',
+        details: { data_request_id: id, handled_by: adminId },
+        source: 'admin_data_requests',
+        noticeVersion: null,
+      });
+    }
 
     return { request: this.shapeRequest(updated) };
   }

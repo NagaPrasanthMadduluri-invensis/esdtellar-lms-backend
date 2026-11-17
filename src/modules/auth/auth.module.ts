@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { ConsentModule } from '@/modules/consent/consent.module';
+
 import { ActivityModule } from '@/modules/activity/activity.module';
 import { EmailModule } from '@/modules/email/email.module';
 import { MediaModule } from '@/modules/media/media.module';
@@ -19,7 +21,7 @@ import { TokenService } from './token.service';
  * incoming requests.
  */
 @Module({
-  imports: [OrganizationsModule, ActivityModule, OrgOptionsModule, EmailModule, PasswordResetModule, MediaModule],
+  imports: [OrganizationsModule, ActivityModule, OrgOptionsModule, EmailModule, PasswordResetModule, MediaModule, ConsentModule],
   controllers: [AuthController, MfaController],
   providers: [
     AuthService,

@@ -8,6 +8,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { EmailModule } from './modules/email/email.module';
 import { PgBossService } from './modules/email/queue/pg-boss.service';
 import { RemindersModule } from './modules/reminders/reminders.module';
+import { RetentionModule } from './modules/retention/retention.module';
 
 /**
  * The worker's root module.
@@ -42,6 +43,8 @@ import { RemindersModule } from './modules/reminders/reminders.module';
     DatabaseModule,
     EmailModule,
     RemindersModule,
+    // The data-retention sweep (PDPA #7), scheduled by PgBossService.
+    RetentionModule,
     /*
      * For the welcome-reconcile job (§10.33). It pulls PasswordResetService
      * (and, through AuthModule, Organizations/Activity/OrgOptions) into the

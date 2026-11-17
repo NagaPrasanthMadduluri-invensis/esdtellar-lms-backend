@@ -66,6 +66,18 @@ export interface AppConfig {
      */
     referenceDate: string | null;
   };
+  /**
+   * Data-retention sweep (PDPA #7). OFF and DRY-RUN by default: it anonymises
+   * PII of long-deactivated users, which is irreversible, so it does nothing
+   * until an operator both enables it and turns off dry-run after reviewing the
+   * dry-run counts in the worker log.
+   */
+  retention: {
+    enabled: boolean;
+    dryRun: boolean;
+    /** Days after deactivation before a user's PII is anonymised. */
+    deactivatedUserDays: number;
+  };
   media: {
     /** Cloudflare R2, addressed through its S3-compatible API. */
     r2: {
@@ -250,6 +262,12 @@ export default (): AppConfig => ({
   },
   reporting: {
     referenceDate: process.env.REPORTING_REFERENCE_DATE || null,
+  },
+  retention: {
+    // Both guards must be flipped deliberately: enabled on, dry-run off.
+    enabled: process.env.RETENTION_ENABLED === 'true',
+    dryRun: process.env.RETENTION_DRY_RUN !== 'false',
+    deactivatedUserDays: Number(process.env.RETENTION_DEACTIVATED_USER_DAYS ?? 365),
   },
   media: {
     r2: {

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { NotificationsModule } from '@/modules/notifications/notifications.module';
+import { ConsentModule } from '@/modules/consent/consent.module';
 
 import { AdminDataRequestsController } from './admin-data-requests.controller';
 import { MyDataController } from './my-data.controller';
@@ -18,7 +19,7 @@ import { MyDataService } from './my-data.service';
  */
 // 0056 — My Data self-service.
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, ConsentModule],
   controllers: [MyDataController, AdminDataRequestsController],
   providers: [MyDataService, MyDataRepository],
 })

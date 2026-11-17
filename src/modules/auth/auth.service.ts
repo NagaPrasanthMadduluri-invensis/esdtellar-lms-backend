@@ -9,6 +9,11 @@ import {
 
 import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
 import { CURRENT_PRIVACY_VERSION, isConsentRequired } from '@/common/consent';
+import {
+  ConsentLogService,
+  type RequestMeta,
+} from '@/modules/consent/consent-log.service';
+import type { RecordConsentDto } from './dto/consent.dto';
 import { filterKnownPermissions, type RoleScope } from '@/common/permissions';
 import type {
   AuthenticatedUser,
@@ -112,6 +117,8 @@ export class AuthService {
     private readonly media: MediaService,
     /** Admin TOTP second factor (0058). */
     private readonly mfa: MfaService,
+    /** Append-only consent history (0065). */
+    private readonly consentLog: ConsentLogService,
   ) {}
 
   async login(dto: LoginDto): Promise<AuthResult | MfaChallenge> {
@@ -234,7 +241,40 @@ export class AuthService {
   async recordConsent(
     userId: number,
     claims?: AuthenticatedUser,
+    choices: RecordConsentDto = {},
+    meta?: RequestMeta,
   ): Promise<{ user: PublicUser }> {
+    /*
+     * A support session is a platform admin inside a borrowed account. Its
+     * gate already reports consent_required false; refusing the write as well
+     * keeps the consent log free of rows nobody actually gave.
+     */
+    if (claims?.impersonatorId) {
+      throw new ForbiddenException(
+        'A support session cannot acknowledge a notice on the account holder\'s behalf.',
+      );
+    }
+
+    /*
+     * The log row is written FIRST (0065). If it fails, the request fails and
+     * the gate stays up, so there is never an acknowledged account without the
+     * evidence of it. The reverse failure (log written, users row not) only
+     * means the person is shown the notice once more.
+     */
+    const snapshot: Record<string, boolean> = {};
+    if (choices.leaderboard_visible !== undefined) {
+      snapshot.leaderboard_visible = choices.leaderboard_visible;
+    }
+    if (choices.recognition_emails !== undefined) {
+      snapshot.recognition_emails = choices.recognition_emails;
+    }
+    await this.consentLog.record({
+      userId,
+      event: 'acknowledged',
+      details: Object.keys(snapshot).length ? { choices: snapshot } : null,
+      source: 'notice_screen',
+      meta,
+    });
     await this.repository.recordConsent(userId, CURRENT_PRIVACY_VERSION);
     return { user: await this.me(userId, claims) };
   }
@@ -383,7 +423,7 @@ export class AuthService {
     return { profile: this.shapeProfile(row) };
   }
 
-  async updateProfile(userId: number, dto: UpdateProfileDto) {
+  async updateProfile(userId: number, dto: UpdateProfileDto, meta?: RequestMeta) {
     /*
      * `location` and `job_level` are checked HERE rather than by an `@IsIn`
      * on the DTO, because since `0031` the valid set is this organization's
@@ -440,10 +480,30 @@ export class AuthService {
       jobLevel,
       location,
       avatarUrl,
+      leaderboardHidden:
+        dto.leaderboard_hidden === undefined ? undefined : dto.leaderboard_hidden ? 1 : 0,
     });
 
     if (avatarUrl !== undefined && profile.avatar_url && profile.avatar_url !== avatarUrl) {
       void this.media.discardAvatar(profile.avatar_url);
+    }
+
+    /*
+     * Leaderboard visibility is an optional privacy choice, so a CHANGE is a
+     * consent-log event (0065). Only a real change: re-saving the same value
+     * would bury the history in no-ops.
+     */
+    if (
+      dto.leaderboard_hidden !== undefined &&
+      (Number(profile.leaderboard_hidden) === 1) !== dto.leaderboard_hidden
+    ) {
+      await this.consentLog.record({
+        userId,
+        event: 'choice_changed',
+        details: { leaderboard_visible: !dto.leaderboard_hidden },
+        source: 'profile',
+        meta,
+      });
     }
     /*
      * Re-read rather than echo the patch back.
@@ -463,7 +523,7 @@ export class AuthService {
     role: UserRole; role_label: string | null; department: string | null;
     employee_id: string | null; job_role: string | null;
     job_level: string | null; location: string | null; phone: string | null;
-    avatar_url: string | null;
+    avatar_url: string | null; leaderboard_hidden: number;
     is_active: number; organization_id: number; organization_name: string;
     created_at: string; last_active: string | null;
   }) {
@@ -483,6 +543,8 @@ export class AuthService {
       location: row.location,
       phone: row.phone,
       avatar_url: row.avatar_url,
+      // The person's own leaderboard opt-out (0064).
+      leaderboard_hidden: Number(row.leaderboard_hidden) === 1,
       is_active: row.is_active === 1,
       organization_id: row.organization_id,
       organization_name: row.organization_name,

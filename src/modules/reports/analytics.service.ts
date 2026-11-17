@@ -462,7 +462,7 @@ export class AnalyticsService {
    * because they are useful to an admin, but they no longer decide the order.
    */
   async leaderboard(scope: OrgScope) {
-    const [{ ranked: standings, recognition }, statRows, minutesByUser] = await Promise.all([
+    const [{ ranked: standings, recognition, hiddenCount }, statRows, minutesByUser] = await Promise.all([
       this.leaderboard_.standings(scope),
       this.stats(scope),
       this.minutes(scope),
@@ -520,6 +520,10 @@ export class AnalyticsService {
       },
       recognition,
       learners: ranked,
+      // Learners who opted out of leaderboards (0064) are not ranked here
+      // either. The page states the count so the board is not mistaken for
+      // the full headcount. Their records stay in every other admin view.
+      hiddenCount,
     };
   }
 
