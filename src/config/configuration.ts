@@ -72,6 +72,15 @@ export interface AppConfig {
    * until an operator both enables it and turns off dry-run after reviewing the
    * dry-run counts in the worker log.
    */
+  /**
+   * Operational alerts to a Zoho Cliq channel (§10.50). Absent token = off,
+   * with a log line; nothing else changes.
+   */
+  alerts: {
+    cliqUrl: string;
+    cliqToken: string;
+    cliqBot: string;
+  };
   retention: {
     enabled: boolean;
     dryRun: boolean;
@@ -268,6 +277,11 @@ export default (): AppConfig => ({
   },
   reporting: {
     referenceDate: process.env.REPORTING_REFERENCE_DATE || null,
+  },
+  alerts: {
+    cliqUrl: process.env.CLIQ_CHANNEL_URL ?? '',
+    cliqToken: process.env.CLIQ_WEBHOOK_TOKEN ?? '',
+    cliqBot: process.env.CLIQ_BOT_NAME ?? '',
   },
   retention: {
     // Both guards must be flipped deliberately: enabled on, dry-run off.

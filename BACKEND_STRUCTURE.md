@@ -540,6 +540,7 @@ paragraphs. That is courtesy; this is enforcement.
 | `DOCUMENT_MAX_BYTES` | no (100 MiB) | Cap for an uploaded document — a slide deck, not a feature film |
 | `UPLOAD_STORAGE_PATH` | no (`./storage/uploads`) | Root for files this process stores and serves itself — course thumbnails (§10.10) |
 | `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
+| `CLIQ_CHANNEL_URL` · `CLIQ_WEBHOOK_TOKEN` · `CLIQ_BOT_NAME` | no | Operational alerts to the team's Zoho Cliq channel (§10.50). No token = alerts are only logged. The token is a credential: server `.env` only |
 | `RETENTION_ENABLED` | no (`false`) | Master switch for the data-retention sweep (§10.43). Off = the daily job is a no-op |
 | `RETENTION_DRY_RUN` | no (`true`) | When enabled, `true` only COUNTS and logs; set `false` to actually anonymise. Review the dry-run count first |
 | `RETENTION_DEACTIVATED_USER_DAYS` | no (365) | Days after deactivation before a user's PII is anonymised |
@@ -633,6 +634,9 @@ Update this table with every module you move.
 | security incident register (platform: list, options, get, create, update, note, notify clients) | 7 | `server/src/modules/incidents` |
 | request rate limiting + security headers (global guard, per-route budgets; no new routes) | 0 | `server/src/common/guards/rate-limit.guard.ts`, `common/http` |
 | retention: full anonymisation, time limits, client offboarding (platform schedule/cancel/read) | 3 | `server/src/modules/retention`, `organizations` |
+| two-step sign-in mandatory for admins, optional for all; no admin-set passwords (fields and guards on existing routes) | 0 | `server/src/common/guards/mfa-enrolment.guard.ts`, `auth`, `users`, `roles` |
+| operational alerts to Zoho Cliq + `GET /api/health` (public) | 1 | `server/src/modules/alerts`, `health` |
+| two-step sign-in by authenticator app OR emailed code (resend at sign-in, email-me-a-code to turn off) | 2 | `server/src/modules/auth`, `email` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4494,10 +4498,9 @@ and only THEN issues the real session. The challenge token
 (`TokenService.signMfaChallenge`, 5 min) carries only a user id and org — no
 role, permissions or scope — so it can authorise nothing on its own.
 
-**MFA is admin-scoped.** The login check is gated on `role === 'admin'`
-(covers tenant and platform admins); the enrolment controller is
-`@Roles('admin')`. Learners and trainers are never challenged. No new
-permission.
+**MFA is admin-scoped.** SUPERSEDED by §10.49 (2026-11-18): two-step
+sign-in is now mandatory for admins and optional for everyone else, and the
+login challenge applies to anyone who has it on.
 
 **`MFA_ENCRYPTION_KEY` is optional at boot** (warn-and-degrade like R2/email):
 absent, `MfaService.isConfigured()` is false, `isEnabledForLogin` returns false,
@@ -4857,7 +4860,8 @@ moves, which re-shows the screen to everyone.
 ### 10.46 Security incident register (data breach notification)
 
 `0066_security_incidents.sql`. The privacy review found no breach process at
-all. The written plan is `Spectra-LMS-Privacy-Pack` document 10; this is the
+all. The written plan is the Incident Response Plan, `Spectra-LMS-Security-Policies`
+document 05 (it absorbed the privacy pack's former document 10); this is the
 register it runs on, in the platform portal at `/platform/incidents`.
 
 **Platform data, so no tenancy predicate and no tenant route.** An incident can
@@ -5005,6 +5009,153 @@ client's offboarding deletes them.
 **Not covered:** database backups and Gmail's Sent copies (operational,
 document 03 section 8); per-organization retention periods (one server-wide
 setting).
+
+### 10.49 Two-step sign-in mandatory for admins; nobody sets another person's password
+
+Two owner decisions (2026-11-18), no migration.
+
+**Two-step sign-in: mandatory for admin-portal accounts, optional for everyone
+else.** `MfaController` is open to every role (`@AllowBeforeMfa()` at class
+level); `POST /auth/mfa/disable` refuses an admin with 403; `status` returns
+`required`. The login challenge applies to ANYONE with it enabled, not only
+admins. `PublicUser.mfa_setup_required` is true for an admin without it, outside
+a support session, when `MFA_ENCRYPTION_KEY` is set.
+
+**The API enforces it, not only the screen.** `MfaEnrolmentGuard` (global,
+after AuthGuard and RateLimitGuard, before role and permission guards) refuses
+every route for such an admin with 403 "Set up two-step sign-in to continue",
+except routes marked `@AllowBeforeMfa()`: `GET /auth/me`, `GET /auth/profile`,
+`POST /auth/consent`, `POST /auth/exit-impersonation` and the MFA routes
+(public routes such as logout pass anyway). Without the guard, a stolen admin
+password could skip the setup page and call the API directly. Not applied to:
+non-admins; a support session (the platform admin passed their own second
+factor); a server without the key (nobody could enrol; a warning is logged).
+A confirmed enrolment is remembered for 60 seconds per process, so admins cost
+no extra query per request; the cost is that an enrolment removed by hand in
+the database keeps working for up to a minute.
+
+The client holds the admin at `/mfa-setup` (checked in `requireSession`
+before the notice), which uses the same `TwoFactorSection` as My Profile.
+
+**Recovery is manual.** An admin who loses both the authenticator and the
+recovery codes can only be reset by Edstellar deleting their `user_mfa` row
+(identity-verified and logged). A reset feature is a known follow-up.
+
+**`npm run test:isolation` sets up two-step sign-in** for each fixture admin it
+signs in as (a real setup and enable, secret generated in the script) and
+deletes the enrolment at teardown; an enrolment left by an interrupted run is
+cleared and retried.
+
+**Nobody sets another person's password.** `CreateUserDto`, the bulk row and
+the platform `CreateOrganizationUserDto` have no password field (a client that
+still sends one has it stripped by the whitelist). Every account created by
+someone else gets `unknownPassword()` (48 random bytes, hashed, never stored or
+shown) and the welcome email's set-password link; the platform path now sends
+the welcome too. `DEFAULT_BULK_PASSWORD` (`Edstellar@123`, written in source)
+is gone, and so is the bulk template's Password column. A person whose welcome
+is lost uses "Forgot password".
+
+**Accounts created before this release** may still hold the old shared default
+or a password an admin typed. Checking production for them, and forcing a
+reset, is a separate decision.
+
+### 10.50 Operational alerts to Zoho Cliq
+
+`0068_system_heartbeats.sql`. The incident response plan's top gap was that
+nothing alerted anyone: an outage or an attack was found only when somebody
+noticed. Alerts now post to the team's Cliq channel
+(`spectralmsserverlogissues`, as the bot `spectralmsserverlogs`).
+
+**`AlertsService` (`modules/alerts`), three rules:** it never throws or blocks
+the caller (fire-and-forget, 5-second timeout, §8.4); it sends NO personal
+data (callers pass user and organization numbers; every line is scrubbed of
+anything shaped like an email or IP address, because Cliq is another
+company's service); and each alert key repeats at most every 15 minutes by
+default, per process. If Cliq answers `bot_not_member` it retries once as the
+token's owner, so a membership mistake never loses an alert. No token = off.
+
+| Alert | Raised by | Level |
+|---|---|---|
+| API not responding (and recovered) | worker, `system-watch` job every minute: `GET /api/health` on the local port, 2 failures in a row | critical |
+| Worker stopped (and recovered) | API, `ApiWatchService` every minute: the worker's heartbeat row older than 5 minutes (silent until a worker has beaten once, and for 5 minutes after boot) | critical |
+| Burst of unexpected server errors | `HttpExceptionFilter`: 5 non-HttpException 5xx in 5 minutes | high |
+| Failed sign-ins | `AuthService.login`: 10 for one account, or 30 for unknown addresses, in 15 minutes | high |
+| Sign-in rate limit tripped | `RateLimitGuard`, login / MFA / reset rules only | high |
+| Security incident logged; a legal clock due within 24 h or overdue | `IncidentsService.create`; worker `incident-clocks` job hourly at :40 (each clock every 12 h) | critical / high |
+| Emails failing (e.g. Gmail `invalid_grant`) | `EmailFailureAlertsService`, hourly | high |
+| Support session opened | `AuthService.impersonate` | info |
+| Retention job result (once enabled) | `RetentionService.sweep` | info |
+| Deploy succeeded / FAILED | both repos' GitHub Actions deploy step, via `scripts/cliq-notify.mjs` on the server | info / critical |
+
+The API and the worker each watch the OTHER, because a process cannot report
+its own death. `GET /api/health` is public and cheap (one `SELECT 1`; 503 when
+the database does not answer), and is also what an external uptime monitor
+should watch: a whole-server outage stops both processes, and only an outside
+monitor can report that. Burst counters are in process memory, like the rate
+limiter's.
+
+Verified: unit tests (`alerts.service.spec.ts`: scrubbing, repeat limit, bot
+fallback, thresholds, the API-down/recovery sequence) and live posts from
+development (deploy notice, failed-sign-in burst, rate limit, incident logged,
+support session).
+
+### 10.51 Two-step sign-in: authenticator app or emailed code
+
+`0069_mfa_methods.sql`. Each person chooses the method; mandatory for admins is
+unchanged (§10.49).
+
+**Pending and active are separate columns, and that is the safety.**
+`user_mfa.method` / `secret` are the ACTIVE method; `pending_method` /
+`pending_secret` are a setup in progress. `setup` writes only the pending pair,
+`enable` checks a code for the pending method and only then moves it across
+(`activatePending`, one statement) with fresh recovery codes. So switching from
+the app to email, or back, never leaves the person unprotected or locked out
+part-way: the old method keeps working until the new one is confirmed. Old
+recovery codes are replaced on every switch.
+
+**An emailed code is sent IMMEDIATELY, never through the outbox.**
+`ImmediateMailService.sendSignInCode` renders a synthetic row and calls the
+mailer directly: a sign-in code that waits for the next drain tick (up to a
+minute) is a sign-in that fails, and an outbox row would keep the code in a
+table. It still honours the address-level gates (suppression list, allowlist,
+`EMAIL_ENABLED`) and throws 503 when it cannot send; the login response then
+carries `send_error` and the person can use a recovery code. `mfa_code` is in
+`UNSUPPRESSABLE` and has no button.
+
+**Codes are stored as HMAC-SHA256 with a server pepper** (`auth.jwtSecret`)
+over `userId:purpose:code`, compared timing-safe. A plain hash of a six-digit
+code is reversed in a millisecond from a database copy; the pepper stops that.
+10 minutes, one use, 5 wrong tries, and issuing a code retires the earlier
+ones. At most 5 codes per person per 15 minutes (429), plus the route budgets
+below. `purpose` (`enrol` | `login`) keeps a setup code from being spent at
+sign-in and vice versa, and gives each email its own wording.
+
+**Which methods exist is decided by configuration, per server.** The app needs
+`MFA_ENCRYPTION_KEY`; email needs email switched on. `status` returns
+`methods_available`; `canEnrol()` (either works) is what admin enforcement and
+`mfa_setup_required` key off, so a server with only email can still hold
+admins to it. `isEnabledForLogin` is method-aware: an active email enrolment on
+a server whose email is off does not challenge (otherwise nobody could sign
+in), and the warning is logged at boot.
+
+Routes added:
+
+```
+POST /api/auth/mfa/resend       @Public, challenge token; a new code at sign-in   (10 / 15 min per IP)
+POST /api/auth/mfa/email-code   signed in, email method; a code to turn it off    (5 / 15 min per user)
+POST /api/auth/mfa/setup        body { method: 'totp' | 'email' } (default totp)
+```
+
+The login MFA response gained `mfa_method`, `sent_to` (masked) and
+`send_error`. Pinned by `mfa.service.spec.ts`; verified end to end against a
+second API instance with the `file` mail driver (enrol by email, wrong and
+reused codes refused, sign-in + resend, switch to app with email still active
+until confirmed, old recovery codes refused, turn off with an emailed code,
+429 on the sixth code, code stored only as a hash).
+
+**The email method is weaker than the app** — it is as safe as the mailbox,
+and a mailbox usually also controls password reset. Policy 03 says so and
+encourages the app; it is still a large step up from a password alone.
 
 ## 11. Adding a new module — checklist
 

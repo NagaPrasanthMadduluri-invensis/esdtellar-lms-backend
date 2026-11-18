@@ -8,6 +8,7 @@ import cookieParser from 'cookie-parser';
 
 import { AppModule } from './app.module';
 import { securityHeaders } from './common/http/security-headers';
+import { AlertsService } from './modules/alerts/alerts.service';
 import { setReferenceDate } from './modules/learning-hours/periods';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ScormContentHandler } from './modules/scorm/scorm-content.handler';
@@ -165,7 +166,8 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  app.useGlobalFilters(new HttpExceptionFilter());
+  // The filter feeds the Cliq burst alert for unexpected 5xx (§10.50).
+  app.useGlobalFilters(new HttpExceptionFilter(app.get(AlertsService)));
 
   const port = config.getOrThrow<number>('port');
   await app.listen(port);

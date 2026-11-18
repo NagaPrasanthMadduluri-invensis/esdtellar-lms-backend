@@ -1,3 +1,4 @@
+import { AlertsService } from '@/modules/alerts/alerts.service';
 import { Injectable, Logger } from '@nestjs/common';
 
 import { EmailOutboxService } from '@/modules/email/email-outbox.service';
@@ -49,6 +50,8 @@ export class EmailFailureAlertsService {
   constructor(
     private readonly outbox: EmailOutboxService,
     private readonly notifications: NotificationsService,
+    /** Cliq: email sending broken (§10.50). */
+    private readonly alerts: AlertsService,
   ) {}
 
   async sweep(): Promise<{ failures: number; organizations: number }> {
@@ -117,6 +120,19 @@ export class EmailFailureAlertsService {
     this.logger.log(
       `Email failure sweep: ${failures.length} failure(s) across ${byOrg.size} organization(s).`,
     );
+    // Cliq: the count and a reason (addresses scrubbed by AlertsService).
+    const reasons = [...new Set(failures.map((f) => (f.last_error ?? '').slice(0, 120)).filter(Boolean))].slice(0, 2);
+    this.alerts.send({
+      key: 'email-failures',
+      level: 'high',
+      title: 'Emails are failing to send',
+      lines: [
+        `${failures.length} email(s) failed in the last ${WINDOW_HOURS} hours across ${byOrg.size} organization(s).`,
+        ...reasons.map((r) => `Reason: ${r}`),
+        'If the reason mentions invalid_grant, the Gmail connection has expired: re-run scripts/gmail-authorize.mjs and restart the worker.',
+      ],
+      repeatAfterMinutes: 6 * 60,
+    });
     return { failures: failures.length, organizations: byOrg.size };
   }
 }

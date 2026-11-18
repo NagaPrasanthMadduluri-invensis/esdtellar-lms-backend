@@ -17,6 +17,7 @@ export const IS_PUBLIC_KEY = 'isPublic';
 export const ROLES_KEY = 'roles';
 export const PLATFORM_ADMIN_KEY = 'platformAdmin';
 export const PERMISSIONS_KEY = 'permissions';
+export const ALLOW_BEFORE_MFA_KEY = 'allowBeforeMfa';
 
 /**
  * Opts a route out of AuthGuard. Authentication is deny-by-default: AuthGuard is
@@ -68,3 +69,10 @@ export const CurrentScope = createParamDecorator(
     return request.orgScope;
   },
 );
+
+/**
+ * Lets an admin who has NOT yet set up two-step sign-in reach this route
+ * (MfaEnrolmentGuard). Only what the setup page itself needs carries it: who
+ * am I, set up / enable two-step, the notice acknowledgement, sign out.
+ */
+export const AllowBeforeMfa = () => SetMetadata(ALLOW_BEFORE_MFA_KEY, true);

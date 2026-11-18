@@ -62,7 +62,10 @@ export class SpreadsheetService {
    * MANAGER EMAIL, not manager name: a name is ambiguous the moment an org has
    * two people called Priya, and a spreadsheet cannot carry a user id. The admin
    * types the unambiguous address; the upload preview resolves it to a name
-   * before anything is written. Optional, like Password.
+   * before anything is written. Optional.
+   *
+   * There is NO Password column (2026-11-18): every imported person sets
+   * their own from the welcome email, so the file never carries a credential.
    */
   buildLearnerUploadTemplate(options?: {
     locations?: string[];
@@ -79,22 +82,22 @@ export class SpreadsheetService {
 
     const sheet = XLSX.utils.aoa_to_sheet([
       [
-        'Instructions: one learner per row. Password is optional (blank uses the default Edstellar@123). '
+        'Instructions: one learner per row. Each person is emailed a link to set their own password, so there is no password column. '
         + 'Manager Email is optional: enter the EMAIL ADDRESS of an existing active user, not their name, or leave it blank. '
         + 'Location and Job Level must match the "Valid Values" sheet exactly (see the second tab).',
-        '', '', '', '', '', '', '', '', '',
+        '', '', '', '', '', '', '', '',
       ],
-      ['Employee ID', 'First Name', 'Last Name', 'Email', 'Department', 'Location', 'Job Role', 'Job Level', 'Manager Email', 'Password'],
-      ['EMP-001', 'Alice', 'Johnson', 'alice@company.com', 'Engineering', sampleLocation, 'Software Engineer', sampleJobLevel, 'priya.n@company.com', ''],
-      ['EMP-002', 'Bob', 'Smith', 'bob@company.com', 'Sales', altLocation, 'Sales Manager', altJobLevel, 'priya.n@company.com', ''],
-      ['EMP-003', 'Carol', 'Williams', 'carol@company.com', 'HR', sampleLocation, 'HR Coordinator', sampleJobLevel, '', ''],
+      ['Employee ID', 'First Name', 'Last Name', 'Email', 'Department', 'Location', 'Job Role', 'Job Level', 'Manager Email'],
+      ['EMP-001', 'Alice', 'Johnson', 'alice@company.com', 'Engineering', sampleLocation, 'Software Engineer', sampleJobLevel, 'priya.n@company.com'],
+      ['EMP-002', 'Bob', 'Smith', 'bob@company.com', 'Sales', altLocation, 'Sales Manager', altJobLevel, 'priya.n@company.com'],
+      ['EMP-003', 'Carol', 'Williams', 'carol@company.com', 'HR', sampleLocation, 'HR Coordinator', sampleJobLevel, ''],
     ]);
 
     sheet['!cols'] = [
       { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 32 }, { wch: 18 },
-      { wch: 18 }, { wch: 24 }, { wch: 18 }, { wch: 32 }, { wch: 20 },
+      { wch: 18 }, { wch: 24 }, { wch: 18 }, { wch: 32 },
     ];
-    sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }];
+    sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
     XLSX.utils.book_append_sheet(workbook, sheet, 'Learner Upload');
 
     /*

@@ -15,7 +15,7 @@ import { RateLimit } from '@/common/rate-limit/rate-limit';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 
-import { CurrentUser, PlatformAdmin, Public } from '@/common/decorators';
+import { AllowBeforeMfa, CurrentUser, PlatformAdmin, Public } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import { AuthService, type PublicUser } from './auth.service';
@@ -23,7 +23,7 @@ import { authCookieOptions, clearCookieOptions } from './cookie.util';
 import { ChangePasswordDto } from '@/modules/learner/dto/change-password.dto';
 import { ImpersonateDto } from './dto/impersonate.dto';
 import { LoginDto } from './dto/login.dto';
-import { MfaVerifyDto } from './dto/mfa.dto';
+import { MfaResendDto, MfaVerifyDto } from './dto/mfa.dto';
 import { UpdateProfileDto } from './dto/profile.dto';
 import { RecordConsentDto } from './dto/consent.dto';
 import { requestMeta } from '@/modules/consent/consent-log.service';
@@ -68,7 +68,7 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<{ user: PublicUser } | { mfa_required: true; mfa_token: string }> {
+  ): Promise<{ user: PublicUser } | { mfa_required: true; mfa_token: string; mfa_method: string; sent_to?: string; send_error?: string }> {
     /*
      * ATTRIBUTE THE SIGN-IN, succeeded or refused.
      *
@@ -93,13 +93,30 @@ export class AuthController {
     // MFA-enabled admin: the password was correct, but no session is issued
     // until the second factor is proven at /auth/mfa/verify. No cookie here.
     if ('mfaRequired' in result) {
-      return { mfa_required: true, mfa_token: result.mfaToken };
+      return {
+        mfa_required: true,
+        mfa_token: result.mfaToken,
+        // Which step to show, and for email where the code went (0069).
+        mfa_method: result.method,
+        ...(result.sentTo ? { sent_to: result.sentTo } : {}),
+        ...(result.sendError ? { send_error: result.sendError } : {}),
+      };
     }
 
     this.setAuthCookie(response, result.token);
     // The token is deliberately NOT in the body — it lives only in the
     // HttpOnly cookie, so client JavaScript never holds a credential.
     return { user: result.user };
+  }
+
+  /** Send a fresh sign-in code by email (0069). Rate limited per network; the service also caps per account. */
+  @Public()
+  @RateLimit({ name: 'mfa-resend', by: 'ip', limit: 10, windowSeconds: 900,
+    message: 'Too many code requests.' })
+  @Post('mfa/resend')
+  @HttpCode(HttpStatus.OK)
+  async mfaResend(@Body() dto: MfaResendDto) {
+    return this.authService.mfaResend(dto.mfa_token);
   }
 
   /**
@@ -129,6 +146,7 @@ export class AuthController {
    * Authenticated, any role — every portal gates on it. Identity comes from the
    * token, so a caller can only ever consent for themselves.
    */
+  @AllowBeforeMfa()
   @Post('consent')
   @HttpCode(HttpStatus.OK)
   async consent(
@@ -159,6 +177,7 @@ export class AuthController {
     );
   }
 
+  @AllowBeforeMfa()
   @Get('me')
   async me(
     @CurrentUser() user: AuthenticatedUser,
@@ -172,6 +191,7 @@ export class AuthController {
    * Every portal's top-bar avatar opens this, so gating it to one audience
    * would give three of the four a dialog that 403s.
    */
+  @AllowBeforeMfa()
   @Get('profile')
   async profile(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.profile(user.userId);
@@ -236,6 +256,7 @@ export class AuthController {
    * verified token, re-checked against the database in the service — the
    * claim says who to return to, the row says whether they may.
    */
+  @AllowBeforeMfa()
   @Post('exit-impersonation')
   @HttpCode(HttpStatus.OK)
   async exitImpersonation(

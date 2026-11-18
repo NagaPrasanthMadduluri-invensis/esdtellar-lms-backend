@@ -48,6 +48,14 @@ jobs:
           script: |
             cd /var/www/frontend/edstellar_lms_api
             before=$(git rev-parse --short HEAD)
-            sudo ./deploy.sh
-            after=$(git rev-parse --short HEAD)
-            echo "deployed: $before -> $after"
+            # Post the result to Cliq either way (BACKEND_STRUCTURE 10.50), then
+            # fail the job if the deploy failed. `if` so script_stop does not
+            # skip the failure notice.
+            if sudo ./deploy.sh; then
+              after=$(git rev-parse --short HEAD)
+              echo "deployed: $before -> $after"
+              sudo node /var/www/frontend/edstellar_lms_api/scripts/cliq-notify.mjs info "API deployed" "Backend $before -> $after. Remember: deploy.sh does not restart the worker." || true
+            else
+              sudo node /var/www/frontend/edstellar_lms_api/scripts/cliq-notify.mjs critical "API deploy FAILED" "Backend deploy from $before failed. See the GitHub Actions run; incident response plan runbook R10." || true
+              exit 1
+            fi

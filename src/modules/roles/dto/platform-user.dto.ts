@@ -42,9 +42,7 @@ export class CreateOrganizationUserDto {
   @Transform(lower)
   email!: string;
 
-  @IsString()
-  @MinLength(8, { message: 'password must be at least 8 characters' })
-  password!: string;
+  // No password (2026-11-18): the person sets their own from the welcome email.
 
   /** Must be a role of THIS organization — the service 404s otherwise. */
   @IsInt({ message: 'roleId is required' })

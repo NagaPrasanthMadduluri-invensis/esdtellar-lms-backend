@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import type { AlertsService } from '@/modules/alerts/alerts.service';
 import type { Request, Response } from 'express';
 
 import { AUDIT_ERROR } from '@/modules/audit/audit.middleware';
@@ -26,6 +27,9 @@ interface ErrorBody {
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
+
+  /** Optional so tests can construct the filter bare; main.ts passes it (§10.50). */
+  constructor(private readonly alerts?: AlertsService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
@@ -59,6 +63,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
         `${request.method} ${request.url} -> ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
+      // Only UNEXPECTED failures count toward the Cliq burst alert: a
+      // deliberate 503 (e.g. R2 not configured) is a known state, not a crash.
+      if (!(exception instanceof HttpException)) {
+        const route = (request as unknown as { route?: { path?: string } }).route?.path ?? request.path;
+        this.alerts?.recordServerError(
+          `${request.method} ${route}`,
+          exception instanceof Error ? exception.name : 'Error',
+        );
+      }
     }
 
     response.status(status).json(body);

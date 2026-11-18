@@ -9,6 +9,7 @@ import { EmailModule } from './modules/email/email.module';
 import { PgBossService } from './modules/email/queue/pg-boss.service';
 import { RemindersModule } from './modules/reminders/reminders.module';
 import { RetentionModule } from './modules/retention/retention.module';
+import { AlertsModule } from './modules/alerts/alerts.module';
 
 /**
  * The worker's root module.
@@ -45,6 +46,8 @@ import { RetentionModule } from './modules/retention/retention.module';
     RemindersModule,
     // The data-retention sweep (PDPA #7), scheduled by PgBossService.
     RetentionModule,
+    // Heartbeat, API health check and incident clocks for Cliq alerts (§10.50).
+    AlertsModule,
     /*
      * For the welcome-reconcile job (§10.33). It pulls PasswordResetService
      * (and, through AuthModule, Organizations/Activity/OrgOptions) into the

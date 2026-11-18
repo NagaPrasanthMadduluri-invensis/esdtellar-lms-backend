@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { AlertsModule } from '@/modules/alerts/alerts.module';
+
 import { RetentionRepository } from './retention.repository';
 import { RetentionFilesService } from './retention-files.service';
 import { RetentionService } from './retention.service';
@@ -10,6 +12,7 @@ import { RetentionService } from './retention.service';
  * DatabaseModule is @Global, so the repository needs no explicit import.
  */
 @Module({
+  imports: [AlertsModule],
   providers: [RetentionRepository, RetentionService, RetentionFilesService],
   exports: [RetentionService],
 })

@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -8,7 +8,7 @@ const trim = ({ value }: { value: unknown }) =>
 export class MfaCodeDto {
   @IsString()
   @Transform(trim)
-  @MinLength(6, { message: 'Enter the code from your authenticator app' })
+  @MinLength(6, { message: 'Enter the 6-digit code' })
   @MaxLength(20)
   code!: string;
 }
@@ -23,7 +23,21 @@ export class MfaVerifyDto {
 
   @IsString()
   @Transform(trim)
-  @MinLength(6, { message: 'Enter the code from your authenticator app' })
+  @MinLength(6, { message: 'Enter the 6-digit code' })
   @MaxLength(20)
   code!: string;
+}
+
+/** POST /auth/mfa/setup: which method to set up (0069). Omitted = authenticator app. */
+export class MfaSetupDto {
+  @IsOptional()
+  @IsIn(['totp', 'email'], { message: 'method must be totp or email' })
+  method?: 'totp' | 'email';
+}
+
+/** POST /auth/mfa/resend: send a fresh email code during sign-in (0069). */
+export class MfaResendDto {
+  @IsString()
+  @MinLength(1, { message: 'mfa_token is required' })
+  mfa_token!: string;
 }

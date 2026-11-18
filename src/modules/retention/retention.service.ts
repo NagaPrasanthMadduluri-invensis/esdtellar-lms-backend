@@ -1,4 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+
+import { AlertsService } from '@/modules/alerts/alerts.service';
 import { ConfigService } from '@nestjs/config';
 
 import { RetentionFilesService } from './retention-files.service';
@@ -65,6 +67,8 @@ export class RetentionService {
     private readonly config: ConfigService,
     private readonly repo: RetentionRepository,
     private readonly files: RetentionFilesService,
+    /** Cliq: the nightly result, once the job is switched on (§10.50). */
+    @Optional() private readonly alerts?: AlertsService,
   ) {}
 
   private days(key: string, fallback: number): number {
@@ -166,6 +170,17 @@ export class RetentionService {
         (dryRun ? ' Set RETENTION_DRY_RUN=false to apply.' : ` Files removed: ${result.filesRemoved}.`),
     );
 
+    const purgedTotal = Object.values(result.purged).reduce((a, b) => a + b, 0);
+    this.alerts?.send({
+      key: `retention-${new Date().toISOString().slice(0, 10)}-${dryRun ? 'dry' : 'run'}`,
+      level: 'info',
+      title: `Retention job ${dryRun ? 'count-only run' : 'ran'}`,
+      lines: [
+        `${dryRun ? 'Would anonymise' : 'Anonymised'} ${dryRun ? result.candidates : result.anonymized} person(s); ${purgedTotal} expired record(s) ${dryRun ? 'due' : 'deleted'}; ${result.organizations.length} client offboarding(s).`,
+        ...(dryRun ? ['Nothing was changed.'] : [`Files removed: ${result.filesRemoved}.`]),
+      ],
+      repeatAfterMinutes: 60,
+    });
     return result;
   }
 

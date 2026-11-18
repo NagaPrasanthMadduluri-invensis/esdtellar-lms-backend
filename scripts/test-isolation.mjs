@@ -25,6 +25,9 @@
  */
 
 import pg from 'pg';
+import otplib from 'otplib';
+
+const { authenticator } = otplib;
 import { readFileSync } from 'node:fs';
 
 /* ── .env, loaded the same way scripts/reset-to-admin-only.mjs does ──────── */
@@ -98,18 +101,47 @@ function extractCookie(res) {
   return jwt ? jwt.split(';')[0] : null;
 }
 
-async function login(email, password) {
+async function postLogin(email, password) {
   const res = await fetch(`${API}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  if (res.status !== 200) {
+  const body = res.status === 200 ? await res.json() : null;
+  return { res, body };
+}
+
+/**
+ * Two-step sign-in is MANDATORY for admins (2026-11-18), so a fixture admin
+ * without it is refused by every admin route. The suite therefore sets it up
+ * for each admin it signs in as (a real setup + enable through the API, with
+ * the secret generated here) and removes the enrolment at teardown, so the
+ * next run starts from the same state. A run interrupted before teardown
+ * leaves an enrolment whose secret is lost; that is cleared and retried.
+ */
+async function login(email, password) {
+  let { res, body } = await postLogin(email, password);
+  if (body?.mfa_required) {
+    await run('DELETE FROM user_mfa WHERE user_id = (SELECT id FROM users WHERE email = $1)', [email]);
+    ({ res, body } = await postLogin(email, password));
+  }
+  if (res.status !== 200 || !body?.user) {
     throw new Error(`Fixture login failed for ${email}: HTTP ${res.status}`);
   }
   const cookie = extractCookie(res);
-  const body = await res.json();
-  return { email, cookie, user: body.user };
+  const session = { email, cookie, user: body.user };
+  if (body.user.mfa_setup_required) {
+    const setup = await api(session, 'POST', '/auth/mfa/setup');
+    const code = authenticator.generate(setup.body?.secret ?? '');
+    const enabled = await api(session, 'POST', '/auth/mfa/enable', { code });
+    if (enabled.status !== 200) {
+      throw new Error(`Fixture two-step setup failed for ${email}: HTTP ${enabled.status}`);
+    }
+    registerCleanup(`two-step sign-in for ${email}`, () =>
+      run('DELETE FROM user_mfa WHERE user_id = (SELECT id FROM users WHERE email = $1)', [email]),
+    );
+  }
+  return session;
 }
 
 /** `session` is a login() result, or null/undefined for an anonymous call. */

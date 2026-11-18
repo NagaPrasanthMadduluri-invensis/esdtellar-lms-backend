@@ -11,6 +11,7 @@ import {
 } from '@/common/incidents';
 import { actorLabel } from '@/common/notifications';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
+import { AlertsService } from '@/modules/alerts/alerts.service';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 
 import type {
@@ -50,6 +51,8 @@ export class IncidentsService {
   constructor(
     private readonly repository: IncidentsRepository,
     private readonly notifications: NotificationsService,
+    /** Cliq: a new incident is posted at once (§10.50). */
+    private readonly alerts: AlertsService,
   ) {}
 
   async list() {
@@ -101,6 +104,17 @@ export class IncidentsService {
       await this.repository.setOrganizations(id, dto.organization_ids);
     }
     await this.event(id, actor, 'created', `Logged ${refNo}.`);
+    // The title is written by Edstellar staff and may name a client; Cliq gets
+    // the reference, severity and counts only (§10.50).
+    this.alerts.send({
+      key: `incident-created-${id}`,
+      level: dto.severity === 'critical' || dto.severity === 'high' ? 'critical' : 'high',
+      title: `Security incident logged: ${refNo} (${dto.severity ?? 'medium'})`,
+      lines: [
+        `${dto.organization_ids?.length ?? 0} client organization(s) named as affected.`,
+        'Legal clocks are running from the discovery time. Open Platform → Security Incidents; follow the Incident Response Plan.',
+      ],
+    });
     return this.get(id);
   }
 

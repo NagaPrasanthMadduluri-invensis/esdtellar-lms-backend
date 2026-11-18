@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AlertsModule } from '@/modules/alerts/alerts.module';
 
 import { NotificationsModule } from '@/modules/notifications/notifications.module';
 import { EmailModule } from '@/modules/email/email.module';
@@ -20,7 +21,7 @@ import { RemindersService } from './reminders.service';
  * and the learner's preferences without this module knowing either exists.
  */
 @Module({
-  imports: [NotificationsModule, EmailModule],
+  imports: [NotificationsModule, EmailModule, AlertsModule],
   providers: [RemindersRepository, RemindersService, EmailFailureAlertsService],
   exports: [RemindersService, EmailFailureAlertsService],
 })

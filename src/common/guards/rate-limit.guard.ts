@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Response } from 'express';
@@ -18,6 +19,7 @@ import {
   type RateLimitRule,
 } from '../rate-limit/rate-limit';
 import type { AuthenticatedRequest } from '../types/authenticated-request';
+import { AlertsService } from '@/modules/alerts/alerts.service';
 
 /**
  * Global request rate limit (see `common/rate-limit/rate-limit.ts` for why the
@@ -37,7 +39,11 @@ export class RateLimitGuard implements CanActivate {
   /** Exposed for tests; one store per process. */
   readonly store = new RateLimitStore();
 
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    /** Sign-in limits tripping is posted to Cliq (§10.50). Optional for tests. */
+    @Optional() private readonly alerts?: AlertsService,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     if (context.getType() !== 'http') return true;
@@ -66,6 +72,9 @@ export class RateLimitGuard implements CanActivate {
           `Rate limit "${rule.name}" hit on ${route} by ${rule.by}=${subject} ` +
             `(${rule.limit}/${rule.windowSeconds}s).`,
         );
+        // The subject (an IP and possibly an email) stays in this local log;
+        // only the rule and the route go to Cliq.
+        this.alerts?.recordRateLimit(rule.name, route);
         throw new HttpException(
           { message: this.messageFor(rule, result.retryAfterSeconds) },
           HttpStatus.TOO_MANY_REQUESTS,

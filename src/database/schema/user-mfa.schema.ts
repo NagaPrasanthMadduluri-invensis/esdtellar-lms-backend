@@ -2,6 +2,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  serial,
   text,
   timestamp,
 } from 'drizzle-orm/pg-core';
@@ -28,7 +29,13 @@ export const userMfa = pgTable('user_mfa', {
   userId: integer('user_id')
     .primaryKey()
     .references(() => users.id, { onDelete: 'cascade' }),
-  secret: text('secret').notNull(),
+  /** Encrypted TOTP secret of the ACTIVE method; NULL for the email method (0069). */
+  secret: text('secret'),
+  /** 'totp' | 'email', the active method once enabled (0069). */
+  method: text('method').notNull().default('totp'),
+  /** A method being set up, not yet confirmed (0069). */
+  pendingMethod: text('pending_method'),
+  pendingSecret: text('pending_secret'),
   enabledAt: timestamp('enabled_at', { mode: 'string', withTimezone: true }),
   recoveryCodes: jsonb('recovery_codes')
     .$type<RecoveryCode[]>()
@@ -43,3 +50,19 @@ export const userMfa = pgTable('user_mfa', {
 });
 
 export type UserMfaRow = typeof userMfa.$inferSelect;
+
+/** Emailed sign-in codes, stored only as a keyed hash (0069). */
+export const mfaEmailCodes = pgTable('mfa_email_codes', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  purpose: text('purpose').notNull(),
+  codeHash: text('code_hash').notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  expiresAt: timestamp('expires_at', { mode: 'string', withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { mode: 'string', withTimezone: true }),
+  createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

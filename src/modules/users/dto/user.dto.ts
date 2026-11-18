@@ -48,9 +48,12 @@ export class CreateUserDto {
   @Transform(lower)
   email!: string;
 
-  @IsString()
-  @MinLength(6, { message: 'password must be at least 6 characters' })
-  password!: string;
+  /*
+   * No password field (2026-11-18). An admin never sets or types anybody's
+   * password: the account is created with a password nobody knows and the
+   * person chooses their own from the welcome email. A client still sending
+   * `password` has it stripped by the global whitelist and ignored.
+   */
 
   /**
    * Which of the organization's roles the new account holds. Optional: omitted
@@ -198,7 +201,8 @@ export class BulkUserRowDto {
    * majority of them.
    */
   @IsOptional() @Transform(nullableLower) manager?: string | null;
-  @IsOptional() @Transform(trim) password?: string;
+  // No password column (2026-11-18): every imported person sets their own
+  // from the welcome email. A file that still has one has it ignored.
 }
 
 /**

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
+import { unknownPassword } from '@/common/crypto/unknown-password';
 import { PasswordResetService } from '@/modules/auth/password-reset.service';
 import {
   OptionNotOfferedError,
@@ -29,8 +30,12 @@ import { UsersRepository, type DirectoryQuery } from './users.repository';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 import { actorLabel } from '@/common/notifications';
 
-/** Applied to bulk-imported learners who arrive without a password column. */
-const DEFAULT_BULK_PASSWORD = 'Edstellar@123';
+/*
+ * There is deliberately NO default password (2026-11-18). Bulk import used to
+ * give every row without one the same known password, written in this file;
+ * every account is now created with a password nobody knows and the person
+ * sets their own from the welcome email (or "Forgot password").
+ */
 
 /** The Manage Users table page size when the client names no `limit`. */
 const DIRECTORY_PAGE_SIZE = 25;
@@ -316,7 +321,9 @@ export class UsersService {
       firstName: dto.first_name,
       lastName: dto.last_name,
       email: dto.email,
-      passwordHash: await hashPassword(dto.password),
+      // Nobody's password is known to the admin: the person sets it from the
+      // welcome email sent below (2026-11-18).
+      passwordHash: await hashPassword(unknownPassword()),
       department: dto.department ?? null,
       location: workforce.location,
       jobRole: dto.job_role ?? null,
@@ -350,14 +357,11 @@ export class UsersService {
     /*
      * The learner's own welcome, with a link to choose a password.
      *
-     * Not the temporary password itself: the outbox keeps every body for
-     * 90 days, so mailing it would put a plaintext credential in a
-     * database table and leave it in their inbox for good. The temporary
-     * password still exists and the admin can still read it out — this
-     * only changes what travels by email.
+     * The ONLY way in: the account holds a password nobody knows. If the
+     * mail fails, the person uses "Forgot password" with the same address,
+     * or the admin resends the failed row from Email Delivery.
      *
-     * Best-effort and unawaited (§8.4). The account is created either
-     * way, and the admin has the password on screen if the mail fails.
+     * Best-effort and unawaited (§8.4). The account is created either way.
      */
     void this.passwordReset.sendWelcome({
       id: user.id,
@@ -747,7 +751,6 @@ export class UsersService {
       const row = dto.users[index];
       const rowNum = index + 1;
       const email = row.email ?? '';
-      const password = row.password?.trim() || DEFAULT_BULK_PASSWORD;
 
       if (!row.first_name) {
         failed.push({ row: rowNum, email: email || '—', reason: 'First name is required' });
@@ -759,10 +762,6 @@ export class UsersService {
       }
       if (!email) {
         failed.push({ row: rowNum, email: '—', reason: 'Email is required' });
-        continue;
-      }
-      if (password.length < 6) {
-        failed.push({ row: rowNum, email, reason: 'Password must be at least 6 characters' });
         continue;
       }
       if (taken.has(email)) {
@@ -863,7 +862,8 @@ export class UsersService {
          * every thread-pool slot and starve the very requests this is meant
          * to keep flowing.
          */
-        const passwordHash = await hashPassword(password);
+        // A password nobody knows; the welcome email is the way in (2026-11-18).
+        const passwordHash = await hashPassword(unknownPassword());
         const createdUser = await this.repository.createLearner(scope, {
           employeeId: row.employee_id ?? null,
           firstName: row.first_name,

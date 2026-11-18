@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { PasswordResetModule } from '@/modules/auth/password-reset.module';
 
 import { OrganizationsModule } from '@/modules/organizations/organizations.module';
 import { SeatsModule } from '@/modules/seats/seats.module';
@@ -21,7 +22,7 @@ import { RolesService } from './roles.service';
  * edge is one-way too.
  */
 @Module({
-  imports: [OrganizationsModule, SeatsModule],
+  imports: [OrganizationsModule, SeatsModule, PasswordResetModule],
   controllers: [AdminRolesController, PlatformRolesController],
   providers: [RolesService, RolesRepository, PlatformRolesService],
   exports: [RolesService],

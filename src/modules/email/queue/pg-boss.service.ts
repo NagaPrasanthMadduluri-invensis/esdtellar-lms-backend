@@ -10,6 +10,7 @@ import { PgBoss } from 'pg-boss';
 import { RemindersService } from '@/modules/reminders/reminders.service';
 import { EmailFailureAlertsService } from '@/modules/reminders/email-failure-alerts.service';
 import { PasswordResetService } from '@/modules/auth/password-reset.service';
+import { WorkerWatchService } from '@/modules/alerts/watchdog.service';
 import { RetentionService } from '@/modules/retention/retention.service';
 
 import { OutboxDrainJob } from './outbox-drain.job';
@@ -60,6 +61,8 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     private readonly failureAlerts: EmailFailureAlertsService,
     private readonly passwordReset: PasswordResetService,
     private readonly retention: RetentionService,
+    /** Heartbeat, API health check and incident clocks for the Cliq alerts (§10.50). */
+    private readonly watch: WorkerWatchService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -93,6 +96,7 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     await this.registerFailureAlerts();
     await this.registerWelcomeReconcile();
     await this.registerRetentionSweep();
+    await this.registerWatch();
 
     this.logger.log(
       'Worker started — email drain every minute, due-today at 08:00 and ' +
@@ -228,6 +232,30 @@ export class PgBossService implements OnModuleInit, OnApplicationShutdown {
     await boss.schedule(queue, '0 4 * * *', undefined, {
       singletonKey: 'retention-sweep',
     });
+  }
+
+  /**
+   * The Cliq watch (§10.50). Every minute: write the worker heartbeat (the API
+   * alerts if it goes stale) and check the API's health endpoint. Hourly at
+   * :40: post incidents whose legal clocks are overdue or due within a day.
+   * Both catch their own errors, so a failed check never fails the job queue.
+   */
+  private async registerWatch(): Promise<void> {
+    const boss = this.boss!;
+    for (const [queue, cron, run] of [
+      ['system-watch', '* * * * *', () => this.watch.minute()],
+      ['incident-clocks', '40 * * * *', () => this.watch.incidentClocks()],
+    ] as const) {
+      await boss.createQueue(queue);
+      await boss.work(queue, async () => {
+        try {
+          await run();
+        } catch (error) {
+          this.logger.warn(`${queue} failed: ${String(error)}`);
+        }
+      });
+      await boss.schedule(queue, cron, undefined, { singletonKey: queue });
+    }
   }
 
   /**

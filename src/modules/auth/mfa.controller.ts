@@ -1,23 +1,28 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
   Post,
 } from '@nestjs/common';
 
-import { CurrentUser, Roles } from '@/common/decorators';
+import { AllowBeforeMfa, CurrentUser } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
+import { RateLimit } from '@/common/rate-limit/rate-limit';
+
 import { MfaService } from './mfa.service';
-import { MfaCodeDto } from './dto/mfa.dto';
+import { MfaCodeDto, MfaSetupDto } from './dto/mfa.dto';
 
 /**
- * MFA enrolment — admin accounts only (0058).
+ * Two-step sign-in enrolment (0058, widened 2026-11-18).
  *
- * `@Roles('admin')` covers tenant and platform admins alike, which is the scope
- * the product chose for MFA. The login second-factor step is NOT here — it is
+ * MANDATORY for admin-portal accounts (tenant and platform admins): they are
+ * held at the setup page until it is on (MfaEnrolmentGuard), and may not turn
+ * it off. OPTIONAL for everyone else (learners, managers, trainers), from My
+ * Profile. The login second-factor step is NOT here — it is
  * `POST /auth/mfa/verify` on the public auth controller, because at that point
  * the caller has no session yet, only a challenge token.
  *
@@ -25,7 +30,7 @@ import { MfaCodeDto } from './dto/mfa.dto';
  * a user id, so one admin can never enrol or disable another.
  */
 @Controller('auth/mfa')
-@Roles('admin')
+@AllowBeforeMfa()
 export class MfaController {
   constructor(private readonly mfa: MfaService) {}
 
@@ -33,14 +38,19 @@ export class MfaController {
   @Get('status')
   async status(@CurrentUser() user: AuthenticatedUser) {
     const status = await this.mfa.status(user.userId);
-    return { ...status, configured: this.mfa.isConfigured() };
+    return {
+      ...status,
+      configured: this.mfa.canEnrol(),
+      // Admins cannot opt out; the profile panel hides "turn off" on this.
+      required: user.role === 'admin',
+    };
   }
 
   /** Step 1: begin enrolment — returns the secret, otpauth URL and QR image. */
   @Post('setup')
   @HttpCode(HttpStatus.OK)
-  async setup(@CurrentUser() user: AuthenticatedUser) {
-    return this.mfa.setup(user.userId, user.email);
+  async setup(@CurrentUser() user: AuthenticatedUser, @Body() dto: MfaSetupDto) {
+    return this.mfa.setup(user.userId, user.email, dto.method ?? 'totp');
   }
 
   /** Step 2: confirm a first code, activate, and return one-time recovery codes. */
@@ -53,13 +63,31 @@ export class MfaController {
     return this.mfa.enable(user.userId, dto.code);
   }
 
-  /** Turn MFA off, after proving a current code or a recovery code. */
+  /**
+   * Email a code to a signed-in person whose method is email (0069), so they
+   * can prove it when turning two-step sign-in off. Same caps as at sign-in.
+   */
+  @Post('email-code')
+  @HttpCode(HttpStatus.OK)
+  @RateLimit({ name: 'mfa-email-code', by: 'user', limit: 5, windowSeconds: 900,
+    message: 'Too many code requests.' })
+  async emailCode(@CurrentUser() user: AuthenticatedUser) {
+    if ((await this.mfa.methodFor(user.userId)) !== 'email') {
+      throw new ForbiddenException('This account uses an authenticator app, not email codes.');
+    }
+    return { sent_to: await this.mfa.startLoginChallenge(user.userId) };
+  }
+
+  /** Turn two-step sign-in off, after proving a current code or a recovery code. */
   @Post('disable')
   @HttpCode(HttpStatus.OK)
   async disable(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: MfaCodeDto,
   ) {
+    if (user.role === 'admin') {
+      throw new ForbiddenException('Two-step sign-in is required for admin accounts and cannot be turned off.');
+    }
     return this.mfa.disable(user.userId, dto.code);
   }
 }

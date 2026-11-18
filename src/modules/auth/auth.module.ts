@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AlertsModule } from '@/modules/alerts/alerts.module';
 
 import { ConsentModule } from '@/modules/consent/consent.module';
 
@@ -21,7 +22,7 @@ import { TokenService } from './token.service';
  * incoming requests.
  */
 @Module({
-  imports: [OrganizationsModule, ActivityModule, OrgOptionsModule, EmailModule, PasswordResetModule, MediaModule, ConsentModule],
+  imports: [OrganizationsModule, ActivityModule, OrgOptionsModule, EmailModule, PasswordResetModule, MediaModule, ConsentModule, AlertsModule],
   controllers: [AuthController, MfaController],
   providers: [
     AuthService,
@@ -35,6 +36,6 @@ import { TokenService } from './token.service';
   // would be a second way to create a credential.
   // PasswordResetModule is RE-exported so existing importers of AuthModule
   // (UsersModule, the worker) keep receiving PasswordResetService unchanged.
-  exports: [TokenService, AuthRepository, PasswordResetModule],
+  exports: [TokenService, AuthRepository, PasswordResetModule, MfaService],
 })
 export class AuthModule {}

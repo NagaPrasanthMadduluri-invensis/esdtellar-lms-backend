@@ -11,6 +11,7 @@ import { AdminEmailController } from './admin-email.controller';
 import { PlatformEmailController } from './platform-email.controller';
 import { SesEventsController } from './ses-events.controller';
 import { EmailRenderService } from './email-render.service';
+import { ImmediateMailService } from './immediate-mail.service';
 import { FileMailerService } from './mailer/file-mailer.service';
 import { LogMailerService } from './mailer/log-mailer.service';
 import { Mailer } from './mailer/mailer.interface';
@@ -54,6 +55,7 @@ import { GmailMailerService } from './mailer/gmail-mailer.service';
     EmailOutboxRepository,
     EmailOutboxService,
     EmailRenderService,
+    ImmediateMailService,
     OutboxDrainJob,
     LogMailerService,
     FileMailerService,
@@ -95,6 +97,6 @@ import { GmailMailerService } from './mailer/gmail-mailer.service';
       },
     },
   ],
-  exports: [EmailOutboxService, OutboxDrainJob],
+  exports: [EmailOutboxService, OutboxDrainJob, ImmediateMailService],
 })
 export class EmailModule {}

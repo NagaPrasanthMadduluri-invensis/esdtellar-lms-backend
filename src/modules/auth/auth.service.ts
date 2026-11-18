@@ -9,6 +9,7 @@ import {
 
 import { hashPassword, verifyPassword } from '@/common/crypto/password.util';
 import { CURRENT_PRIVACY_VERSION, isConsentRequired } from '@/common/consent';
+import { AlertsService } from '@/modules/alerts/alerts.service';
 import {
   ConsentLogService,
   type RequestMeta,
@@ -68,6 +69,12 @@ export interface PublicUser {
    * authority, so it rides on `/auth/me` and the login response alike.
    */
   consent_required: boolean;
+  /**
+   * True for an admin-portal account that has not yet set up two-step sign-in
+   * (mandatory for admins, 2026-11-18). The client holds them at /mfa-setup;
+   * MfaEnrolmentGuard refuses every other route on the API until it is done.
+   */
+  mfa_setup_required: boolean;
   /** Present only on `/auth/me`, and only during a support session. */
   impersonation?: { by_name: string; organization_name: string } | null;
 }
@@ -93,6 +100,12 @@ export interface AuthResult {
 export interface MfaChallenge {
   mfaRequired: true;
   mfaToken: string;
+  /** Which method to ask for: the app, or a code just emailed (0069). */
+  method: 'totp' | 'email';
+  /** For email: the masked address the code went to. */
+  sentTo?: string;
+  /** For email: why the code could not be sent (a recovery code still works). */
+  sendError?: string;
 }
 
 /**
@@ -119,6 +132,8 @@ export class AuthService {
     private readonly mfa: MfaService,
     /** Append-only consent history (0065). */
     private readonly consentLog: ConsentLogService,
+    /** Cliq alerts: failed-sign-in bursts and support sessions (§10.50). */
+    private readonly alerts: AlertsService,
   ) {}
 
   async login(dto: LoginDto): Promise<AuthResult | MfaChallenge> {
@@ -127,6 +142,8 @@ export class AuthService {
     // One message for "no such user" and "wrong password" — distinguishing them
     // turns the login form into an account-enumeration oracle.
     if (!user || !verifyPassword(dto.password, user.password)) {
+      // Counted for the Cliq burst alert by user NUMBER only (§10.50).
+      this.alerts.recordFailedLogin(user?.id ?? null, user?.organizationId ?? null);
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -134,17 +151,26 @@ export class AuthService {
      * Password is correct. If this is an admin with MFA enabled, stop here and
      * hand back a short-lived challenge — NO cookie, no session. The second
      * factor is proven at `POST /auth/mfa/verify`, which is the only place the
-     * real token is issued. Checked only for admins, which is the scope MFA
-     * covers; a learner or trainer is never challenged.
+     * real token is issued. Anyone who has it ON is challenged: mandatory for
+     * admins, optional (but then enforced) for learners and trainers.
      */
-    if (user.role === 'admin' && (await this.mfa.isEnabledForLogin(user.id))) {
-      return {
+    if (await this.mfa.isEnabledForLogin(user.id)) {
+      const method = await this.mfa.methodFor(user.id);
+      const challenge: MfaChallenge = {
         mfaRequired: true,
-        mfaToken: this.tokenService.signMfaChallenge(
-          user.id,
-          user.organizationId,
-        ),
+        mfaToken: this.tokenService.signMfaChallenge(user.id, user.organizationId),
+        method,
       };
+      if (method === 'email') {
+        // The password was right, so the code is sent now. If it cannot be,
+        // the step still opens: a recovery code works, and resend may succeed.
+        try {
+          challenge.sentTo = await this.mfa.startLoginChallenge(user.id);
+        } catch (error) {
+          challenge.sendError = error instanceof Error ? error.message : 'The code could not be sent.';
+        }
+      }
+      return challenge;
     }
 
     const roleContext = await this.repository.findRoleContext(
@@ -174,6 +200,7 @@ export class AuthService {
           user.consentVersion,
           user.consentedAt,
         ),
+      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, undefined),
       },
       roleContext,
     );
@@ -187,6 +214,18 @@ export class AuthService {
    * are re-read here so nothing from the challenge is trusted beyond the user
    * id it names.
    */
+  /** Send a fresh email code during sign-in (0069). Only for the email method. */
+  async mfaResend(mfaToken: string): Promise<{ sent_to: string }> {
+    const challenge = this.tokenService.verifyMfaChallenge(mfaToken);
+    if (!challenge) {
+      throw new UnauthorizedException('Your verification session has expired. Please sign in again.');
+    }
+    if ((await this.mfa.methodFor(challenge.userId)) !== 'email') {
+      throw new UnprocessableEntityException('This account uses an authenticator app, not email codes.');
+    }
+    return { sent_to: await this.mfa.startLoginChallenge(challenge.userId) };
+  }
+
   async mfaVerify(mfaToken: string, code: string): Promise<AuthResult> {
     const challenge = this.tokenService.verifyMfaChallenge(mfaToken);
     if (!challenge) {
@@ -229,6 +268,7 @@ export class AuthService {
           user.consentVersion,
           user.consentedAt,
         ),
+      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, undefined),
       },
       roleContext,
     );
@@ -295,6 +335,21 @@ export class AuthService {
     );
   }
 
+  /**
+   * Whether this person must set up two-step sign-in before using the app:
+   * an admin-portal account without it, outside a support session, on a server
+   * where two-step sign-in is configured (without the key nobody could enrol,
+   * so enforcing it would lock every admin out).
+   */
+  private async mfaSetupRequired(
+    role: string,
+    userId: number,
+    impersonatorId?: number | null,
+  ): Promise<boolean> {
+    if (role !== 'admin' || impersonatorId || !this.mfa.canEnrol()) return false;
+    return !(await this.mfa.isEnabledForLogin(userId));
+  }
+
   /** Re-reads from the database so a deactivated account loses access at once. */
   async me(userId: number, claims?: AuthenticatedUser): Promise<PublicUser> {
     const user = await this.repository.findActiveById(userId);
@@ -320,6 +375,7 @@ export class AuthService {
         user.consentVersion,
         user.consentedAt,
       ),
+      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, claims?.impersonatorId),
       is_platform_admin:
         user.role === 'admin' &&
         user.organizationId === this.organizations.getPlatformOrganizationId(),
@@ -645,6 +701,8 @@ export class AuthService {
       // A support session is not the tenant user's own browser, so it is not
       // the place to make them accept a privacy notice.
       consent_required: false,
+      // A support session is exempt: the platform admin passed their own second factor.
+      mfa_setup_required: false,
     };
 
     const result = this.issue(user, roleContext, {
@@ -658,6 +716,15 @@ export class AuthService {
         `signed in to organization ${organizationId} as user ${target.id} ` +
         `(${target.email})`,
     );
+
+    // Cliq: numbers only, never the emails logged above (§10.50).
+    this.alerts.send({
+      key: `support-session-${actor.userId}-${organizationId}`,
+      level: 'info',
+      title: 'Support session opened',
+      lines: [`Platform admin #${actor.userId} entered organization #${organizationId} as its admin (user #${target.id}). Lasts one hour; recorded in the organization's activity feed.`],
+      repeatAfterMinutes: 5,
+    });
 
     void this.activity.record(organization, {
       type: 'support_session_started',
@@ -739,6 +806,7 @@ export class AuthService {
           platformAdmin.consentVersion,
           platformAdmin.consentedAt,
         ),
+      mfa_setup_required: await this.mfaSetupRequired(platformAdmin.role, platformAdmin.id, undefined),
       },
       roleContext,
     );

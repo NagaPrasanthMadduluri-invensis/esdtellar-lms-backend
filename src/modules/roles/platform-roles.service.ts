@@ -1,4 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { unknownPassword } from '@/common/crypto/unknown-password';
+import { PasswordResetService } from '@/modules/auth/password-reset.service';
 
 import { OrganizationsService } from '@/modules/organizations/organizations.service';
 
@@ -28,6 +30,8 @@ export class PlatformRolesService {
   constructor(
     private readonly organizations: OrganizationsService,
     private readonly roles: RolesService,
+    /** The welcome email with the set-password link (2026-11-18). */
+    private readonly passwordReset: PasswordResetService,
   ) {}
 
   /**
@@ -104,7 +108,8 @@ export class PlatformRolesService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         email: dto.email,
-        password: dto.password,
+        // A password nobody knows; the welcome email below is the way in.
+        password: unknownPassword(),
         roleId: role.id,
         // Never from the request — `users.role` is the portal selector and is
         // always derived from the resolved role (§3.4).
@@ -117,6 +122,12 @@ export class PlatformRolesService {
     if (!user) throw new NotFoundException('User could not be created');
 
     await this.roles.assign(scope, user.id, role.id);
+
+    // Their own set-password link, the only way in (best-effort, §8.4).
+    void this.passwordReset.sendWelcome(
+      { id: user.id, email: user.email, organizationId, firstName: user.firstName },
+      role.portal === 'admin' ? 'admin' : 'learner',
+    );
 
     return {
       user: {

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AlertsModule } from '@/modules/alerts/alerts.module';
 
 import { NotificationsModule } from '@/modules/notifications/notifications.module';
 
@@ -12,7 +13,7 @@ import { PlatformIncidentsController } from './platform-incidents.controller';
  * A new notification type, so a deploy needs a worker restart.
  */
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, AlertsModule],
   controllers: [PlatformIncidentsController],
   providers: [IncidentsService, IncidentsRepository],
 })

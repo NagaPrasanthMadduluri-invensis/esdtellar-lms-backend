@@ -253,6 +253,8 @@ export class EmailRenderService {
   private ctaFor(row: OutboxRow): { label: string; url: string } | undefined {
     if (isDirectEmailType(row.type)) {
       if (row.type === 'password_changed') return undefined;
+      // A sign-in code is typed into the screen the person already has open.
+      if (row.type === 'mfa_code') return undefined;
       if (row.type === 'password_reset') {
         return { label: 'Reset my password', url: this.absoluteUrl(row.link) };
       }

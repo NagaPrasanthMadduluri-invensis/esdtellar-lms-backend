@@ -56,6 +56,17 @@ export const DIRECT_EMAIL_TYPES = {
     policy: 'transactional',
     account: true,
   },
+  /**
+   * A two-step sign-in code (0069). Sent IMMEDIATELY by ImmediateMailService,
+   * never queued: a sign-in cannot wait for the next drain tick, and the code
+   * must never sit in the outbox table where bodies are kept for 90 days.
+   */
+  mfa_code: {
+    label: 'Your sign-in code',
+    group: 'security',
+    policy: 'transactional',
+    account: true,
+  },
   welcome: {
     label: 'Your account is ready',
     group: 'people',
@@ -109,4 +120,6 @@ export const UNSUPPRESSABLE: ReadonlySet<string> = new Set<string>([
   // A breach notice to a client's admins is a legal duty of ours as their
   // processor (0066). A preference must not be able to swallow it.
   'security_incident_notice',
+  // A sign-in code: with every email off, the person could never sign in.
+  'mfa_code',
 ]);
