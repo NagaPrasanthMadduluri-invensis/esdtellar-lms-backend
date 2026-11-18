@@ -4992,9 +4992,19 @@ throwaway tenant: every table and file above checked after the run, a second
 run is a no-op, and the other tenant's rows were unchanged. Pinned by
 `retention.service.spec.ts`.
 
+**Direct messages have NO time limit, by the owner's decision (2026-11-18)**,
+including between two people who both remain: they are kept, and a party who
+is anonymised shows as "Deleted User" through the users row. Only a whole
+client's offboarding deletes them.
+
+**Switched OFF in production until go-live (owner's decision, 2026-11-18).**
+`RETENTION_ENABLED` is deliberately unset on the box. Do not set it, or
+`RETENTION_DRY_RUN=false`, without the owner's word; `npm run retention:sweep`
+(count-only) is safe to run any time.
+
 **Not covered:** database backups and Gmail's Sent copies (operational,
 document 03 section 8); per-organization retention periods (one server-wide
-setting); direct messages between people who both remain.
+setting).
 
 ## 11. Adding a new module — checklist
 
