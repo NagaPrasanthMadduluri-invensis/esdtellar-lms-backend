@@ -543,6 +543,10 @@ paragraphs. That is courtesy; this is enforcement.
 | `RETENTION_ENABLED` | no (`false`) | Master switch for the data-retention sweep (§10.43). Off = the daily job is a no-op |
 | `RETENTION_DRY_RUN` | no (`true`) | When enabled, `true` only COUNTS and logs; set `false` to actually anonymise. Review the dry-run count first |
 | `RETENTION_DEACTIVATED_USER_DAYS` | no (365) | Days after deactivation before a user's PII is anonymised |
+| `RETENTION_AUDIT_LOG_DAYS` · `_ACTIVITY_LOG_DAYS` · `_SCORM_LOG_DAYS` | no (365 each) | Time limits for everybody (§10.48) |
+| `RETENTION_READ_NOTIFICATION_DAYS` · `_UNREAD_NOTIFICATION_DAYS` | no (180 · 365) | Read notifications 6 months, unread 12 |
+| `RETENTION_FAILED_EMAIL_DAYS` · `_DATA_REQUEST_DAYS` · `_RESET_TOKEN_DAYS` | no (180 · 1095 · 30) | Failed emails, closed privacy requests, expired reset tokens |
+| `RETENTION_REMOVED_COMMUNITY_DAYS` · `_REFERRAL_DAYS` · `_CERTIFICATE_FILE_DAYS` | no (30 · 365 · 365) | Removed posts purged, unconverted referrals, external-certificate scans after the decision |
 | `ORG_NAME` | no (`Edstellar`) | Name of the first real organization created by `db:migrate:tenancy` |
 | `ORG_SLUG` | no (`edstellar`) | Organization `db:seed` seeds into |
 | `EMAIL_ENABLED` | no (`false`) | Master switch. False writes no outbox rows at all |
@@ -628,6 +632,7 @@ Update this table with every module you move.
 | consent log + consent withdrawal (history read; withdrawal as a data-request type; choices on POST /auth/consent) | 1 | `server/src/modules/consent`, `my-data`, `auth`, `email` |
 | security incident register (platform: list, options, get, create, update, note, notify clients) | 7 | `server/src/modules/incidents` |
 | request rate limiting + security headers (global guard, per-route budgets; no new routes) | 0 | `server/src/common/guards/rate-limit.guard.ts`, `common/http` |
+| retention: full anonymisation, time limits, client offboarding (platform schedule/cancel/read) | 3 | `server/src/modules/retention`, `organizations` |
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -4928,6 +4933,68 @@ the app origin may frame the API, an unlisted origin is refused.
 `X-Powered-By` is removed. The client sets its own equivalents in
 `next.config.mjs` (`frame-ancestors 'self'`, no script CSP yet: Next's inline
 bootstrap would need nonces).
+
+### 10.48 Retention, completed: anonymise everywhere, time limits, client offboarding
+
+`0067_retention_offboarding.sql`. §10.43's sweep cleared only the `users` row,
+so a departed person's name, email and IP stayed in a dozen other tables and
+on disk: not anonymised in law, still personal data. This finishes the job.
+Same worker cron, same two guards (`RETENTION_ENABLED`, `RETENTION_DRY_RUN`),
+three jobs in order:
+
+**1. Client offboarding.** A platform admin schedules it on the tenant
+(`PUT /api/platform/organizations/:id/data-deletion { due_at }`, `DELETE` to
+cancel, `GET` to read). Refused unless the tenant's access is already OFF,
+the date is at least a day away (so it can be cancelled), and the deletion
+has not run; never for the platform org. On the date the sweep anonymises
+every person in it, active or not, then deletes its direct messages,
+community posts (and files), notifications, activity, audit log, email rows
+and privacy requests, and stamps `data_deleted_at` so it runs once. Courses
+and other content the client authored are not personal data and stay.
+
+**2. A person past the window** (`anonymizeUser`, one transaction per person,
+the `users` row LAST so a crash is simply redone with the name still there to
+search for). Their own notifications, emails, MFA and reset tokens are
+deleted; their name, public "First L." form and email are replaced with the
+tombstone inside colleagues' notifications, emails, activity titles, audit
+summaries, community posts and replies; their own posts and replies are
+blanked and removed; feedback RATINGS stay and free-text comments go; an
+external certification keeps its record and loses the name and the scan;
+SCORM `cmi_data` loses `student_name`/`student_id`/`learner_name`/`learner_id`;
+a privacy request keeps type, status and dates and loses what they wrote.
+**Direct messages are KEPT** for an individual (the owner's decision,
+2026-11-18); the sender shows as "Deleted User" through the users row. Names
+are matched by the full and public forms and the email, never the first name
+alone, which would corrupt unrelated words.
+
+**3. Time limits for everybody** (privacy-pack document 03, owner-approved
+2026-11-18): audit log, activity feed and SCORM detail log 12 months; READ
+notifications 6 months and unread 12; failed emails 180 days; closed privacy
+requests 3 years; expired reset tokens 30 days; removed community posts and
+replies 30 days; unconverted referrals 12 months; external-certificate scans
+12 months after the decision (record kept). Each category's predicate is
+written ONCE (`purgeWhere`) so the dry-run count and the delete cannot
+disagree, and deletes run in batches of 5,000.
+
+**Files go after the rows commit** (`RetentionFilesService`): avatars,
+shared attachments and certificate scans under `UPLOAD_STORAGE_PATH`, each
+name re-checked against the UUID shape those stores write. Its own small
+service so the worker does not construct the R2 client to unlink three
+kinds of file.
+
+**`npm run retention:sweep`** runs it once, now: COUNT ONLY unless
+`--apply`, and `--apply` is refused unless `.env` already has both switches
+set, so the command can never do more than the nightly job would. Use it to
+read production's numbers before switching the job on.
+
+Verified end to end on the local database with a seeded person and a
+throwaway tenant: every table and file above checked after the run, a second
+run is a no-op, and the other tenant's rows were unchanged. Pinned by
+`retention.service.spec.ts`.
+
+**Not covered:** database backups and Gmail's Sent copies (operational,
+document 03 section 8); per-organization retention periods (one server-wide
+setting); direct messages between people who both remain.
 
 ## 11. Adding a new module — checklist
 

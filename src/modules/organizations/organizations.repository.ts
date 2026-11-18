@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 
 import type { RolePortal } from '@/common/permissions';
 import { DatabaseService } from '@/database/database.service';
@@ -81,6 +81,33 @@ export class OrganizationsRepository {
       .limit(1);
 
     return rows[0]?.id ?? null;
+  }
+
+  /**
+   * Client offboarding state (0067): whether access is off, and when the
+   * retention sweep may delete this organization's personal data.
+   */
+  async dataDeletionState(id: number): Promise<{
+    id: number;
+    name: string;
+    is_platform: boolean;
+    is_active: number;
+    data_deletion_due_at: string | null;
+    data_deleted_at: string | null;
+  } | null> {
+    const rows = await this.db.all<{
+      id: number; name: string; is_platform: boolean; is_active: number;
+      data_deletion_due_at: string | null; data_deleted_at: string | null;
+    }>(sql`
+      SELECT id, name, is_platform, is_active, data_deletion_due_at, data_deleted_at
+        FROM organizations WHERE id = ${id}`);
+    return rows[0] ?? null;
+  }
+
+  /** Set or clear the deletion date. Only ever this one column. */
+  async setDataDeletionDue(id: number, dueAtIso: string | null): Promise<void> {
+    await this.db.run(sql`
+      UPDATE organizations SET data_deletion_due_at = ${dueAtIso} WHERE id = ${id}`);
   }
 
   async findById(id: number): Promise<OrganizationRow | null> {

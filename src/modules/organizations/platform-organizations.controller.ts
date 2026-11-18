@@ -1,16 +1,19 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
   Post,
+  Put,
 } from '@nestjs/common';
 
 import { PlatformAdmin } from '@/common/decorators';
 
 import {
   CreateOrganizationDto,
+  ScheduleDataDeletionDto,
   UpdateOrganizationDto,
 } from './dto/organization.dto';
 import { OrganizationsService } from './organizations.service';
@@ -69,6 +72,29 @@ export class PlatformOrganizationsController {
   async get(@Param('id') idParam: string) {
     const id = await this.publicId.resolveIdOrThrow('organizations', idParam);
     return this.organizations.getOrganization(id);
+  }
+
+  /* ── Client offboarding: schedule the deletion of a tenant's personal data (0067) ── */
+
+  @Get(':id/data-deletion')
+  async dataDeletion(@Param('id') idParam: string) {
+    const id = await this.publicId.resolveIdOrThrow('organizations', idParam);
+    return this.organizations.dataDeletion(id);
+  }
+
+  @Put(':id/data-deletion')
+  async scheduleDataDeletion(
+    @Param('id') idParam: string,
+    @Body() dto: ScheduleDataDeletionDto,
+  ) {
+    const id = await this.publicId.resolveIdOrThrow('organizations', idParam);
+    return this.organizations.scheduleDataDeletion(id, dto.due_at);
+  }
+
+  @Delete(':id/data-deletion')
+  async cancelDataDeletion(@Param('id') idParam: string) {
+    const id = await this.publicId.resolveIdOrThrow('organizations', idParam);
+    return this.organizations.cancelDataDeletion(id);
   }
 
   @Patch(':id')

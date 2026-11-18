@@ -16,6 +16,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
+import { IsDateString } from 'class-validator';
 
 import { BILLING_CYCLES, PLANS } from '@/common/tenant-account';
 import { BranchLocationDto } from '@/modules/org-options/dto/org-options.dto';
@@ -214,3 +215,10 @@ export class UpdateOrganizationDto {
  * here, `CreateOrganizationAdminDto`, had no `roleId` because the old
  * endpoint could only make an admin.
  */
+
+/** PUT /platform/organizations/:id/data-deletion (0067). */
+export class ScheduleDataDeletionDto {
+  /** When the retention sweep may delete this organization's personal data. */
+  @IsDateString({}, { message: 'due_at must be a date and time' })
+  due_at!: string;
+}

@@ -37,6 +37,10 @@ export const organizations = pgTable(
     certificateSignatoryTitle: text('certificate_signatory_title'),
     isPlatform: boolean('is_platform').notNull().default(false),
     isActive: integer('is_active').notNull().default(1),
+    /** Client offboarding (0067): when the retention sweep may delete this org's personal data. */
+    dataDeletionDueAt: timestamp('data_deletion_due_at', { withTimezone: true, mode: 'string' }),
+    /** When that deletion ran; set once. */
+    dataDeletedAt: timestamp('data_deleted_at', { withTimezone: true, mode: 'string' }),
     /**
      * Bumped in the same transaction as any write to `roles` or
      * `role_permissions`. The JWT carries the value it was signed with and

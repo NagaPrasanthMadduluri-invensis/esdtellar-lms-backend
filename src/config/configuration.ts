@@ -77,6 +77,12 @@ export interface AppConfig {
     dryRun: boolean;
     /** Days after deactivation before a user's PII is anonymised. */
     deactivatedUserDays: number;
+    /**
+     * Time limit per category, in days (privacy-pack document 03). Each is
+     * enforced for everybody, active or not, by the same sweep and the same
+     * two guards. Defaults are the schedule the owner approved 2026-11-18.
+     */
+    days: Record<string, number>;
   };
   media: {
     /** Cloudflare R2, addressed through its S3-compatible API. */
@@ -268,6 +274,20 @@ export default (): AppConfig => ({
     enabled: process.env.RETENTION_ENABLED === 'true',
     dryRun: process.env.RETENTION_DRY_RUN !== 'false',
     deactivatedUserDays: Number(process.env.RETENTION_DEACTIVATED_USER_DAYS ?? 365),
+    days: {
+      audit_log: Number(process.env.RETENTION_AUDIT_LOG_DAYS ?? 365),
+      activity_log: Number(process.env.RETENTION_ACTIVITY_LOG_DAYS ?? 365),
+      scorm_datamodel_log: Number(process.env.RETENTION_SCORM_LOG_DAYS ?? 365),
+      notifications_read: Number(process.env.RETENTION_READ_NOTIFICATION_DAYS ?? 180),
+      notifications_unread: Number(process.env.RETENTION_UNREAD_NOTIFICATION_DAYS ?? 365),
+      failed_emails: Number(process.env.RETENTION_FAILED_EMAIL_DAYS ?? 180),
+      closed_data_requests: Number(process.env.RETENTION_DATA_REQUEST_DAYS ?? 1095),
+      reset_tokens: Number(process.env.RETENTION_RESET_TOKEN_DAYS ?? 30),
+      removed_community_posts: Number(process.env.RETENTION_REMOVED_COMMUNITY_DAYS ?? 30),
+      removed_community_replies: Number(process.env.RETENTION_REMOVED_COMMUNITY_DAYS ?? 30),
+      stale_referrals: Number(process.env.RETENTION_REFERRAL_DAYS ?? 365),
+      certificate_files: Number(process.env.RETENTION_CERTIFICATE_FILE_DAYS ?? 365),
+    },
   },
   media: {
     r2: {

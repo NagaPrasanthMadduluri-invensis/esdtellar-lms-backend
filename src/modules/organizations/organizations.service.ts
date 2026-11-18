@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   type OnModuleInit,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 
 import { hashPassword } from '@/common/crypto/password.util';
@@ -481,6 +482,74 @@ export class OrganizationsService implements OnModuleInit {
 
     const { organization, ...stats } = this.toOrganizationWithStats(row);
     return { organization, stats };
+  }
+
+  /* ── Client offboarding (0067) ─────────────────────────────────────── */
+
+  /** The least notice a scheduled deletion may be given, so it can be undone. */
+  static readonly MIN_DELETION_NOTICE_DAYS = 1;
+
+  async dataDeletion(id: number) {
+    const row = await this.repository.dataDeletionState(id);
+    if (!row || row.is_platform) throw new NotFoundException('Organization not found');
+    return { deletion: this.shapeDeletion(row) };
+  }
+
+  /**
+   * Schedule the deletion of an organization's personal data (privacy-pack
+   * document 03, section 7). The retention sweep carries it out on the date.
+   *
+   * Three refusals, each because the alternative is irreversible:
+   * - the platform organization can never be scheduled;
+   * - the tenant's ACCESS must already be switched off, so nobody is using the
+   *   data the day it disappears, and switching off is a separate, visible step;
+   * - the date must be at least a day away, so a mistake can still be cancelled
+   *   before the nightly sweep runs.
+   * A deletion that has already run cannot be rescheduled or cancelled.
+   */
+  async scheduleDataDeletion(id: number, dueAtIso: string) {
+    const row = await this.repository.dataDeletionState(id);
+    if (!row || row.is_platform) throw new NotFoundException('Organization not found');
+    if (row.data_deleted_at) {
+      throw new ConflictException('This organization\'s data has already been deleted.');
+    }
+    if (Number(row.is_active) === 1) {
+      throw new UnprocessableEntityException(
+        'Switch off this organization\'s access before scheduling its data deletion.',
+      );
+    }
+    const due = Date.parse(dueAtIso);
+    const earliest = Date.now() + OrganizationsService.MIN_DELETION_NOTICE_DAYS * 86_400_000;
+    if (Number.isNaN(due) || due < earliest - 60_000) {
+      throw new UnprocessableEntityException(
+        'The deletion date must be at least one day from now, so it can still be cancelled.',
+      );
+    }
+    await this.repository.setDataDeletionDue(id, new Date(due).toISOString());
+    this.logger.warn(`Data deletion for organization ${id} (${row.name}) scheduled for ${new Date(due).toISOString()}.`);
+    return this.dataDeletion(id);
+  }
+
+  async cancelDataDeletion(id: number) {
+    const row = await this.repository.dataDeletionState(id);
+    if (!row || row.is_platform) throw new NotFoundException('Organization not found');
+    if (row.data_deleted_at) {
+      throw new ConflictException('This organization\'s data has already been deleted.');
+    }
+    await this.repository.setDataDeletionDue(id, null);
+    this.logger.warn(`Data deletion for organization ${id} (${row.name}) cancelled.`);
+    return this.dataDeletion(id);
+  }
+
+  private shapeDeletion(row: {
+    is_active: number; data_deletion_due_at: string | null; data_deleted_at: string | null;
+  }) {
+    return {
+      access_enabled: Number(row.is_active) === 1,
+      due_at: row.data_deletion_due_at,
+      deleted_at: row.data_deleted_at,
+      state: row.data_deleted_at ? 'deleted' : row.data_deletion_due_at ? 'scheduled' : 'none',
+    };
   }
 
   /** `PATCH /api/platform/organizations/:id` — rename, activate/deactivate. */

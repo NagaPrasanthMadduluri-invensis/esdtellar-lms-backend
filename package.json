@@ -30,7 +30,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
+    "retention:sweep": "node dist/retention-cli.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
