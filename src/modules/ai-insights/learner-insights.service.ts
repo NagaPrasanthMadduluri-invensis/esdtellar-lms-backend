@@ -282,14 +282,25 @@ export class LearnerInsightsService {
   }
 
   /**
-   * Real-data charts for the panel's spider graph — NOT model output. A radar of
-   * the learner's competency proficiency per skill domain, computed from
-   * `user_skills` (§10.54's accuracy rule: the model narrates, it does not invent
-   * the coordinates). Returns axes sorted for a stable shape; the panel draws a
-   * radar only when there are at least three.
+   * Real-data charts for the learner's AI Insights page — NOT model output
+   * (§10.54's accuracy rule: the model narrates, it does not invent coordinates).
+   *
+   * Every number is REUSED from the canonical service that owns its definition —
+   * competencies, My Courses, the leaderboard, badges — so a chart can never
+   * disagree with the screen that shows the same figure. The learner page draws
+   * many chart types from this one bundle (radar, donut, stacked bar, radial),
+   * and the coach panel keeps reading `skillRadar` for its own spider graph.
    */
   async buildCharts(scope: OrgScope, userId: number) {
-    const comps = await this.competencies.listMyCompetencies(scope, userId);
+    const [comps, coursesData, standings, badgeList] = await Promise.all([
+      this.competencies.listMyCompetencies(scope, userId),
+      this.learner.courses(scope, userId),
+      this.leaderboard.standings(scope),
+      this.badges.listForLearner(scope, userId),
+    ]);
+
+    // Competency proficiency per domain (0-100), averaged over that domain's
+    // skills — the coach's spider graph and the page's radar both read this.
     const byDomain = new Map<string, number[]>();
     for (const c of comps) {
       const domain = c.domain || 'General';
@@ -305,7 +316,112 @@ export class LearnerInsightsService {
         ),
       }))
       .sort((a, b) => a.axis.localeCompare(b.axis));
-    return { skillRadar };
+
+    // How many skills each domain holds, and how they split across levels.
+    const skillDomains = [...byDomain.entries()]
+      .map(([domain, ranks]) => ({ domain, count: ranks.length }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+    const levelCounts = new Map<string, number>();
+    for (const c of comps) levelCounts.set(c.level, (levelCounts.get(c.level) ?? 0) + 1);
+    const competencyLevels = COMPETENCY_LEVELS.map((level) => ({
+      level,
+      count: levelCounts.get(level) ?? 0,
+    }));
+
+    const courses = coursesData.courses;
+    const overview = coursesData.overview;
+
+    // Course status donut, from the overview the canonical service computes.
+    const courseStatus = [
+      { status: 'Completed', value: overview.completed },
+      { status: 'In Progress', value: overview.inProgress },
+      { status: 'Not Started', value: overview.assigned },
+      { status: 'Failed', value: overview.failed },
+    ];
+
+    // Progress split by course category — a stacked bar per category.
+    const catMap = new Map<
+      string,
+      { completed: number; inProgress: number; notStarted: number }
+    >();
+    for (const c of courses) {
+      const cat = c.category || 'Uncategorised';
+      const row = catMap.get(cat) ?? { completed: 0, inProgress: 0, notStarted: 0 };
+      if (c.status === 'completed') row.completed += 1;
+      else if (c.status === 'in-progress' || c.progressPct > 0) row.inProgress += 1;
+      else row.notStarted += 1;
+      catMap.set(cat, row);
+    }
+    const categoryProgress = [...catMap.entries()]
+      .map(([category, v]) => ({ category, ...v }))
+      .sort(
+        (a, b) =>
+          b.completed + b.inProgress + b.notStarted -
+          (a.completed + a.inProgress + a.notStarted),
+      )
+      .slice(0, 8);
+
+    // Badges earned vs available, split by tier, with the most recent few.
+    const badgeDefs = badgeList.badges ?? [];
+    const earnedBadges = badgeDefs.filter((b) => b.earned);
+    const tierMap = new Map<string, { earned: number; total: number }>();
+    for (const b of badgeDefs) {
+      const tier = b.tier || 'Other';
+      const row = tierMap.get(tier) ?? { earned: 0, total: 0 };
+      row.total += 1;
+      if (b.earned) row.earned += 1;
+      tierMap.set(tier, row);
+    }
+    const badgesByTier = [...tierMap.entries()].map(([tier, v]) => ({ tier, ...v }));
+    const recentBadges = earnedBadges
+      .filter((b) => b.earnedAt)
+      .sort(
+        (a, b) =>
+          new Date(b.earnedAt as string).getTime() -
+          new Date(a.earnedAt as string).getTime(),
+      )
+      .slice(0, 6)
+      .map((b) => ({ label: b.label, icon: b.icon, earnedAt: b.earnedAt }));
+
+    const entry = standings.entries.find((e) => e.id === userId) ?? null;
+    const ranked = standings.ranked.find((e) => e.id === userId) ?? null;
+    const rankLabel =
+      standings.settings.enabled && ranked && ranked.rank >= 1
+        ? `#${ranked.rank} of ${standings.ranked.length}`
+        : null;
+
+    const certificates = courses.filter((c) => c.certificateId !== null).length;
+
+    return {
+      skillRadar,
+      skillDomains,
+      competencyLevels,
+      courseStatus,
+      categoryProgress,
+      badges: {
+        earned: earnedBadges.length,
+        total: badgeDefs.length,
+        byTier: badgesByTier,
+        recent: recentBadges,
+      },
+      points: {
+        points: entry ? entry.points : null,
+        monthPoints: entry ? entry.monthPoints : null,
+        completionPct: entry ? entry.completionPct : null,
+        rankLabel,
+      },
+      totals: {
+        assigned: overview.totalAssigned,
+        completed: overview.completed,
+        inProgress: overview.inProgress,
+        notStarted: overview.assigned,
+        failed: overview.failed,
+        certificates,
+        skills: comps.length,
+        badgesEarned: earnedBadges.length,
+      },
+    };
   }
 
   /** The stored insight for the dashboard panel, plus whether the feature is on. */

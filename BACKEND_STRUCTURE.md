@@ -5278,7 +5278,12 @@ The verticals live in `modules/ai-insights`:
   completion/points), plus one new query for recommendable courses + job
   attributes. `GET /api/learner/ai/insights` (renders nothing when off) and
   `POST .../refresh` (RateLimit 5/hr/user). Stored as subject `learner`, kind
-  `recommendations`.
+  `recommendations`. `GET /api/learner/ai/charts` is a separate, AI-independent
+  read: `buildCharts` reshapes the SAME canonical services (competencies, My
+  Courses, leaderboard, badges) into a real-data chart bundle (skill radar,
+  competency levels, skills-by-domain, course-status, category progress, badges,
+  points, totals) the page draws many chart types from, shown whether or not the
+  model is enabled — no model tokens, no re-derived number.
 - **Admin (Wave 3)** — `AdminInsightsService` reuses `AnalyticsService.dashboard`
   (the one org aggregate: completion, dept roll-up, overdue, deterministic
   signal sentences) plus two negative-feedback aggregates (low-rated courses via
@@ -5290,6 +5295,17 @@ The verticals live in `modules/ai-insights`:
 
 Each context builder is the PII surface for its vertical: opaque ids, content
 titles, department names and aggregates only, reviewed before enabling.
+
+**The model EXPLAINS, in a structured form (owner request 2026-11-19).** Both
+the learner coach and the admin briefing payloads lead with a `sections` array —
+each a heading, a one/two-sentence description and ordered points, with the
+words that matter wrapped in `**bold**`. The format is defined once in
+`ai-narrative.ts` (`NARRATIVE_SECTIONS_SCHEMA` + `NARRATIVE_SECTIONS_INSTRUCTIONS`)
+so both prompts ask for the same shape and one client renderer
+(`components/shared/ai-sections.jsx`) draws both. The lens prompts
+(course_recommendations, skill_plan) also mark key terms in their prose with
+`**`. Older cached insights predate `sections`; the UI simply shows the
+structured cards beneath when it is absent.
 
 #### Tenant isolation is enforced, not assumed (`ai/ai-tenant.ts`)
 
@@ -5420,7 +5436,15 @@ These signals are also folded into the AI briefing CONTEXT (`intelligence` block
 so the briefing's risks/recommendations reference inactivity, flagged courses and
 weak skill domains. The admin AI Insights page renders them as real-data sections
 (`components/admin/admin-intelligence.jsx`) that show regardless of whether AI
-generation is enabled. Verified live against org 7: risk radar, inactivity 9/9,
+generation is enabled.
+
+`intelligence()` also returns (owner request 2026-11-19, for more charts on that
+page) `healthScore` (the same 4-axis composite the briefing uses), `headline`,
+`engagement` and `statusBreakdown` — all read from the one `analytics.dashboard`
+call it already makes, so no new query and no figure that can disagree with the
+Analytics page. The page draws them as a KPI strip, a health gauge+radar, a
+course-status donut, completion/pass gauges and a course-effectiveness scatter,
+beside the existing risk radar, skill bars, department bar and tables. Verified live against org 7: risk radar, inactivity 9/9,
 effectiveness and the (empty, honest) skill section all returned.
 
 **Still deferred:** completion/assessment time-series in the module (they live on

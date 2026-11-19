@@ -280,9 +280,37 @@ export class AdminInsightsService {
     const effectiveness = mapCourseEffectiveness(courseRows);
     const named = (dash.deptCompletion as { dept: string; total: number; pct: number; hours_learning: number }[])
       .filter((d) => Number(d.total) >= K_ANONYMITY)
-      .map((d) => ({ dept: d.dept, learners: Number(d.total), completionPct: d.pct }));
+      .map((d) => ({
+        dept: d.dept,
+        learners: Number(d.total),
+        completionPct: d.pct,
+        hours: Number(d.hours_learning),
+      }));
     return {
+      // Composite health, from the four dimensions the org already measures — a
+      // radial gauge plus a 4-axis radar.
+      healthScore: this.healthFrom(dash),
       riskRadar: riskRadarFrom(dash, inactivity, effectiveness),
+      // The KPI figures the page draws as gauges and stat tiles. Reused from the
+      // one dashboard aggregate, so the AI page cannot disagree with Analytics.
+      headline: {
+        totalLearners: dash.headline.totalLearners,
+        activeLearners: dash.headline.activeLearners,
+        completionRate: dash.headline.completionRate,
+        inProgress: dash.headline.inProgress,
+        overdue: dash.headline.overdue,
+      },
+      engagement: {
+        avgScore: dash.engagement.avgScore,
+        passRate: dash.engagement.passRate,
+        totalHours: dash.engagement.totalHours,
+        hoursThisMonth: dash.engagement.hoursThisMonth,
+        avgHoursPerLearner: dash.engagement.avgHoursPerLearner,
+        certificatesIssued: dash.engagement.certificatesIssued,
+        activeCourses: dash.engagement.activeCourses,
+      },
+      // Course-status donut — the same split the admin dashboard shows.
+      statusBreakdown: dash.statusBreakdown,
       inactivity: { inactive: inactivity.inactive, total: inactivity.total, days: 30 },
       courseEffectiveness: effectiveness.slice(0, 20),
       coursesNeedingAttention: effectiveness.filter((c) => c.flags.length > 0).slice(0, 10),

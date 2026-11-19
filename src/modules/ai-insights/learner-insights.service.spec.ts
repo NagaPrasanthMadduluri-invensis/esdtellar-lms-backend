@@ -78,6 +78,31 @@ describe('LearnerInsightsService.buildContext', () => {
   });
 });
 
+describe('LearnerInsightsService.buildCharts', () => {
+  it('reshapes the canonical services into a real-data chart bundle', async () => {
+    const { svc } = deps(true);
+    const charts = await svc.buildCharts(scope, 10);
+
+    // Course status donut comes from the overview the canonical service computed.
+    expect(charts.courseStatus).toEqual([
+      { status: 'Completed', value: 2 },
+      { status: 'In Progress', value: 1 },
+      { status: 'Not Started', value: 1 },
+      { status: 'Failed', value: 1 },
+    ]);
+    // Competency proficiency radar and level split, from user_skills.
+    expect(charts.skillRadar).toHaveLength(1);
+    expect(charts.competencyLevels).toEqual([
+      { level: 'beginner', count: 0 },
+      { level: 'intermediate', count: 1 },
+      { level: 'advanced', count: 0 },
+    ]);
+    // Totals and points reused from the canonical services, never re-derived.
+    expect(charts.totals).toMatchObject({ completed: 2, certificates: 1, skills: 1, badgesEarned: 0 });
+    expect(charts.points).toMatchObject({ points: 390, monthPoints: 40, completionPct: 60, rankLabel: '#2 of 1' });
+  });
+});
+
 describe('LearnerInsightsService generation', () => {
   it('does nothing and returns null when the feature is off', async () => {
     const { svc, ai, repository } = deps(false);

@@ -48,6 +48,21 @@ export class LearnerInsightsController {
   }
 
   /**
+   * Real-data charts for the AI Insights page (skills, competencies, course
+   * status, categories, badges, points). Independent of whether the AI model is
+   * enabled — these are the learner's own figures, reused from the canonical
+   * services, not model output, so the page can show them whatever the feature
+   * flag. Cheap read, no model tokens, so no tight rate limit.
+   */
+  @Get('charts')
+  charts(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.insights.buildCharts(scope, user.userId);
+  }
+
+  /**
    * On-demand regeneration. Capped tight because each call spends model tokens:
    * five an hour per learner is plenty for a human pressing Refresh and stops a
    * scripted flood from running up a bill.
