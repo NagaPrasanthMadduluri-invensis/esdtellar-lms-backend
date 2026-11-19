@@ -5328,6 +5328,21 @@ so the chart can never disagree with the Learning Hours page. Learner and admin
 each get a trend at four granularities (weekly/monthly/quarterly/yearly) with
 per-period `learningHours` + `engagementHours` and totals.
 
+**Engagement is drawn as the SUPERSET of learning, per period
+(`engagementFloor`).** The owner's model is that a learner's learning time is
+PART of the time they spent in the app — a 45-min lesson sits inside the hour
+they were logged in, so the UI shows 1h engaged with 45m of it learning. But the
+two are measured differently: engagement is tracked active time, while learning
+is §10.4 completion-credited (the lesson's full DECLARED duration, credited
+whole however fast it was finished — §10.4). So a period can credit more learning
+than raw active time caught, which would make the stacked chart contradict itself
+(a 45-min learning segment inside a shorter "engaged" total). Completing 45 min
+of learning means the learner was present at least that long, so the displayed
+engagement is `max(tracked, learning)` per period. The floor only raises
+engagement to meet learning when tracking under-caught; it never touches the
+learning number. The client's stacked bar then splits engaged time into learning
++ other-active, with `other = engagement − learning ≥ 0` always.
+
 ```
 POST /api/engagement/ping             any authenticated role; { seconds } (1..600)
 GET  /api/learner/engagement/trend    the caller's own          (?granularity=)
@@ -5335,9 +5350,12 @@ GET  /api/admin/engagement/trend      the org's                 (view_reports)
 ```
 
 The dashboards render it as `components/shared/engagement-vs-learning.jsx`
-(grouped bars, a granularity toggle, totals, and a "X% of engaged time went to
-learning" line). Verified live: ping → stored → the trend reflects it, the 600s
-cap refuses an oversized batch, and the learning series matches §10.4.
+(a STACKED bar per period — learning + other-active = total engaged — a
+granularity toggle, totals, and a "X% of engaged time went to learning" line).
+Stacked rather than side-by-side because learning is a SHARE of engagement, not a
+rival series; two bars read as a contradiction when engagement is always the
+larger. Verified live: ping → stored → the trend reflects it, the 600s cap
+refuses an oversized batch, and the learning series matches §10.4.
 
 **Known follow-up:** the final `pagehide` flush uses the normal client rather
 than a keepalive beacon, so the last partial minute can be lost on a hard close
