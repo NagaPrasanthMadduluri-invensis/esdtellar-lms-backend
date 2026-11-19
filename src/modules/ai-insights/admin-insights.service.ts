@@ -6,6 +6,11 @@ import { AnalyticsService } from '@/modules/reports/analytics.service';
 
 import { AdminInsightsRepository } from './admin-insights.repository';
 import {
+  AdminIntelligenceRepository,
+  type CourseEffectivenessRow,
+  type InactivityRow,
+} from './admin-intelligence.repository';
+import {
   ADMIN_INSIGHTS_KIND,
   ADMIN_INSIGHTS_SCHEMA,
   ADMIN_INSIGHTS_SYSTEM,
@@ -24,6 +29,58 @@ const K_ANONYMITY = 5;
 /** Cap a user-authored string before it enters the prompt (prompt-injection defence). */
 function clip(value: string, max = 160): string {
   return value.length > max ? value.slice(0, max) : value;
+}
+
+const clampPct = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
+
+export interface CourseEffectiveness {
+  name: string;
+  category: string | null;
+  enrolled: number;
+  contentCompletionPct: number;
+  avgScore: number | null;
+  hasAssessment: boolean;
+  flags: string[];
+}
+
+/** Turn raw per-course rows into effectiveness signals with honest flags. */
+function mapCourseEffectiveness(rows: CourseEffectivenessRow[]): CourseEffectiveness[] {
+  return rows.map((c) => {
+    const denom = c.enrolled * c.lessons;
+    const contentCompletionPct = denom > 0 ? clampPct((c.lesson_completions / denom) * 100) : 0;
+    const flags: string[] = [];
+    if (c.assessments === 0) flags.push('no assessment');
+    if (c.lessons > 0 && contentCompletionPct < 40) flags.push('low completion');
+    if (c.avg_score !== null && c.avg_score < 60) flags.push('low scores');
+    return {
+      name: clip(c.name, 80),
+      category: c.category,
+      enrolled: c.enrolled,
+      contentCompletionPct,
+      avgScore: c.avg_score,
+      hasAssessment: c.assessments > 0,
+      flags,
+    };
+  });
+}
+
+/** Risk radar: five severity dimensions (0-100, higher = worse), from real data. */
+function riskRadarFrom(
+  dash: Awaited<ReturnType<AnalyticsService['dashboard']>>,
+  inactivity: InactivityRow,
+  effectiveness: CourseEffectiveness[],
+): { score: number; dimensions: { axis: string; value: number }[] } {
+  const total = dash.headline.totalLearners || 0;
+  const needing = effectiveness.filter((c) => c.flags.length > 0).length;
+  const dimensions = [
+    { axis: 'Overdue load', value: clampPct(total ? (dash.headline.overdue / total) * 100 : 0) },
+    { axis: 'Inactivity', value: inactivity.total ? clampPct((inactivity.inactive / inactivity.total) * 100) : 0 },
+    { axis: 'Low completion', value: clampPct(100 - dash.headline.completionRate) },
+    { axis: 'Assessment risk', value: clampPct(100 - dash.engagement.passRate) },
+    { axis: 'Course quality', value: effectiveness.length ? clampPct((needing / effectiveness.length) * 100) : 0 },
+  ];
+  const score = Math.round(dimensions.reduce((a, d) => a + d.value, 0) / dimensions.length);
+  return { score, dimensions };
 }
 
 /**
@@ -55,6 +112,13 @@ export interface OrgFeatureContext {
     courses: { name: string; avgRating: number; responses: number }[];
     sessions: { name: string; avgRating: number; responses: number }[];
   };
+  intelligence: {
+    inactiveLearners: number;
+    activeLearnerTotal: number;
+    riskScore: number;
+    coursesNeedingAttention: { name: string; flags: string[] }[];
+    skillDomains: { domain: string; learners: number; avgLevelPct: number }[];
+  };
 }
 
 @Injectable()
@@ -65,6 +129,7 @@ export class AdminInsightsService {
     private readonly ai: AiInsightsService,
     private readonly repository: AdminInsightsRepository,
     private readonly analytics: AnalyticsService,
+    private readonly intel: AdminIntelligenceRepository,
   ) {}
 
   /**
@@ -75,11 +140,16 @@ export class AdminInsightsService {
    * are read here.
    */
   async buildContext(scope: OrgScope): Promise<OrgFeatureContext> {
-    const [dash, lowCourses, lowSessions] = await Promise.all([
-      this.analytics.dashboard(scope),
-      this.repository.lowRatedCourses(scope),
-      this.repository.lowRatedSessions(scope),
-    ]);
+    const [dash, lowCourses, lowSessions, inactivity, courseRows, domains] =
+      await Promise.all([
+        this.analytics.dashboard(scope),
+        this.repository.lowRatedCourses(scope),
+        this.repository.lowRatedSessions(scope),
+        this.intel.inactivity(scope, 30),
+        this.intel.courseEffectiveness(scope),
+        this.intel.skillDomains(scope),
+      ]);
+    const effectiveness = mapCourseEffectiveness(courseRows);
 
     // Small-group re-identification protection: departments below the floor are
     // never named; they are combined into one unnamed bucket, and any signal
@@ -145,6 +215,20 @@ export class AdminInsightsService {
           responses: s.responses,
         })),
       },
+      intelligence: {
+        inactiveLearners: inactivity.inactive,
+        activeLearnerTotal: inactivity.total,
+        riskScore: riskRadarFrom(dash, inactivity, effectiveness).score,
+        coursesNeedingAttention: effectiveness
+          .filter((c) => c.flags.length > 0)
+          .slice(0, 8)
+          .map((c) => ({ name: c.name, flags: c.flags })),
+        skillDomains: domains.slice(0, 8).map((d) => ({
+          domain: d.domain,
+          learners: d.learners,
+          avgLevelPct: d.avg_level_pct,
+        })),
+      },
     };
   }
 
@@ -174,6 +258,40 @@ export class AdminInsightsService {
       dimensions.reduce((a, d) => a + d.value, 0) / dimensions.length,
     );
     return { score, dimensions };
+  }
+
+  /**
+   * The full Learning Intelligence payload (real data): risk radar, inactivity,
+   * course effectiveness, courses needing attention, organisational skill
+   * intelligence, and department benchmarks. Deterministic — the AI briefing
+   * narrates these; this endpoint is the numbers behind it.
+   */
+  async intelligence(scope: OrgScope) {
+    const [dash, inactivity, courseRows, domains] = await Promise.all([
+      this.analytics.dashboard(scope),
+      this.intel.inactivity(scope, 30),
+      this.intel.courseEffectiveness(scope),
+      this.intel.skillDomains(scope),
+    ]);
+    const effectiveness = mapCourseEffectiveness(courseRows);
+    const named = (dash.deptCompletion as { dept: string; total: number; pct: number; hours_learning: number }[])
+      .filter((d) => Number(d.total) >= K_ANONYMITY)
+      .map((d) => ({ dept: d.dept, learners: Number(d.total), completionPct: d.pct }));
+    return {
+      riskRadar: riskRadarFrom(dash, inactivity, effectiveness),
+      inactivity: { inactive: inactivity.inactive, total: inactivity.total, days: 30 },
+      courseEffectiveness: effectiveness.slice(0, 20),
+      coursesNeedingAttention: effectiveness.filter((c) => c.flags.length > 0).slice(0, 10),
+      skillIntelligence: {
+        tagged: domains.length > 0,
+        domains: domains.map((d) => ({
+          domain: d.domain,
+          learners: d.learners,
+          avgLevelPct: d.avg_level_pct,
+        })),
+      },
+      departments: named,
+    };
   }
 
   isEnabled(): boolean {

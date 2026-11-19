@@ -30,7 +30,12 @@ function deps(enabled: boolean) {
     lowRatedSessions: jest.fn().mockResolvedValue([]),
   };
   const analytics = { dashboard: jest.fn().mockResolvedValue(dashboard()) };
-  const svc = new AdminInsightsService(ai as any, repository as any, analytics as any);
+  const intel = {
+    inactivity: jest.fn().mockResolvedValue({ total: 40, inactive: 12 }),
+    courseEffectiveness: jest.fn().mockResolvedValue([]),
+    skillDomains: jest.fn().mockResolvedValue([]),
+  };
+  const svc = new AdminInsightsService(ai as any, repository as any, analytics as any, intel as any);
   return { svc, ai, repository, analytics };
 }
 

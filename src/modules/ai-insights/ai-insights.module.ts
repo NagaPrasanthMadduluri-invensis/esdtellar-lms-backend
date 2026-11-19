@@ -11,6 +11,7 @@ import { SurveysModule } from '@/modules/surveys/surveys.module';
 import { AdminInsightsController } from './admin-insights.controller';
 import { AdminInsightsRepository } from './admin-insights.repository';
 import { AdminInsightsService } from './admin-insights.service';
+import { AdminIntelligenceRepository } from './admin-intelligence.repository';
 import { LearnerInsightsController } from './learner-insights.controller';
 import { LearnerInsightsRepository } from './learner-insights.repository';
 import { LearnerInsightsService } from './learner-insights.service';
@@ -40,6 +41,7 @@ import { LearnerInsightsService } from './learner-insights.service';
     LearnerInsightsRepository,
     AdminInsightsService,
     AdminInsightsRepository,
+    AdminIntelligenceRepository,
   ],
   exports: [LearnerInsightsService, AdminInsightsService],
 })

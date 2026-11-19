@@ -641,7 +641,7 @@ Update this table with every module you move.
 | two-step sign-in mandatory for admins, optional for all; no admin-set passwords (fields and guards on existing routes) | 0 | `server/src/common/guards/mfa-enrolment.guard.ts`, `auth`, `users`, `roles` |
 | competencies — skills catalogue, course→skill mapping, gained skills recorded on completion (AI Insights foundation, Wave 0) | 6 | `server/src/modules/competencies` |
 | AI foundation — OpenRouter client (off by default) + ai_insights store (AI Insights, Wave 1; no HTTP routes) | 0 | `server/src/modules/ai` |
-| AI Insights verticals — learner recommendations + admin org briefing (Wave 2/3; GET + on-demand refresh, off by default) | 4 | `server/src/modules/ai-insights` |
+| AI Insights verticals — learner recommendations + admin org briefing + Learning Intelligence (risk radar, course effectiveness, skill intelligence, inactivity) | 5 | `server/src/modules/ai-insights` |
 | engagement — active-time tracking + engagement-vs-learning trend (ping + learner/admin trend reads) | 3 | `server/src/modules/engagement` |
 | operational alerts to Zoho Cliq + `GET /api/health` (public) | 1 | `server/src/modules/alerts`, `health` |
 | two-step sign-in by authenticator app OR emailed code (resend at sign-in, email-me-a-code to turn off) | 2 | `server/src/modules/auth`, `email` |
@@ -5342,6 +5342,39 @@ cap refuses an oversized batch, and the learning series matches §10.4.
 **Known follow-up:** the final `pagehide` flush uses the normal client rather
 than a keepalive beacon, so the last partial minute can be lost on a hard close
 — acceptable for a best-effort engagement figure.
+
+### 10.56 Learning Intelligence (risk radar, effectiveness, skill intelligence)
+
+`GET /api/admin/ai/intelligence` (`view_reports`), in `admin-intelligence.repository.ts`
++ `AdminInsightsService.intelligence`. The Phase-1/2 analytics the AI briefing
+narrates, as REAL numbers (§10.54's accuracy rule — the model explains, it never
+invents these). All tenant-scoped (content `contentScope`, activity `orgScope`).
+
+- **Inactivity**: active learner-portal users with no lesson completion or
+  assessment attempt in 30 days, over the total.
+- **Course effectiveness**: per enrolled course, a content-completion rate
+  (`lesson_completions / (enrolled × active lessons)` — labelled as content
+  consumed, NOT the §10.11 all-lessons-done definition, which is unchanged),
+  avg passing score, whether it has an assessment, and flags (no assessment /
+  low completion / low scores).
+- **Risk radar**: five 0-100 severity dimensions (overdue load, inactivity, low
+  completion, assessment risk, course quality) reusing `AnalyticsService.dashboard`
+  for completion/overdue/pass-rate, plus an overall score.
+- **Organisational skill intelligence**: competency coverage per skill domain
+  from `user_skills` (distinct learners, avg level). Empty until courses are
+  skill-tagged — the UI says so and points at the course Skills tab.
+- **Department benchmarks**: `deptCompletion` with the k-anonymity floor (§10.54).
+
+These signals are also folded into the AI briefing CONTEXT (`intelligence` block),
+so the briefing's risks/recommendations reference inactivity, flagged courses and
+weak skill domains. The admin AI Insights page renders them as real-data sections
+(`components/admin/admin-intelligence.jsx`) that show regardless of whether AI
+generation is enabled. Verified live against org 7: risk radar, inactivity 9/9,
+effectiveness and the (empty, honest) skill section all returned.
+
+**Still deferred:** completion/assessment time-series in the module (they live on
+the Analytics page; the AI page links there), per-learner risk prediction as a
+dedicated learner-facing view, and the nightly pre-generation cron.
 
 ## 11. Adding a new module — checklist
 

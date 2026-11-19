@@ -25,6 +25,14 @@ export class AdminInsightsController {
     return this.insights.getInsights(scope);
   }
 
+  /** The real-data Learning Intelligence payload (risk radar, course
+   *  effectiveness, skill intelligence, inactivity, departments). */
+  @Get('intelligence')
+  @Permissions('view_reports')
+  intelligence(@CurrentScope() scope: OrgScope) {
+    return this.insights.intelligence(scope);
+  }
+
   @Post('insights/refresh')
   @HttpCode(200)
   @Permissions('view_reports')
