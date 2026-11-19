@@ -58,6 +58,7 @@ export class MfaService {
   private readonly logger = new Logger(MfaService.name);
   private readonly key: string;
   private readonly pepper: string;
+  private readonly enforce: boolean;
 
   constructor(
     private readonly repository: MfaRepository,
@@ -65,6 +66,7 @@ export class MfaService {
     config: ConfigService,
   ) {
     this.key = config.get<string>('auth.mfaEncryptionKey') ?? '';
+    this.enforce = config.get<boolean>('auth.mfaEnforce') ?? true;
     // Emailed codes are hashed with a server secret, so a database copy alone
     // cannot be brute-forced through a million-code space offline.
     this.pepper = config.get<string>('auth.jwtSecret') ?? '';
@@ -90,6 +92,15 @@ export class MfaService {
    */
   canEnrol(): boolean {
     return this.isConfigured() || this.emailAvailable();
+  }
+
+  /**
+   * Whether admins are REQUIRED to enrol (default true). `MFA_ENFORCE=false`
+   * lifts the mandatory gate for local testing; it does not weaken accounts that
+   * have already enrolled, which still challenge at sign-in.
+   */
+  isEnforced(): boolean {
+    return this.enforce;
   }
 
   async status(userId: number) {

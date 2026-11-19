@@ -548,6 +548,10 @@ paragraphs. That is courtesy; this is enforcement.
 | `RETENTION_READ_NOTIFICATION_DAYS` · `_UNREAD_NOTIFICATION_DAYS` | no (180 · 365) | Read notifications 6 months, unread 12 |
 | `RETENTION_FAILED_EMAIL_DAYS` · `_DATA_REQUEST_DAYS` · `_RESET_TOKEN_DAYS` | no (180 · 1095 · 30) | Failed emails, closed privacy requests, expired reset tokens |
 | `RETENTION_REMOVED_COMMUNITY_DAYS` · `_REFERRAL_DAYS` · `_CERTIFICATE_FILE_DAYS` | no (30 · 365 · 365) | Removed posts purged, unconverted referrals, external-certificate scans after the decision |
+| `AI_ENABLED` | no (`false`) | Master switch for AI Insights (§10.54). Off = the OpenRouter client makes no call and returns null |
+| `OPENROUTER_API_KEY` | for AI | OpenRouter key. Absent = AI stays off regardless of `AI_ENABLED` (warn-and-degrade) |
+| `AI_MODEL` | no (`deepseek/deepseek-v4-pro`) | OpenRouter model id. The default REASONS, so outputs cost extra tokens |
+| `AI_MAX_OUTPUT_TOKENS` · `AI_TIMEOUT_MS` · `AI_BASE_URL` · `AI_APP_TITLE` | no (3000 · 45000 · `https://openrouter.ai/api/v1` · `Spectra LMS`) | Token budget (covers reasoning), call timeout, endpoint, and the product name sent for OpenRouter attribution |
 | `ORG_NAME` | no (`Edstellar`) | Name of the first real organization created by `db:migrate:tenancy` |
 | `ORG_SLUG` | no (`edstellar`) | Organization `db:seed` seeds into |
 | `EMAIL_ENABLED` | no (`false`) | Master switch. False writes no outbox rows at all |
@@ -635,6 +639,10 @@ Update this table with every module you move.
 | request rate limiting + security headers (global guard, per-route budgets; no new routes) | 0 | `server/src/common/guards/rate-limit.guard.ts`, `common/http` |
 | retention: full anonymisation, time limits, client offboarding (platform schedule/cancel/read) | 3 | `server/src/modules/retention`, `organizations` |
 | two-step sign-in mandatory for admins, optional for all; no admin-set passwords (fields and guards on existing routes) | 0 | `server/src/common/guards/mfa-enrolment.guard.ts`, `auth`, `users`, `roles` |
+| competencies — skills catalogue, course→skill mapping, gained skills recorded on completion (AI Insights foundation, Wave 0) | 6 | `server/src/modules/competencies` |
+| AI foundation — OpenRouter client (off by default) + ai_insights store (AI Insights, Wave 1; no HTTP routes) | 0 | `server/src/modules/ai` |
+| AI Insights verticals — learner recommendations + admin org briefing (Wave 2/3; GET + on-demand refresh, off by default) | 4 | `server/src/modules/ai-insights` |
+| engagement — active-time tracking + engagement-vs-learning trend (ping + learner/admin trend reads) | 3 | `server/src/modules/engagement` |
 | operational alerts to Zoho Cliq + `GET /api/health` (public) | 1 | `server/src/modules/alerts`, `health` |
 | two-step sign-in by authenticator app OR emailed code (resend at sign-in, email-me-a-code to turn off) | 2 | `server/src/modules/auth`, `email` |
 
@@ -5156,6 +5164,184 @@ until confirmed, old recovery codes refused, turn off with an emailed code,
 **The email method is weaker than the app** — it is as safe as the mailbox,
 and a mailbox usually also controls password reset. Policy 03 says so and
 encourages the app; it is still a large step up from a password alone.
+
+### 10.52 Private uploads were inside the public /uploads mount
+
+Found while preparing the client-facing tenancy statement. `main.ts` mounted
+the whole `UPLOAD_STORAGE_PATH` at `/uploads` with no sign-in, for course
+thumbnails (§10.10). That root ALSO held the private stores:
+`external-certifications/` (certificate scans, §10.26) and `shared/` (community
+resources and message attachments, §10.42). Both services' docblocks said they
+were outside the published directory; they were not. On dev an unauthenticated
+request for a stored scan returned 200.
+
+Practical exposure was limited: the file names are random UUIDs and are never
+sent to a browser (`file_path` is not selected into any response), so a file
+could not be found without already holding its name. It was still wrong, and a
+statement to clients could not claim the protection.
+
+**Now only `ImageStorageService.PUBLIC_DIRS` (`course-thumbnails`, `avatars`)
+are mounted**, each at `/uploads/<dir>`. Organization logos are stored with the
+thumbnails. Everything else under the uploads root is reachable only through
+its access-checked route. Adding a new public image folder means adding it to
+`PUBLIC_DIRS`; adding a private store needs nothing, which is the safe default.
+
+`npm run test:isolation` section 10 writes a canary file into each private
+folder and requires a 404 without sign-in, and requires a thumbnail canary to
+stay 200. Verified on dev: scan 404 (direct and through the web app's rewrite),
+thumbnail and avatar 200, `/uploads/` 404, a `../` traversal 404, and the
+checked route still 401 without a session.
+
+### 10.53 Competencies — the AI Insights foundation
+
+`0070_competencies.sql`. The first slice of the AI Insights program
+(`specs/ai-insights.md`): the data that lets later waves ground recommendations
+in what a learner actually knows. **No AI and no PII in this slice** — pure data.
+
+Three tables. `skills` and `course_skills` are CONTENT (`contentScope`): the
+platform organization owns a seeded starter catalogue every tenant sees, and a
+tenant may add its own skills, private to it. `user_skills` is ACTIVITY
+(`orgScope`): a competency a learner gained always belongs to their own org, so
+a shared skill never shows one tenant another tenant's learner counts (§10.12).
+
+**Recording reuses the ONE completion definition.** `CompetenciesService.onCourseCompleted`
+is called best-effort at the three completion seams (scorm, assessments, learner)
+beside `autoIssue` and `onCourseProgress`. Those seams fire on every
+lesson-complete/assessment-submit, not only on the last, so it re-derives
+completion through `CertificatesService.isCourseComplete` (a thin public wrapper
+over `getCompletionSnapshot` + `evaluate`, added here) rather than writing a
+second definition that could drift (§10.11). On genuine completion it upserts
+`user_skills` from the course's `course_skills` — one statement, idempotent (a
+replay only refreshes `source_course_id` / `last_reinforced_at`), and `level` is
+**UPGRADED** by rank (beginner<intermediate<advanced), never downgraded, so a
+later advanced course lifts a skill a beginner one first granted. `GREATEST` over
+the text labels would order them alphabetically, so the rank is a CASE.
+
+**No new permission.** Skill curation and course mapping are guarded by
+`manage_courses` — which skills a course imparts is a property of the course — so
+no grant migration and no `perm_version` bump (§10.24's reasoning). A learner's
+own-competency read carries no permission and takes no id (the subject is the
+caller).
+
+```
+GET   /api/admin/skills[?archived=]          list (own + platform), counts   (manage_courses)
+POST  /api/admin/skills                       create (409 on duplicate slug)  (manage_courses)
+PATCH /api/admin/skills/:id                   rename / archive (own only)     (manage_courses)
+GET   /api/admin/skills/course/:courseId      a course's mapping              (manage_courses)
+PUT   /api/admin/skills/course/:courseId      replace a course's mapping      (manage_courses)
+GET   /api/learner/competencies               the caller's own gained skills  (learner)
+```
+
+**Known follow-up:** the course→skill mapping has no authoring-screen UI yet
+(it is API-only this slice), and the learner competency panel ships with the
+learner vertical (Wave 2).
+
+### 10.54 AI foundation — the OpenRouter client and insight store
+
+`0071_ai_insights.sql` + `modules/ai` (spec ai-insights.md Wave 1). The shared
+engine the learner (Wave 2) and admin (Wave 3) verticals plug into. It has no
+controllers — a surface that triggers generation belongs to the vertical that
+defines what is generated.
+
+**OFF by default, warn-and-degrade, exactly like email/R2.** `AiClientService`
+makes no call and returns null unless `AI_ENABLED=true` AND an
+`OPENROUTER_API_KEY` is set, so an un-enabled deployment spends nothing and sends
+nothing out. Enabling it is a deliberate, cost-bearing act — and the data that
+would leave the box (the feature layer's prompt, Wave 2) is a human checkpoint
+reviewed as a PII surface before that switch is flipped.
+
+**Never throws.** A model timeout, HTTP error or unparseable content returns null
+(§8.4) — a recommendation is best-effort and must never 500 a request or a cron
+tick. `completeJson` also recovers JSON a model wrapped in prose or a code fence.
+
+**No SDK**, one HTTPS POST to `/chat/completions`, the same reasoning as SESv2 and
+the Gmail API. Model attribution headers carry the product origin and name only,
+never anything learner-identifying.
+
+**The default model reasons.** `deepseek/deepseek-v4-pro` emits reasoning tokens
+before its answer, and they count toward `max_tokens` — a small cap is spent
+entirely on thinking and returns empty content (observed: `max_tokens: 10` gave
+zero content; `800` returned clean JSON). Hence `AI_MAX_OUTPUT_TOKENS` defaults to
+3000 and the timeout to 45s. Verified live: key valid, model resolves, structured
+JSON returned, cost ~$0.00002 for the probe.
+
+`ai_insights` stores one latest insight per (org, subject, kind), upserted by a
+refresh and read by the UI. ACTIVITY (`orgScope`). The payload is the model's
+structured output and holds **no raw PII** — the feature layer sends only
+aggregates and ids, so what comes back is advice, not personal data.
+
+The verticals live in `modules/ai-insights`:
+
+- **Learner (Wave 2)** — `LearnerInsightsService` builds a PII-light context by
+  REUSING `LearnerService.courses`, `LeaderboardService`, `BadgesService`,
+  `CompetenciesService` and `SurveysService` (no second definition of
+  completion/points), plus one new query for recommendable courses + job
+  attributes. `GET /api/learner/ai/insights` (renders nothing when off) and
+  `POST .../refresh` (RateLimit 5/hr/user). Stored as subject `learner`, kind
+  `recommendations`.
+- **Admin (Wave 3)** — `AdminInsightsService` reuses `AnalyticsService.dashboard`
+  (the one org aggregate: completion, dept roll-up, overdue, deterministic
+  signal sentences) plus two negative-feedback aggregates (low-rated courses via
+  the §10.24 overall-rating definition; low-rated sessions via the structured
+  `session_feedback` columns, both min 3 responses). The feedback reads send
+  RATINGS and COUNTS only, never the free-text comments. `GET /api/admin/ai/insights`
+  + `POST .../refresh`, both `view_reports` (no new permission). Stored as subject
+  `org`, kind `org_overview`.
+
+Each context builder is the PII surface for its vertical: opaque ids, content
+titles, department names and aggregates only, reviewed before enabling.
+
+Still to build: the nightly worker cron that pre-generates insights (deferred —
+needs cross-org scope-minting + cost caps in the worker; on-demand refresh proves
+the pipeline), AI bell/push notifications for milestones, and a period-over-period
+trend signal in the admin context (InsightsService series, a 3.1 enhancement).
+
+### 10.55 Engagement hours, and the comparison with learning hours
+
+`0072_engagement.sql` + `modules/engagement` (owner request 2026-11-19). A NEW
+metric beside §10.4 learning hours, which are **unchanged**.
+
+**The two measure different things on purpose.** Engagement is ACTIVE time on
+the platform; learning hours is completion-credited time (§10.4). A learner can
+be engaged (browsing, clicking) without producing learning hours, and the
+comparison surfaces exactly that gap.
+
+**Engagement = active time, idle over 5 minutes excluded.** The client hook
+(`use-engagement-tracker.js`, mounted once per authenticated layout) accrues
+active seconds in 15s ticks only while the cursor/keyboard has moved within the
+last 5 minutes AND the tab is visible, and flushes a batch to
+`POST /api/engagement/ping` about once a minute and on `pagehide`. It is
+best-effort telemetry: it swallows its own errors and never blocks the UI, like
+the SCORM data-model recorder (§10.9).
+
+**`engagement_daily` is one accumulator per (user, day)**, ACTIVITY so `orgScope`
+on every read. The ping upserts, adding seconds capped at a day (`LEAST(..,
+86400)`); the DTO also caps a single ping at 600 seconds, so neither a broken nor
+a hostile client can inflate the figure. Both `LEAST` arguments are cast `::int`
+— a bare parameterised number resolves to `text` and clashes with the integer
+column.
+
+**The comparison REUSES the learning-hours definition.** `EngagementService`
+builds the learning series from `LearningHoursService.learnerHoursTrend` (learner)
+or `minutesByPeriod` (org) and overlays engagement onto the SAME period buckets,
+so the chart can never disagree with the Learning Hours page. Learner and admin
+each get a trend at four granularities (weekly/monthly/quarterly/yearly) with
+per-period `learningHours` + `engagementHours` and totals.
+
+```
+POST /api/engagement/ping             any authenticated role; { seconds } (1..600)
+GET  /api/learner/engagement/trend    the caller's own          (?granularity=)
+GET  /api/admin/engagement/trend      the org's                 (view_reports)
+```
+
+The dashboards render it as `components/shared/engagement-vs-learning.jsx`
+(grouped bars, a granularity toggle, totals, and a "X% of engaged time went to
+learning" line). Verified live: ping → stored → the trend reflects it, the 600s
+cap refuses an oversized batch, and the learning series matches §10.4.
+
+**Known follow-up:** the final `pagehide` flush uses the normal client rather
+than a keepalive beacon, so the last partial minute can be lost on a hard close
+— acceptable for a best-effort engagement figure.
 
 ## 11. Adding a new module — checklist
 

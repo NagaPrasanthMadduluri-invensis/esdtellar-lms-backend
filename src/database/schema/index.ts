@@ -62,3 +62,12 @@ export * from './consent-events.schema';
 
 /** The security incident register: incidents, affected orgs, timeline (0066). */
 export * from './security-incidents.schema';
+
+/** Competency foundation: skills catalogue, course mapping, gained skills (0070). */
+export * from './competencies.schema';
+
+/** Stored AI insights, one latest per (org, subject, kind) (0071). */
+export * from './ai-insights.schema';
+
+/** Daily engagement (active time) accumulator, compared to learning hours (0072). */
+export * from './engagement.schema';

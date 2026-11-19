@@ -37,6 +37,9 @@ import { AlertsApiWatchModule } from './modules/alerts/alerts-api-watch.module';
 import { HealthModule } from './modules/health/health.module';
 import { BadgesModule } from './modules/badges/badges.module';
 import { CertificatesModule } from './modules/certificates/certificates.module';
+import { CompetenciesModule } from './modules/competencies/competencies.module';
+import { AiInsightsModule } from './modules/ai-insights/ai-insights.module';
+import { EngagementModule } from './modules/engagement/engagement.module';
 import { CoursesModule } from './modules/courses/courses.module';
 import { LearnerModule } from './modules/learner/learner.module';
 import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
@@ -71,6 +74,9 @@ import { AuditMiddleware } from '@/modules/audit/audit.middleware';
     AssessmentsModule,
     SessionsModule,
     CertificatesModule,
+    CompetenciesModule,
+    AiInsightsModule,
+    EngagementModule,
     LearnerModule,
     ScormModule,
     ReportsModule,

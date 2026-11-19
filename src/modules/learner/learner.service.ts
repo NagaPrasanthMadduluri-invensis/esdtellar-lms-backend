@@ -14,6 +14,7 @@ import type { OrgScope } from '@/database/org-scope';
 import { badgeHint } from '@/modules/badges/badge-hint.util';
 import { BadgesService } from '@/modules/badges/badges.service';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { CompetenciesService } from '@/modules/competencies/competencies.service';
 import { LeaderboardService, publicRank } from '@/modules/leaderboard/leaderboard.service';
 // The points model itself, not the ranking: the card promises what the board
 // pays, so both read one file (see `courseReward`).
@@ -353,6 +354,7 @@ export class LearnerService {
     private readonly notifications: NotificationsService,
     /** Rebuilds the team report as .xlsx — see `teamWorkbook`. */
     private readonly spreadsheets: SpreadsheetService,
+    private readonly competencies: CompetenciesService,
   ) {}
 
   /* ─────────────────────────────────────────────
@@ -1261,6 +1263,8 @@ export class LearnerService {
     await this.certificates.autoIssue(scope, userId, courseId);
     await this.badges.syncForBestEffort(scope, userId);
     await this.journeys.onCourseProgress(scope, userId, courseId);
+    // Record any competencies the course imparts (spec ai-insights.md).
+    await this.competencies.onCourseCompleted(scope, userId, courseId);
 
     return { message: 'Lesson marked as complete' };
   }

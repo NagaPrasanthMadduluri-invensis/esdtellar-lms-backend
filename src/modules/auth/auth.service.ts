@@ -346,7 +346,8 @@ export class AuthService {
     userId: number,
     impersonatorId?: number | null,
   ): Promise<boolean> {
-    if (role !== 'admin' || impersonatorId || !this.mfa.canEnrol()) return false;
+    if (role !== 'admin' || impersonatorId || !this.mfa.isEnforced() || !this.mfa.canEnrol())
+      return false;
     return !(await this.mfa.isEnabledForLogin(userId));
   }
 

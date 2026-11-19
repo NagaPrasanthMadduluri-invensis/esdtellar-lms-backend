@@ -130,6 +130,27 @@ export class CertificatesService {
   }
 
   /**
+   * Whether a learner has completed a course, by the ONE definition above.
+   *
+   * Exposed so other modules that grant something on completion (e.g.
+   * `CompetenciesModule` recording gained skills) can re-use this check instead
+   * of writing a second completion query that could drift from it (§10.11). It
+   * only reports completion — it issues nothing and takes no action.
+   */
+  async isCourseComplete(
+    scope: OrgScope,
+    userId: number,
+    courseId: number,
+  ): Promise<boolean> {
+    const snapshot = await this.repository.getCompletionSnapshot(
+      scope,
+      userId,
+      courseId,
+    );
+    return this.evaluate(snapshot).complete;
+  }
+
+  /**
    * Best-effort issuance, called the moment a learner finishes a course.
    *
    * MUST NOT throw into the caller: a certificate failure cannot break marking

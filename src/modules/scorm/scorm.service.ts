@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { CompetenciesService } from '@/modules/competencies/competencies.service';
 import { JourneyGateService } from '@/modules/journeys/journey-gate.service';
 
 import type {
@@ -64,6 +65,7 @@ export class ScormService {
     private readonly certificates: CertificatesService,
     private readonly journeys: JourneysService,
     private readonly gate: JourneyGateService,
+    private readonly competencies: CompetenciesService,
   ) {}
 
   /* ── Admin ── */
@@ -698,6 +700,8 @@ export class ScormService {
           // Passing the assessment can be what finishes the course, and the
           // course can be the last step of a journey (spec §4.2).
           await this.journeys.onCourseProgress(scope, userId, Number(lesson.course_id));
+          // Record any competencies the course imparts (spec ai-insights.md).
+          await this.competencies.onCourseCompleted(scope, userId, Number(lesson.course_id));
         }
       }
     }

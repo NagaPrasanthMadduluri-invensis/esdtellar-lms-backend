@@ -7,6 +7,7 @@ import {
 
 import type { OrgScope } from '@/database/org-scope';
 import { CertificatesService } from '@/modules/certificates/certificates.service';
+import { CompetenciesService } from '@/modules/competencies/competencies.service';
 import { ActivityService } from '@/modules/activity/activity.service';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { JourneyGateService } from '@/modules/journeys/journey-gate.service';
@@ -29,6 +30,7 @@ export class AssessmentsService {
     private readonly gate: JourneyGateService,
     /** Best-effort (§8.4) — `record` never throws. */
     private readonly activity: ActivityService,
+    private readonly competencies: CompetenciesService,
   ) {}
 
   /* ── Admin ── */
@@ -383,6 +385,8 @@ export class AssessmentsService {
       // Passing the assessment can be what finishes the course, and the
       // course can be the last step of a journey (spec §4.2).
       await this.journeys.onCourseProgress(scope, userId, courseId);
+      // Record any competencies the course imparts (spec ai-insights.md).
+      await this.competencies.onCourseCompleted(scope, userId, courseId);
     }
 
     return {

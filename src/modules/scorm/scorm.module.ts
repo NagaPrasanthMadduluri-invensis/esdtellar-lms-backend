@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { AuthModule } from '@/modules/auth/auth.module';
 import { CertificatesModule } from '@/modules/certificates/certificates.module';
+import { CompetenciesModule } from '@/modules/competencies/competencies.module';
 import { MediaModule } from '@/modules/media/media.module';
 import { R2StorageService } from '@/modules/media/storage/r2-storage.service';
 
@@ -37,7 +38,7 @@ import { JourneysModule } from '@/modules/journeys/journeys.module';
     AuthModule,
     CertificatesModule,
     OrganizationsModule,
-    MediaModule, JourneysModule, JourneyGateModule],
+    MediaModule, JourneysModule, JourneyGateModule, CompetenciesModule],
   controllers: [AdminScormController, LearnerScormController],
   providers: [
     ScormService,

@@ -43,6 +43,13 @@ export interface AppConfig {
      * passphrase (folded to 32 bytes). Empty string means "not configured".
      */
     mfaEncryptionKey: string;
+    /**
+     * Whether two-step sign-in is ENFORCED for admins (2026-11-18). Default true.
+     * Set `MFA_ENFORCE=false` ONLY to lift the mandatory admin enrolment gate for
+     * local testing; production keeps it on. It does not disable MFA for accounts
+     * that have already enrolled.
+     */
+    mfaEnforce: boolean;
   };
   storage: {
     /**
@@ -209,6 +216,23 @@ export interface AppConfig {
       dailyCeiling: number;
     };
   };
+  /**
+   * AI Insights (spec ai-insights.md). OFF by default and warn-and-degrade like
+   * email/R2: with `enabled` false or no `apiKey`, the client makes no external
+   * call and returns null, so nothing reaches OpenRouter and nothing is spent
+   * until an operator deliberately turns it on. The model is configurable; the
+   * default is DeepSeek V4 Pro. `appTitle` is the product name sent to OpenRouter
+   * for its dashboard attribution — never anything learner-identifying.
+   */
+  ai: {
+    enabled: boolean;
+    apiKey: string;
+    model: string;
+    baseUrl: string;
+    timeoutMs: number;
+    maxOutputTokens: number;
+    appTitle: string;
+  };
 }
 
 /**
@@ -271,6 +295,8 @@ export default (): AppConfig => ({
     cookieName: process.env.AUTH_COOKIE_NAME ?? 'lms_token',
     cookieDomain: process.env.COOKIE_DOMAIN ?? 'localhost',
     mfaEncryptionKey: process.env.MFA_ENCRYPTION_KEY ?? '',
+    // Default ON; only `MFA_ENFORCE=false` lifts the mandatory admin gate (testing).
+    mfaEnforce: process.env.MFA_ENFORCE !== 'false',
   },
   storage: {
     uploadsPath: process.env.UPLOAD_STORAGE_PATH ?? './storage/uploads',
@@ -362,5 +388,22 @@ export default (): AppConfig => ({
       // account is 500; set the var if this ever sends from one.
       dailyCeiling: Number(process.env.GMAIL_DAILY_CEILING ?? 2000),
     },
+  },
+  ai: {
+    // OFF by default — enabling it is a deliberate, cost-bearing act.
+    enabled: process.env.AI_ENABLED === 'true',
+    apiKey: process.env.OPENROUTER_API_KEY ?? '',
+    model: process.env.AI_MODEL ?? 'deepseek/deepseek-v4-pro',
+    baseUrl: (process.env.AI_BASE_URL ?? 'https://openrouter.ai/api/v1').replace(
+      /\/+$/,
+      '',
+    ),
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 45000),
+    // The default model (DeepSeek V4 Pro) REASONS before it answers, and those
+    // reasoning tokens count toward the budget — a small cap can be spent
+    // entirely on thinking, leaving empty content. 3000 comfortably covers
+    // reasoning plus a structured recommendation; raise it for longer outputs.
+    maxOutputTokens: Number(process.env.AI_MAX_OUTPUT_TOKENS ?? 3000),
+    appTitle: process.env.AI_APP_TITLE ?? 'Spectra LMS',
   },
 });

@@ -28,6 +28,9 @@ import { SpreadsheetService } from './spreadsheet.service';
     InsightsRepository,
     SpreadsheetService,
   ],
-  exports: [SpreadsheetService],
+  // AnalyticsService is exported so the AI Insights admin vertical can reuse the
+  // ONE org aggregate (completion rate, dept roll-up, overdue) rather than
+  // writing a second one (§10.54). Nothing else outside this module injects it.
+  exports: [SpreadsheetService, AnalyticsService],
 })
 export class ReportsModule {}
