@@ -11,11 +11,42 @@ import { SurveysService } from '@/modules/surveys/surveys.service';
 
 import { LearnerInsightsRepository } from './learner-insights.repository';
 import {
+  COURSE_RECOMMENDATIONS_KIND,
+  COURSE_RECOMMENDATIONS_SCHEMA,
+  COURSE_RECOMMENDATIONS_SYSTEM,
   LEARNER_INSIGHTS_KIND,
   LEARNER_INSIGHTS_SCHEMA,
   LEARNER_INSIGHTS_SYSTEM,
+  SKILL_PLAN_KIND,
+  SKILL_PLAN_SCHEMA,
+  SKILL_PLAN_SYSTEM,
   type LearnerInsightsPayload,
 } from './learner-insights.prompt';
+
+/**
+ * The deeper learner lenses beyond the coach (owner request 2026-11-19). Each is
+ * its own stored `kind`, built from the SAME anonymised context and generated
+ * through the same tenant-fenced chokepoint — so no new PII surface, and a lens
+ * cannot cross tenants any more than the coach can.
+ */
+const LENSES = {
+  course_recommendations: {
+    kind: COURSE_RECOMMENDATIONS_KIND,
+    system: COURSE_RECOMMENDATIONS_SYSTEM,
+    schema: COURSE_RECOMMENDATIONS_SCHEMA,
+  },
+  skill_plan: {
+    kind: SKILL_PLAN_KIND,
+    system: SKILL_PLAN_SYSTEM,
+    schema: SKILL_PLAN_SCHEMA,
+  },
+} as const;
+
+export type LearnerLens = keyof typeof LENSES;
+
+export function isLearnerLens(value: string): value is LearnerLens {
+  return Object.prototype.hasOwnProperty.call(LENSES, value);
+}
 
 /**
  * The anonymised context sent to the model. This is the PII SURFACE for the AI
@@ -316,6 +347,70 @@ export class LearnerInsightsService {
         model: row?.model ?? null,
       },
       charts,
+      error: null,
+    };
+  }
+
+  // ── Deeper lenses (course recommendations, skill plan) ────────────────────
+
+  /** Generate and store one deeper lens. Best-effort — never throws. */
+  async generateLens(
+    scope: OrgScope,
+    userId: number,
+    lens: LearnerLens,
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.ai.isEnabled()) return null;
+    const spec = LENSES[lens];
+    try {
+      const context = await this.buildContext(scope, userId);
+      const payload = await this.ai.generateForTenant<Record<string, unknown>>(scope, {
+        system: spec.system,
+        user: JSON.stringify(context),
+        jsonSchema: spec.schema,
+        contextOrgId: context.organizationId,
+        subject: `learner=${userId} lens=${lens}`,
+      });
+      if (!payload) return null;
+      await this.ai.storeInsight(scope, 'learner', userId, spec.kind, payload);
+      return payload;
+    } catch (error) {
+      this.logger.warn(
+        `Lens ${lens} failed for user=${userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /** The stored lens for the page, plus whether the feature is on. */
+  async getLens(scope: OrgScope, userId: number, lens: LearnerLens) {
+    const row = await this.ai.getInsight(scope, 'learner', userId, LENSES[lens].kind);
+    return {
+      enabled: this.ai.isEnabled(),
+      insight: row
+        ? { payload: row.payload, generatedAt: row.generated_at, model: row.model }
+        : null,
+    };
+  }
+
+  /** On-demand regeneration for one lens (behind the page's button). */
+  async refreshLens(scope: OrgScope, userId: number, lens: LearnerLens) {
+    if (!this.ai.isEnabled()) {
+      return { enabled: false as const, insight: null, error: null };
+    }
+    const payload = await this.generateLens(scope, userId, lens);
+    if (!payload) {
+      return { enabled: true as const, insight: null, error: 'generation_failed' };
+    }
+    const row = await this.ai.getInsight(scope, 'learner', userId, LENSES[lens].kind);
+    return {
+      enabled: true as const,
+      insight: {
+        payload,
+        generatedAt: row?.generated_at ?? new Date().toISOString(),
+        model: row?.model ?? null,
+      },
       error: null,
     };
   }

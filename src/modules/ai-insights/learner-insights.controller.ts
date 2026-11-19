@@ -1,11 +1,30 @@
-import { Controller, Get, HttpCode, Post } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+} from '@nestjs/common';
 
 import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import { RateLimit } from '@/common/rate-limit/rate-limit';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
-import { LearnerInsightsService } from './learner-insights.service';
+import {
+  LearnerInsightsService,
+  isLearnerLens,
+  type LearnerLens,
+} from './learner-insights.service';
+
+/** Validate the lens path param against the registry (never raw input downstream). */
+function parseLens(lens: string): LearnerLens {
+  if (!isLearnerLens(lens)) {
+    throw new BadRequestException(`Unknown AI lens: ${lens}`);
+  }
+  return lens;
+}
 
 /**
  * The learner's AI recommendations panel (spec ai-insights.md Wave 2).
@@ -47,5 +66,36 @@ export class LearnerInsightsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.insights.refresh(scope, user.userId);
+  }
+
+  /**
+   * A deeper lens (course_recommendations | skill_plan) — the learner's MULTIPLE
+   * AI options beyond the coach. Read is cheap (stored insight); generation is
+   * behind the refresh route below.
+   */
+  @Get('lens/:lens')
+  getLens(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('lens') lens: string,
+  ) {
+    return this.insights.getLens(scope, user.userId, parseLens(lens));
+  }
+
+  @Post('lens/:lens/refresh')
+  @HttpCode(200)
+  @RateLimit({
+    name: 'ai-learner-lens',
+    by: 'user',
+    limit: 5,
+    windowSeconds: 3600,
+    message: 'You have generated AI insights a few times recently. Try again a little later.',
+  })
+  refreshLens(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('lens') lens: string,
+  ) {
+    return this.insights.refreshLens(scope, user.userId, parseLens(lens));
   }
 }
