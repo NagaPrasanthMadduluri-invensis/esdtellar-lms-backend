@@ -38,7 +38,15 @@ export class ImageStorageService {
   static readonly AVATAR_PATH_PATTERN =
     /^\/uploads\/avatars\/[0-9a-f-]{36}\.(jpg|png|webp|gif)$/;
 
-  /** Absolute root that `useStaticAssets` mounts at `/uploads`. */
+  /**
+   * The ONLY sub-folders served publicly at `/uploads/<dir>` (§10.52). The
+   * uploads root also holds private files (certificate scans, shared files)
+   * that must never be mounted. Organization logos are stored with the
+   * thumbnails.
+   */
+  static readonly PUBLIC_DIRS = ['course-thumbnails', 'avatars'] as const;
+
+  /** Absolute uploads root. Only `PUBLIC_DIRS` inside it are served statically. */
   readonly rootPath: string;
 
   private readonly thumbnailDir: string;

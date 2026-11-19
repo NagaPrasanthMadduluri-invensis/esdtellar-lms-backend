@@ -1,5 +1,7 @@
 import 'reflect-metadata';
 
+import { join } from 'node:path';
+
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
@@ -148,13 +150,23 @@ async function bootstrap(): Promise<void> {
    * `immutable` is safe because a replacement is written under a NEW uuid and
    * the old file is deleted, so a cached URL can never show the wrong picture.
    */
+  /*
+   * ONLY the two public sub-folders are mounted, never the uploads root
+   * (§10.52). The root also holds PRIVATE files: external-certificate scans
+   * (`external-certifications/`) and community resources and message
+   * attachments (`shared/`), which must be reachable only through their
+   * access-checked routes. Mounting the root served them to anyone holding
+   * the file name. Avatars live here too and follow the thumbnail reasoning.
+   */
   const imageStorage = app.get(ImageStorageService);
-  app.useStaticAssets(imageStorage.rootPath, {
-    prefix: '/uploads',
-    maxAge: '365d',
-    immutable: true,
-    index: false,
-  });
+  for (const dir of ImageStorageService.PUBLIC_DIRS) {
+    app.useStaticAssets(join(imageStorage.rootPath, dir), {
+      prefix: `/uploads/${dir}`,
+      maxAge: '365d',
+      immutable: true,
+      index: false,
+    });
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

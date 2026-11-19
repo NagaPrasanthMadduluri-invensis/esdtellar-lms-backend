@@ -28,7 +28,9 @@ import pg from 'pg';
 import otplib from 'otplib';
 
 const { authenticator } = otplib;
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { isAbsolute, join, resolve } from 'node:path';
 
 /* ── .env, loaded the same way scripts/reset-to-admin-only.mjs does ──────── */
 try {
@@ -903,6 +905,46 @@ async function main() {
         edAdminFeed.status === 200 && edAdminSees,
         `status=${edAdminFeed.status} sawOwnPost=${edAdminSees}`,
       );
+    }
+  }
+
+  /* ======================================================================
+     10. Private uploads are never served by the public /uploads mount (§10.52)
+     ====================================================================== */
+  section('10. Private uploads are never served publicly');
+  {
+    // A canary file is written into each private folder and requested with no
+    // cookie. Only meaningful when the suite runs on the same machine as the
+    // API (the default), because the file must exist where the API reads.
+    const local = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(BASE_URL);
+    if (!local) {
+      skip('private uploads canary', `TEST_BASE_URL ${BASE_URL} is not local; cannot place a canary file`);
+    } else {
+      const configured = process.env.UPLOAD_STORAGE_PATH || './storage/uploads';
+      const root = isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
+      for (const dir of ['external-certifications', 'shared']) {
+        const name = `${randomUUID()}.pdf`;
+        const file = join(root, dir, name);
+        mkdirSync(join(root, dir), { recursive: true });
+        writeFileSync(file, '%PDF-1.4 isolation canary');
+        try {
+          const res = await fetch(`${BASE_URL}/uploads/${dir}/${name}`, { redirect: 'manual' });
+          check(`${dir}: a stored file is NOT served at /uploads without sign-in`, res.status === 404, `status=${res.status}`);
+        } finally {
+          rmSync(file, { force: true });
+        }
+      }
+      // The public folders must keep working, or every thumbnail breaks.
+      const thumb = `${randomUUID()}.png`;
+      const thumbFile = join(root, 'course-thumbnails', thumb);
+      mkdirSync(join(root, 'course-thumbnails'), { recursive: true });
+      writeFileSync(thumbFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      try {
+        const res = await fetch(`${BASE_URL}/uploads/course-thumbnails/${thumb}`);
+        check('course-thumbnails: still served publicly', res.status === 200, `status=${res.status}`);
+      } finally {
+        rmSync(thumbFile, { force: true });
+      }
     }
   }
 
