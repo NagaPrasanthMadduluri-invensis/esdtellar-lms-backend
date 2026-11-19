@@ -21,7 +21,7 @@ function dashboard() {
 function deps(enabled: boolean) {
   const ai = {
     isEnabled: jest.fn().mockReturnValue(enabled),
-    generateJson: jest.fn().mockResolvedValue({ summary: 'ok', patterns: [], risks: [], recommendations: [], wins: [] }),
+    generateForTenant: jest.fn().mockResolvedValue({ summary: 'ok', patterns: [], risks: [], recommendations: [], wins: [] }),
     storeInsight: jest.fn().mockResolvedValue(undefined),
     getInsight: jest.fn().mockResolvedValue({ payload: { summary: 'ok' }, generated_at: 't', model: 'm' }),
   };

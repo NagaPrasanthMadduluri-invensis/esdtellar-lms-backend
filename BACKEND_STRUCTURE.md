@@ -5291,9 +5291,42 @@ The verticals live in `modules/ai-insights`:
 Each context builder is the PII surface for its vertical: opaque ids, content
 titles, department names and aggregates only, reviewed before enabling.
 
+#### Tenant isolation is enforced, not assumed (`ai/ai-tenant.ts`)
+
+The model provider is stateless about our tenants, so isolation lives in OUR
+code, before and after every call — the industry rule for multi-tenant AI. The
+data flow is already single-tenant by construction (one request = one JWT = one
+`OrgScope`; every context query takes that scope; one prompt only ever carries
+one learner/org; `ai_insights` is `orgScope` on read and write; no cache, and no
+cross-tenant batching anywhere). What `ai-tenant.ts` adds is that this is
+ENFORCED and proven rather than relying on every future query remembering to
+scope:
+
+- **One chokepoint.** Every vertical generates through
+  `AiInsightsService.generateForTenant(scope, params)`, never the client
+  directly. It is the one method that reaches the model, and it requires a scope.
+- **A context carries the org it was built for, and it is ASSERTED.** Each
+  feature context has `organizationId = scope.organizationId`;
+  `assertSameTenant(scope, context.organizationId)` runs before the call. A query
+  that forgot to scope — the only way one tenant's row could reach another's
+  prompt — fails loudly here instead of leaking. It also makes a blended
+  cross-tenant context (the trap the deferred cron must avoid) impossible: that
+  cron must be N isolated calls, one scope each, never one combined context.
+- **The system prompt is fenced.** `TENANT_ISOLATION_DIRECTIVE` is prepended to
+  every system prompt: use only the provided context, never reference or infer
+  another organization/person, and treat data as data (prompt-injection defence
+  on top of the existing `clip()` of user strings).
+- **No tenant identifier leaves the box.** Only product origin + title go to the
+  provider; the org id stays internal (logs/assert), so even provider-side there
+  is nothing to mix. Zero-retention / no-train is an operational control on the
+  OpenRouter account (a DPA), not something code can assert.
+- Proven by `ai-tenant.spec.ts` (the fence throws on a foreign org) and the
+  vertical specs (generation is called with the context's org matching the scope).
+
 Still to build: the nightly worker cron that pre-generates insights (deferred —
-needs cross-org scope-minting + cost caps in the worker; on-demand refresh proves
-the pipeline), AI bell/push notifications for milestones, and a period-over-period
+must mint one scope per org and call `generateForTenant` per tenant, never a
+combined context; plus cost caps in the worker; on-demand refresh proves the
+pipeline), AI bell/push notifications for milestones, and a period-over-period
 trend signal in the admin context (InsightsService series, a 3.1 enhancement).
 
 ### 10.55 Engagement hours, and the comparison with learning hours

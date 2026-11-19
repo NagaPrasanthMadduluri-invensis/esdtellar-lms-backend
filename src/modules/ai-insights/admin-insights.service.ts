@@ -89,6 +89,9 @@ function riskRadarFrom(
  * course/session titles and ready-made signal sentences, never an individual.
  */
 export interface OrgFeatureContext {
+  /** The single org this context was built for — asserted at the generation
+   *  chokepoint (ai-tenant.ts) before anything leaves the box. */
+  organizationId: number;
   org: {
     totalLearners: number;
     activeLearners: number;
@@ -184,6 +187,7 @@ export class AdminInsightsService {
       .filter((text: string) => !smallNames.some((n) => text.includes(n)));
 
     return {
+      organizationId: scope.organizationId,
       org: {
         totalLearners: dash.headline.totalLearners,
         activeLearners: dash.headline.activeLearners,
@@ -303,10 +307,12 @@ export class AdminInsightsService {
     if (!this.ai.isEnabled()) return null;
     try {
       const context = await this.buildContext(scope);
-      const payload = await this.ai.generateJson<AdminInsightsPayload>({
+      const payload = await this.ai.generateForTenant<AdminInsightsPayload>(scope, {
         system: ADMIN_INSIGHTS_SYSTEM,
         user: JSON.stringify(context),
         jsonSchema: ADMIN_INSIGHTS_SCHEMA,
+        contextOrgId: context.organizationId,
+        subject: 'org',
       });
       if (!payload) return null;
       await this.ai.storeInsight(

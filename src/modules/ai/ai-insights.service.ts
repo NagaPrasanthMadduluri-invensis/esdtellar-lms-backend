@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
 
@@ -11,6 +11,16 @@ import {
   type AiInsightRow,
   type InsightSubjectType,
 } from './ai-insights.repository';
+import { assertSameTenant, fenceSystemPrompt, tenantTag } from './ai-tenant';
+
+/** A generation request, bound to one tenant. `contextOrgId` is the org the
+ *  feature context was built for — asserted against the scope before the call. */
+export interface TenantGenerateParams extends AiCompletionParams {
+  /** The org the context was assembled for (from the context itself). */
+  contextOrgId: number;
+  /** A short non-identifying subject tag for the log line, e.g. "learner=5". */
+  subject: string;
+}
 
 /**
  * The reusable AI-insights engine (spec ai-insights.md Wave 1).
@@ -24,6 +34,8 @@ import {
  */
 @Injectable()
 export class AiInsightsService {
+  private readonly logger = new Logger('AiInsights');
+
   constructor(
     private readonly client: AiClientService,
     private readonly repository: AiInsightsRepository,
@@ -34,9 +46,27 @@ export class AiInsightsService {
     return this.client.isEnabled();
   }
 
-  /** Ask the model for structured JSON. Null when disabled or on any failure. */
-  generateJson<T>(params: AiCompletionParams): Promise<T | null> {
-    return this.client.completeJson<T>(params);
+  /**
+   * The ONE tenant-fenced generation chokepoint (ai-tenant.ts). Every vertical
+   * calls this, never the client directly, so isolation is enforced in one place:
+   *   - the context's org is asserted to match the caller's scope (a mis-scoped
+   *     context fails loudly here instead of leaking into a prompt);
+   *   - the system prompt is fenced with the single-tenant directive;
+   *   - the tenant + subject is logged for audit.
+   * Best-effort: returns null on any failure, never throws into a request.
+   */
+  async generateForTenant<T>(
+    scope: OrgScope,
+    params: TenantGenerateParams,
+  ): Promise<T | null> {
+    assertSameTenant(scope, params.contextOrgId);
+    this.logger.debug(`generate ${tenantTag(scope, params.subject)}`);
+    return this.client.completeJson<T>({
+      system: fenceSystemPrompt(params.system),
+      user: params.user,
+      jsonSchema: params.jsonSchema,
+      maxTokens: params.maxTokens,
+    });
   }
 
   /** Persist (and replace) the latest insight for a subject, stamped with the model. */

@@ -20,7 +20,7 @@ function coursesData() {
 function deps(enabled: boolean, overrides: Record<string, any> = {}) {
   const ai = {
     isEnabled: jest.fn().mockReturnValue(enabled),
-    generateJson: jest.fn().mockResolvedValue({ summary: 'ok', priorities: [], recommendedCourses: [], nextMilestone: null, motivation: 'go' }),
+    generateForTenant: jest.fn().mockResolvedValue({ summary: 'ok', priorities: [], recommendedCourses: [], nextMilestone: null, motivation: 'go' }),
     storeInsight: jest.fn().mockResolvedValue(undefined),
     getInsight: jest.fn().mockResolvedValue({ payload: { summary: 'ok' }, generated_at: 't', model: 'm' }),
     ...overrides.ai,
@@ -54,6 +54,7 @@ describe('LearnerInsightsService.buildContext', () => {
     const { svc } = deps(true);
     const ctx = await svc.buildContext(scope, 10);
 
+    expect(ctx.organizationId).toBe(7); // tenant fence: context is bound to the scope's org
     expect(ctx.learner).toEqual({ id: 10, jobRole: 'Engineer', jobLevel: 'Senior' });
     expect(ctx.engagement.points).toBe(390);
     expect(ctx.engagement.completionPct).toBe(60);
@@ -89,6 +90,11 @@ describe('LearnerInsightsService generation', () => {
     const { svc, ai } = deps(true);
     const payload = await svc.generateForLearner(scope, 10);
     expect(payload).toMatchObject({ summary: 'ok' });
+    // Tenant fence: generation is called with the context's org, matching the scope.
+    expect(ai.generateForTenant).toHaveBeenCalledWith(
+      scope,
+      expect.objectContaining({ contextOrgId: 7, subject: 'learner=10' }),
+    );
     expect(ai.storeInsight).toHaveBeenCalledWith(
       scope, 'learner', 10, 'recommendations', expect.objectContaining({ summary: 'ok' }),
     );
@@ -98,6 +104,6 @@ describe('LearnerInsightsService generation', () => {
     const { svc, ai } = deps(false);
     const res = await svc.refresh(scope, 10);
     expect(res).toEqual({ enabled: false, insight: null, charts: null, error: null });
-    expect(ai.generateJson).not.toHaveBeenCalled();
+    expect(ai.generateForTenant).not.toHaveBeenCalled();
   });
 });

@@ -24,6 +24,9 @@ import {
  * attributes, keyed to an opaque id — never a name, email, message or free-text.
  */
 export interface LearnerFeatureContext {
+  /** The single org this context was built for — asserted at the generation
+   *  chokepoint (ai-tenant.ts) so a mis-scoped context can never reach a prompt. */
+  organizationId: number;
   learner: {
     id: number;
     jobRole: string | null;
@@ -156,6 +159,7 @@ export class LearnerInsightsService {
     const next = badgeList.next;
 
     return {
+      organizationId: scope.organizationId,
       learner: {
         id: userId,
         jobRole: profile?.job_role ?? null,
@@ -220,10 +224,12 @@ export class LearnerInsightsService {
     if (!this.ai.isEnabled()) return null;
     try {
       const context = await this.buildContext(scope, userId);
-      const payload = await this.ai.generateJson<LearnerInsightsPayload>({
+      const payload = await this.ai.generateForTenant<LearnerInsightsPayload>(scope, {
         system: LEARNER_INSIGHTS_SYSTEM,
         user: JSON.stringify(context),
         jsonSchema: LEARNER_INSIGHTS_SCHEMA,
+        contextOrgId: context.organizationId,
+        subject: `learner=${userId}`,
       });
       if (!payload) return null;
       await this.ai.storeInsight(
