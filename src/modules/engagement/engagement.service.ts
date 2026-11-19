@@ -22,6 +22,18 @@ const MONTHS = [
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
+/**
+ * Engagement shown for a period never reads below the learning it contains.
+ * Engagement is tracked from active time; learning is §10.4 completion-credited
+ * (the lesson's full declared duration), so a period can credit more learning
+ * than raw active time caught. But completing 45 minutes of learning means the
+ * learner was present for at least that long, so engagement is floored at
+ * learning — the owner's example: a 45-min lesson sits inside the hour spent in
+ * the app, and the bar shows 1h engaged with 45m of it learning (2026-11-19).
+ */
+const engagementFloor = (trackedHours: number, learningHours: number) =>
+  Math.max(trackedHours, learningHours);
+
 function toIso(value: unknown): string {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   return String(value).slice(0, 10);
@@ -54,8 +66,10 @@ export interface EngagementTrend {
  * hours (owner request 2026-11-19). Learning hours are REUSED from
  * `LearningHoursService` so the comparison can never disagree with the Learning
  * Hours page; engagement is this module's own metric. They measure different
- * things on purpose: engagement is time present and active, learning hours is
- * time that produced course progress/completion.
+ * things on purpose: engagement is time present and active in the app, learning
+ * hours is time that produced course progress/completion. Engagement is drawn as
+ * the superset — a learner's learning time is PART of the time they spent in the
+ * app — so it is floored at learning per period (`engagementFloor`).
  */
 @Injectable()
 export class EngagementService {
@@ -85,12 +99,16 @@ export class EngagementService {
       this.repository.learnerByPeriod(scope, userId, unit),
     ]);
     const engMap = new Map(eng.map((r) => [r.period, Number(r.seconds)]));
-    const series: TrendPoint[] = trend[granularity].map((p) => ({
-      period: p.period,
-      label: p.label,
-      learningHours: round1(p.total / 60),
-      engagementHours: round1((engMap.get(p.period) ?? 0) / 3600),
-    }));
+    const series: TrendPoint[] = trend[granularity].map((p) => {
+      const learning = p.total / 60;
+      const tracked = (engMap.get(p.period) ?? 0) / 3600;
+      return {
+        period: p.period,
+        label: p.label,
+        learningHours: round1(learning),
+        engagementHours: round1(engagementFloor(tracked, learning)),
+      };
+    });
     return { granularity, series, totals: totalsOf(series) };
   }
 
@@ -112,12 +130,16 @@ export class EngagementService {
     );
     const engMap = new Map(engRows.map((r) => [r.period, Number(r.seconds)]));
     const periods = [...new Set([...learnMap.keys(), ...engMap.keys()])].sort();
-    const series: TrendPoint[] = periods.map((period) => ({
-      period,
-      label: labelFor(period, granularity),
-      learningHours: round1((learnMap.get(period) ?? 0) / 60),
-      engagementHours: round1((engMap.get(period) ?? 0) / 3600),
-    }));
+    const series: TrendPoint[] = periods.map((period) => {
+      const learning = (learnMap.get(period) ?? 0) / 60;
+      const tracked = (engMap.get(period) ?? 0) / 3600;
+      return {
+        period,
+        label: labelFor(period, granularity),
+        learningHours: round1(learning),
+        engagementHours: round1(engagementFloor(tracked, learning)),
+      };
+    });
     return { granularity, series, totals: totalsOf(series) };
   }
 }
