@@ -112,6 +112,8 @@ export const COURSE_RECOMMENDATIONS_SYSTEM = [
   '  role it suits). Do not repeat the same reason.',
   '- In intro and each reason, emphasise the key term, skill or number with',
   '  **double asterisks** for bold, used sparingly on the words that matter.',
+  '- Write in a warm, professional, aspirational voice that motivates the learner',
+  '  and frames each course as an opportunity, while staying specific and honest.',
   '- Plain language, no em dashes (use commas or parentheses). Output JSON only.',
 ].join('\n');
 
@@ -174,6 +176,8 @@ export const SKILL_PLAN_SYSTEM = [
   '  when the context gives one.',
   '- In summary, each gap reason (why) and each step detail, emphasise the key',
   '  skill, term or number with **double asterisks** for bold, used sparingly.',
+  '- Write in a warm, professional, aspirational voice that motivates the learner',
+  '  and frames the plan as a path to mastery, while staying specific and honest.',
   '- Plain language, no em dashes (use commas or parentheses). Output JSON only.',
 ].join('\n');
 
