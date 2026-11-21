@@ -125,6 +125,17 @@ describe('LearnerInsightsService generation', () => {
     );
   });
 
+  it('sends no tenant id to the model, for the coach and for a lens', async () => {
+    const { svc, ai } = deps(true);
+    await svc.generateForLearner(scope, 10);
+    await svc.generateLens(scope, 10, 'skill_plan' as any);
+    expect(ai.generateForTenant).toHaveBeenCalledTimes(2);
+    for (const [, params] of ai.generateForTenant.mock.calls) {
+      expect(params.contextOrgId).toBe(7);
+      expect(params.user).not.toMatch(/organizationId/);
+    }
+  });
+
   it('refresh short-circuits with enabled:false when the feature is off', async () => {
     const { svc, ai } = deps(false);
     const res = await svc.refresh(scope, 10);

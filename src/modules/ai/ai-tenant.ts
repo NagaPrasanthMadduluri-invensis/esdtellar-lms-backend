@@ -55,6 +55,18 @@ export function assertSameTenant(scope: OrgScope, contextOrgId: number): void {
   }
 }
 
+/**
+ * The context as SENT to the model: the tenant id is dropped. It exists only for
+ * the internal `assertSameTenant` check and never leaves the box (§10.54).
+ */
+export function forModel<T extends { organizationId: number }>(
+  context: T,
+): Omit<T, 'organizationId'> {
+  const { organizationId: _tenant, ...rest } = context;
+  void _tenant;
+  return rest;
+}
+
 /** A short, non-identifying tag for logging an AI operation's tenant + subject. */
 export function tenantTag(scope: OrgScope, subject: string): string {
   return `org=${scope.organizationId} ${subject}`;

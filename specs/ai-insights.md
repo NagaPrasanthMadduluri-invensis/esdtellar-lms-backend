@@ -4,6 +4,13 @@
 > before the next. If a decision contradicts `BACKEND_STRUCTURE.md`, update that
 > first — then this spec.
 
+> **Status (2026-11-20):** Waves 0 to 3 are built (BACKEND_STRUCTURE §10.53,
+> §10.54, §10.56). The **nightly worker job** in §2 was never built: there is no
+> AI job in `pg-boss.service.ts`, and insights are generated only on demand
+> through the `POST .../ai/insights/refresh` routes. The Wave 0 UI follow-up in
+> §5 has shipped (the course page's Skills tab; learner skills on the AI
+> Insights page).
+
 ## 1. Goal
 
 Make the LMS *intelligent*: an admin-facing layer that explains an organization's
@@ -24,7 +31,8 @@ with their role, history and position relative to the organization.
 - **AI foundation (Wave 1):** an `AiModule` wrapping OpenRouter
   (`deepseek/deepseek-v4-pro` default), **off by default**, never throwing into a
   request; a **feature layer** that assembles a minimized, PII-light context from
-  existing repositories; an `ai_insights` store; a nightly worker job.
+  existing repositories; an `ai_insights` store; a nightly worker job (not built,
+  see Status).
 - **Learner vertical (Wave 2):** per-learner recommendations, nudges, milestone
   notifications, motivational prompts; a dashboard panel + on-demand refresh.
 - **Admin vertical (Wave 3):** org learning-pattern insights, milestones &
@@ -128,4 +136,5 @@ screen in a small follow-up; the learner competency panel ships with Wave 2.
 - Level is a coarse 3-step signal, not a rubric.
 - The AI never gets raw rows; "access the whole database" is satisfied by the
   feature layer reading it and sending aggregates.
-- Token cost is bounded by batch generation + caps (Wave 1).
+- Token cost is bounded by batch generation + caps (Wave 1). As built, the bound
+  is on-demand refresh only, rate-limited (no batch job exists).

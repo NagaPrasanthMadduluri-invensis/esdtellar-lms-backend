@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { COMPETENCY_LEVELS, levelRank } from '@/common/competencies';
 import type { OrgScope } from '@/database/org-scope';
 import { AiInsightsService } from '@/modules/ai/ai-insights.service';
+import { forModel } from '@/modules/ai/ai-tenant';
 import { BadgesService } from '@/modules/badges/badges.service';
 import { CompetenciesService } from '@/modules/competencies/competencies.service';
 import { LeaderboardService } from '@/modules/leaderboard/leaderboard.service';
@@ -257,7 +258,7 @@ export class LearnerInsightsService {
       const context = await this.buildContext(scope, userId);
       const payload = await this.ai.generateForTenant<LearnerInsightsPayload>(scope, {
         system: LEARNER_INSIGHTS_SYSTEM,
-        user: JSON.stringify(context),
+        user: JSON.stringify(forModel(context)),
         jsonSchema: LEARNER_INSIGHTS_SCHEMA,
         contextOrgId: context.organizationId,
         subject: `learner=${userId}`,
@@ -481,7 +482,7 @@ export class LearnerInsightsService {
       const context = await this.buildContext(scope, userId);
       const payload = await this.ai.generateForTenant<Record<string, unknown>>(scope, {
         system: spec.system,
-        user: JSON.stringify(context),
+        user: JSON.stringify(forModel(context)),
         jsonSchema: spec.schema,
         contextOrgId: context.organizationId,
         subject: `learner=${userId} lens=${lens}`,

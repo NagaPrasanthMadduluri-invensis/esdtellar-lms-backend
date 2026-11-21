@@ -544,6 +544,13 @@ production is slow rather than catastrophic.
 | `EMAIL_MAX_RECIPIENTS_PER_NOTIFY` | `200` |
 | `EMAIL_FROM`, `EMAIL_FROM_NAME`, `EMAIL_REPLY_TO`, `SES_REGION`, `SES_CONFIGURATION_SET` | — |
 
+> Superseded (2026-11-20): `EMAIL_BATCH_SIZE`, `EMAIL_MAX_RECIPIENTS_PER_NOTIFY`,
+> `EMAIL_FROM_NAME` and `EMAIL_REPLY_TO` are not environment variables in the
+> shipped code: the first two are `EMAIL_CONSTANTS` in `config/configuration.ts`,
+> the display name is the `PRODUCT_NAME` constant, and there is no reply-to.
+> `EMAIL_DRIVER` also accepts `gmail`, and the Gmail variables are listed in
+> BACKEND_STRUCTURE §9.1.
+
 **Nothing is added to `REQUIRED` in `env.validation.ts`.** Follow the
 `media/storage/r2-storage.service.ts:50-82` precedent exactly: collect the
 missing names at construction, log one warn at boot naming them and saying the

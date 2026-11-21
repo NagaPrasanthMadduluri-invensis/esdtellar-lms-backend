@@ -1062,33 +1062,7 @@ export class LearnerService {
       this.repository.lessonResources(lessonId),
     ]);
 
-    const inModule = all.filter(
-      (l) => Number(l.module_id) === Number(lesson.module_id),
-    );
-    const position = inModule.findIndex((l) => Number(l.id) === lessonId);
-
-    if (position > 0) {
-      if (inModule[position - 1].progress_status !== 'completed') {
-        throw new ForbiddenException(
-          'This lesson is locked. Complete the previous lesson first.',
-        );
-      }
-    } else if (position === 0) {
-      const moduleIds = [...new Set(all.map((l) => Number(l.module_id)))];
-      const moduleIndex = moduleIds.indexOf(Number(lesson.module_id));
-      if (moduleIndex > 0) {
-        const prevId = moduleIds[moduleIndex - 1];
-        const prev = all.filter((l) => Number(l.module_id) === prevId);
-        const done = prev.filter(
-          (l) => l.progress_status === 'completed',
-        ).length;
-        if (prev.length > 0 && done < prev.length) {
-          throw new ForbiddenException(
-            'This lesson is locked. Complete all lessons in the previous module first.',
-          );
-        }
-      }
-    }
+    assertLessonUnlocked(all, lessonId, Number(lesson.module_id));
 
     const flatIndex = all.findIndex((l) => Number(l.id) === lessonId);
     const next = flatIndex >= 0 ? all[flatIndex + 1] : undefined;
@@ -1255,6 +1229,14 @@ export class LearnerService {
     // and the course completes, crediting hours, a certificate and the journey
     // itself (spec §4.3).
     await this.journeys.assertCourseUnlocked(scope, userId, courseId);
+
+    // And the sequential lesson lock, the same rule the lesson read enforces:
+    // without it a locked lesson is one POST away from being completed.
+    assertLessonUnlocked(
+      await this.repository.lessonsWithStatus(courseId, userId),
+      lessonId,
+      Number(lesson.module_id),
+    );
 
     await this.repository.markLessonComplete(scope, userId, lessonId);
     // Finishing the last lesson can complete the course, and completing the
@@ -2215,4 +2197,42 @@ function courseProgressPct(total: number, done: number, partial: number): number
   if (done >= total) return 100;
   const pct = Math.round(((done + Math.max(0, partial)) / total) * 100);
   return Math.max(0, Math.min(pct, 99));
+}
+
+/**
+ * The sequential lesson lock, shared by the lesson read and the completion
+ * write so the two can never disagree. Within a module a lesson opens once the
+ * previous one is complete; a module's first lesson opens once every lesson in
+ * the module before it is complete. `all` is the course's live lessons in
+ * order (`lessonsWithStatus`). A lesson not in that list is left to the
+ * caller's other checks.
+ */
+export function assertLessonUnlocked(
+  all: Array<{ id: number; module_id: number; progress_status: string }>,
+  lessonId: number,
+  moduleId: number,
+): void {
+  const inModule = all.filter((l) => Number(l.module_id) === moduleId);
+  const position = inModule.findIndex((l) => Number(l.id) === lessonId);
+
+  if (position > 0) {
+    if (inModule[position - 1].progress_status !== 'completed') {
+      throw new ForbiddenException(
+        'This lesson is locked. Complete the previous lesson first.',
+      );
+    }
+  } else if (position === 0) {
+    const moduleIds = [...new Set(all.map((l) => Number(l.module_id)))];
+    const moduleIndex = moduleIds.indexOf(moduleId);
+    if (moduleIndex > 0) {
+      const prevId = moduleIds[moduleIndex - 1];
+      const prev = all.filter((l) => Number(l.module_id) === prevId);
+      const done = prev.filter((l) => l.progress_status === 'completed').length;
+      if (prev.length > 0 && done < prev.length) {
+        throw new ForbiddenException(
+          'This lesson is locked. Complete all lessons in the previous module first.',
+        );
+      }
+    }
+  }
 }

@@ -500,19 +500,27 @@ export class AssessmentsRepository {
    * otherwise accept another organization's (§3.5).
    */
   async answerKey(scope: OrgScope, assessmentId: number) {
+    // LEFT JOIN: fill-in-the-blank and matching have no option rows and
+    // carry their key in `correct_answer`; an inner join dropped them from
+    // the key, so they could never be answered or counted.
     return this.db.all<{
       id: number;
       question_text: string;
-      correct_option_id: number;
+      question_type: string;
+      correct_answer: string | null;
+      correct_option_id: number | null;
+      correct_option_ids: number[];
       option_ids: number[];
     }>(sql`
-      SELECT aq.id, aq.question_text,
+      SELECT aq.id, aq.question_text, aq.question_type, aq.correct_answer,
              MAX(ao.id) FILTER (WHERE ao.is_correct = 1) AS correct_option_id,
-             array_agg(ao.id) AS option_ids
+             COALESCE(array_agg(ao.id) FILTER (WHERE ao.is_correct = 1), '{}') AS correct_option_ids,
+             COALESCE(array_agg(ao.id) FILTER (WHERE ao.id IS NOT NULL), '{}') AS option_ids
       FROM assessment_questions aq
-      JOIN assessment_options ao ON ao.question_id = aq.id
+      LEFT JOIN assessment_options ao ON ao.question_id = aq.id
       WHERE aq.assessment_id = ${assessmentId} AND ${contentScope('aq', scope)}
-      GROUP BY aq.id, aq.question_text
+      GROUP BY aq.id, aq.question_text, aq.question_type, aq.correct_answer, aq.sort_order
+      ORDER BY aq.sort_order, aq.id
     `);
   }
 

@@ -9,6 +9,15 @@
 > "Phase 3 (RBAC) seam"): `role` stays the portal selector, granular
 > permissions arrive as a `permissions[]` JWT claim.
 
+> **Status (2026-11-20):** roles, permissions, the trainer portal and
+> delegated administration are built. **Department row scope (decision 4,
+> §3.5) was never built.** `roles.scope` is stored, offered in the roles UI and
+> returned by the API, but no query reads it: there is no `ActorScope` type,
+> and the people lists (`/admin/users`, `/admin/employees`, reports) are
+> org-wide for every admin-portal role. A manager's TEAM is their direct
+> reports by `users.manager_id` (BACKEND_STRUCTURE §10.22, `0033`), not their
+> department. Treat §3.5 as unbuilt design.
+
 ---
 
 ## 1. Goal
@@ -265,6 +274,9 @@ an insert has to name both or the row cannot exist.
 > no new portal and no new route group.
 
 ### 3.5 Row scope — the part that is not just a guard
+
+> Not built (2026-11-20). See Status at the top: `roles.scope` is stored but
+> applied nowhere, and the team is `manager_id`-based.
 
 Decision 4 ("only their department's employees") is the expensive half of this
 spec, because it reaches into queries rather than decorators.

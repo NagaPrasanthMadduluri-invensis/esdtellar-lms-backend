@@ -51,7 +51,7 @@ export type Granularity = (typeof GRANULARITIES)[number];
  * first, so somebody who joined in March does not get nine empty months in
  * front of their first bar.
  */
-const LIMITS: Record<Granularity, number> = {
+export const LIMITS: Record<Granularity, number> = {
   weekly: 8,
   monthly: 12,
   quarterly: 8,

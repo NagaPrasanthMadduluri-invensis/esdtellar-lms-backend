@@ -4,6 +4,14 @@
 > RBAC ("other roles") is deliberately deferred — see §2 and §8.
 > Schema changes here are a **human checkpoint**; nothing in §3 auto-merges.
 
+> **Status (2026-11-20):** tenancy (phase 1) is built, and RBAC (phase 3) is
+> built except department row scope (see `rbac.md` Status). **Row-Level
+> Security (phase 2) was never built**: no migration enables RLS, and isolation
+> rests on `orgScope` / `contentScope` in every repository plus
+> `npm run test:isolation`. SCORM no longer uses `storage/scorm/`: packages
+> are in R2 under `tenants/<orgId>/scorm/` (BACKEND_STRUCTURE §10.9), and the
+> production database is PostgreSQL on the application host rather than RDS.
+
 ---
 
 ## 1. Goal

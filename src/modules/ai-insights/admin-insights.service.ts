@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
 import { AiInsightsService } from '@/modules/ai/ai-insights.service';
+import { forModel } from '@/modules/ai/ai-tenant';
 import { AnalyticsService } from '@/modules/reports/analytics.service';
 
 import { AdminInsightsRepository } from './admin-insights.repository';
@@ -337,7 +338,7 @@ export class AdminInsightsService {
       const context = await this.buildContext(scope);
       const payload = await this.ai.generateForTenant<AdminInsightsPayload>(scope, {
         system: ADMIN_INSIGHTS_SYSTEM,
-        user: JSON.stringify(context),
+        user: JSON.stringify(forModel(context)),
         jsonSchema: ADMIN_INSIGHTS_SCHEMA,
         contextOrgId: context.organizationId,
         subject: 'org',

@@ -12,7 +12,12 @@ import { ActivityService } from '@/modules/activity/activity.service';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { JourneyGateService } from '@/modules/journeys/journey-gate.service';
 import { JourneysService } from '@/modules/journeys/journeys.service';
-import { isOptionBacked, questionType } from '@/common/assessment-questions';
+import {
+  isAnswerCorrect,
+  isOptionBacked,
+  parseMatchingPairs,
+  questionType,
+} from '@/common/assessment-questions';
 
 import { AssessmentsRepository } from './assessments.repository';
 import type {
@@ -131,6 +136,10 @@ export class AssessmentsService {
   }
 
   async remove(scope: OrgScope, assessmentId: number) {
+    // A foreign or missing id answers 404, not a 200 that deleted nothing
+    // (§5.3): the scoped delete alone cannot tell the two apart.
+    const assessment = await this.repository.findById(scope, assessmentId);
+    if (!assessment) throw new NotFoundException('Assessment not found');
     await this.repository.deleteAssessment(scope, assessmentId);
     return { message: 'Assessment deleted' };
   }
@@ -300,7 +309,9 @@ export class AssessmentsService {
 
     return {
       assessment,
-      questions: this.attachOptions(questions, options),
+      questions: this.attachOptions(questions, options).map((question) =>
+        this.forLearner(question),
+      ),
       attempt_count: attemptCount,
     };
   }
@@ -340,26 +351,47 @@ export class AssessmentsService {
     // tenant's own answer rows. `key` is already scoped, so an id absent from
     // it is either fabricated or someone else's: drop the answer rather than
     // store it. Same class as the lessons.scorm_package_id fix.
+    //
+    // One answer per question: a repeated question_id keeps the first.
+    const seen = new Set<number>();
     const scored = dto.answers
-      .filter((answer) => key.some((q) => Number(q.id) === answer.question_id))
+      .filter((answer) => {
+        if (seen.has(answer.question_id)) return false;
+        seen.add(answer.question_id);
+        return key.some((q) => Number(q.id) === answer.question_id);
+      })
       .map((answer) => {
         const question = key.find((q) => Number(q.id) === answer.question_id)!;
         // An option id must belong to the question it was submitted against,
         // or it is discarded too — a foreign option would score as wrong
         // anyway, but it would still be written.
-        const selectedOptionId =
-          answer.selected_option_id != null &&
-          question.option_ids.some(
-            (id) => Number(id) === answer.selected_option_id,
-          )
-            ? answer.selected_option_id
-            : null;
-        const isCorrect =
-          selectedOptionId === Number(question.correct_option_id) ? 1 : 0;
+        const own = new Set(question.option_ids.map(Number));
+        const submitted = [
+          ...(answer.selected_option_id != null ? [answer.selected_option_id] : []),
+          ...(answer.selected_option_ids ?? []),
+        ];
+        const selectedIds = [...new Set(submitted.filter((id) => own.has(Number(id))))];
+        const isCorrect = isAnswerCorrect(
+          {
+            question_type: question.question_type,
+            correct_answer: question.correct_answer,
+            correct_option_ids: question.correct_option_ids ?? [],
+          },
+          {
+            selected_option_ids: selectedIds,
+            answer: answer.answer ?? null,
+            pairs: answer.pairs ?? null,
+          },
+        )
+          ? 1
+          : 0;
         if (isCorrect) score++;
         return {
           question_id: answer.question_id,
-          selected_option_id: selectedOptionId,
+          // The answer row holds one option. A multi-select keeps its first
+          // choice there; its correctness is in is_correct either way.
+          selected_option_id: selectedIds[0] ?? null,
+          selected_option_ids: selectedIds,
           is_correct: isCorrect,
         };
       });
@@ -376,7 +408,11 @@ export class AssessmentsService {
       totalQuestions: total,
       percentage,
       isPassed,
-      answers: scored,
+      answers: scored.map(({ question_id, selected_option_id, is_correct }) => ({
+        question_id,
+        selected_option_id,
+        is_correct,
+      })),
     });
 
     // Passing can complete the course. Best-effort — never breaks the attempt.
@@ -404,8 +440,16 @@ export class AssessmentsService {
           return {
             question_id: question.id,
             question_text: question.question_text,
+            question_type: question.question_type,
             correct_option_id: question.correct_option_id,
+            correct_option_ids: question.correct_option_ids ?? [],
             selected_option_id: answer?.selected_option_id ?? null,
+            selected_option_ids: answer?.selected_option_ids ?? [],
+            // The expected answer, shown once the attempt is in (the option
+            // types already reveal correct_option_id the same way).
+            correct_answer: isOptionBacked(question.question_type)
+              ? null
+              : question.correct_answer,
             is_correct: answer?.is_correct === 1,
           };
         }),
@@ -414,6 +458,33 @@ export class AssessmentsService {
   }
 
   /* ── Helpers ── */
+
+  /**
+   * The learner's copy of a question: never the answer key. `correct_answer`
+   * is the key for fill-in-the-blank and matching, so it is blanked; a
+   * matching question instead lists its two sides, the right-hand side
+   * sorted so its order gives nothing away.
+   */
+  private forLearner<T extends { question_type?: string; correct_answer: string | null }>(
+    question: T,
+  ) {
+    const pairs =
+      question.question_type === 'matching'
+        ? parseMatchingPairs(question.correct_answer)
+        : [];
+    return {
+      ...question,
+      correct_answer: null,
+      ...(question.question_type === 'matching'
+        ? {
+            match_left: pairs.map((pair) => pair.left),
+            match_right: pairs
+              .map((pair) => pair.right)
+              .sort((a, b) => a.localeCompare(b)),
+          }
+        : {}),
+    };
+  }
 
   /**
    * Group options under their question, and emit the question in the

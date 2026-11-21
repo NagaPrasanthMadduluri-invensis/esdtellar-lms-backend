@@ -28,9 +28,43 @@ jobs:
       - name: Build
         run: npm run build
 
+  # The API e2e suite (server/test) against a throwaway Postgres. It must pass,
+  # and every route must have a successful e2e test (route coverage, --strict),
+  # before production is touched. Owner's rule, 2026-11-20.
+  e2e:
+    name: API e2e · route coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: e2e
+          POSTGRES_PASSWORD: e2e
+          POSTGRES_DB: edstellar_lms_e2e
+        ports: ['5436:5432']
+        options: >-
+          --health-cmd "pg_isready -U e2e" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgresql://e2e:e2e@127.0.0.1:5436/edstellar_lms_e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: API e2e suite + strict route coverage
+        run: npm run test:e2e:ci
+      - name: Upload coverage report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-route-coverage
+          path: test/.coverage/report.json
+
   deploy:
     name: deploy (ssh)
-    needs: test
+    needs: [test, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

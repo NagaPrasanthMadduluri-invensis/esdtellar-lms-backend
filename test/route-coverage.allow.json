@@ -1,0 +1,11 @@
+{
+  "POST /api/auth/register": "Retired: self-registration always answers 422. e2e asserts the refusal.",
+  "POST /api/email/ses-events": "SES bounce webhook, unused under the Gmail driver; needs an Amazon-signed SNS message. e2e asserts an unsigned call is refused.",
+  "POST /api/admin/media/video/presign": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
+  "POST /api/admin/media/document/presign": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
+  "POST /api/admin/lessons/:lessonId/video/presign": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
+  "POST /api/admin/lessons/:lessonId/captions": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
+  "GET /api/learner/lessons/:lessonId/document": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
+  "POST /api/admin/lessons/:lessonId/video/confirm": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
+  "POST /api/admin/scorm/upload": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm)."
+}

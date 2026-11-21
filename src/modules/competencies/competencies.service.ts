@@ -94,7 +94,12 @@ export class CompetenciesService {
     return this.repository.findOwnedSkill(scope, id);
   }
 
-  getCourseSkills(scope: OrgScope, courseId: number) {
+  async getCourseSkills(scope: OrgScope, courseId: number) {
+    // Another tenant's course 404s like a missing one; a shared platform course
+    // is readable, as the course itself is.
+    if (!(await this.repository.courseIsVisible(scope, courseId))) {
+      throw new NotFoundException('Course not found.');
+    }
     return this.repository.getCourseSkills(scope, courseId);
   }
 

@@ -5,6 +5,13 @@
 > work, and exercises the certification/compliance + PII human checkpoints from the process.
 > Replace or extend before building if you'd rather start elsewhere.
 
+> **Status (2026-11-20):** built and since extended. The code format in this
+> spec and in "Since v1" is superseded by the 10-character code
+> (`<prefix><hex>`, e.g. `EDSA2F9BD3`, `buildCertificateCode`), and the verify
+> endpoint now returns the holder's name and the credential on the owner's
+> call (BACKEND_STRUCTURE §10.23.2), so criterion 6 and the "no PII" verify
+> contract below no longer describe the code. Verify is rate-limited (§10.47).
+
 ## 1. Goal
 Issue a completion certificate to a learner when they finish a course (all lessons complete
 AND, if the course has an assessment, a passing attempt exists). Admins manage/verify issued
@@ -119,8 +126,11 @@ All UI per TASTE.md: `page.js` stays a Server Component; `<Text>`/`<Box>`; Tailw
 
 This spec is the v1 design and is kept as written. What has changed since:
 
-- **Code format.** New codes are `<PREFIX>-<12 hex>` (course or session) and
-  `<PREFIX>-J-<12 hex>` (learning path). The ids were removed from the code
+- **Code format.** Superseded (2026-11-20): new codes are ten characters,
+  `<PREFIX><hex>` with no dash (`EDSA2F9BD3`), one format for course, path
+  and session, made unique by retry (BACKEND_STRUCTURE §10.23.2). The format
+  described next, `<PREFIX>-<12 hex>` (course or session) and
+  `<PREFIX>-J-<12 hex>` (learning path), was the previous one. The ids were removed from the code
   because a document shown to strangers published internal row ids; `PREFIX`
   is per organisation (`0038`, default `EDS`). Issued codes are never
   rewritten, so `EDS-<courseId>-<userId>-<hash>` codes stay valid.
@@ -131,6 +141,9 @@ This spec is the v1 design and is kept as written. What has changed since:
   and the prefix, edited in the admin's Certificate branding panel under
   `manage_organization`. The signatory is read at render time; the prefix
   only at issue.
-- **Still true:** the final score is printed on no certificate, the verify
-  endpoint returns no PII, and the download is print-to-PDF from the HTML
+- **Still true:** the final score is printed on no certificate, and the download is print-to-PDF from the HTML
   document (one A4 landscape page) rather than a generated binary.
+- **No longer true (2026-11-20):** the verify endpoint returns no PII. It now
+  returns the holder's name, issuing organisation and credential details for
+  the public scan-to-verify page; still no email, employee id or department
+  (§10.23.2). The document carries a QR linking to `/verify/<code>`.

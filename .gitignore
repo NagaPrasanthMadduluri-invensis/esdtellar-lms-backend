@@ -67,3 +67,7 @@ storage/uploads/*
 # be removed. Same reasoning as storage/scorm above, with higher stakes.
 storage/outbox/
 coverage
+test/runtime/
+test/.coverage/
+test/runtime-*/
+test/.coverage-*/

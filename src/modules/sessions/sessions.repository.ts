@@ -483,15 +483,18 @@ export class SessionsRepository {
       );
   }
 
-  async deleteSession(scope: OrgScope, sessionId: number): Promise<void> {
-    await this.db
+  /** True when a row of THIS org was deleted; false for a foreign or unknown id. */
+  async deleteSession(scope: OrgScope, sessionId: number): Promise<boolean> {
+    const rows = await this.db
       .delete(sessions)
       .where(
         and(
           eq(sessions.id, sessionId),
           eq(sessions.organizationId, scope.organizationId),
         ),
-      );
+      )
+      .returning({ id: sessions.id });
+    return rows.length > 0;
   }
 
   /* ── Roster ──

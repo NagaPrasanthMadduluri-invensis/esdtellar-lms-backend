@@ -145,6 +145,15 @@ export class CompetenciesRepository {
     return Number(rows[0]?.n ?? 0) > 0;
   }
 
+  /** True when the course is visible to this org: its own or a shared platform course. */
+  async courseIsVisible(scope: OrgScope, courseId: number): Promise<boolean> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM courses c
+      WHERE c.id = ${courseId} AND ${contentScope('c', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+
   /** The skills mapped to a course (viewable across content scope). */
   async getCourseSkills(scope: OrgScope, courseId: number): Promise<CourseSkillRow[]> {
     return this.db.all<CourseSkillRow>(sql`

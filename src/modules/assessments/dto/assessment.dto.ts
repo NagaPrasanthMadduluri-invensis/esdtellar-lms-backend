@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsBoolean,
@@ -107,11 +108,38 @@ export class QuestionDto {
   options?: OptionDto[];
 }
 
+export class MatchingPairDto {
+  @IsString() @MaxLength(500) left!: string;
+  @IsString() @MaxLength(500) right!: string;
+}
+
+/**
+ * One answer. Which field carries it depends on the question type:
+ * `selected_option_id` for multiple choice and true/false,
+ * `selected_option_ids` for multi-select (a single `selected_option_id` is
+ * accepted there too and counts as one choice), `answer` for
+ * fill-in-the-blank, `pairs` for matching.
+ */
 export class AnswerDto {
   @IsInt({ message: 'question_id must be an integer' })
   question_id!: number;
 
   @IsOptional() @IsInt() selected_option_id?: number | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsInt({ each: true })
+  selected_option_ids?: number[];
+
+  @IsOptional() @IsString() @MaxLength(1000) answer?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => MatchingPairDto)
+  pairs?: MatchingPairDto[];
 }
 
 export class SubmitAttemptDto {

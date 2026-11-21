@@ -12,6 +12,7 @@ import {
 
 import { CurrentScope, Permissions, Roles } from '@/common/decorators';
 import type { OrgScope } from '@/database/org-scope';
+import { PublicIdService } from '@/database/public-id.service';
 
 import { CompetenciesService } from './competencies.service';
 import { CreateSkillDto, UpdateSkillDto } from './dto/skill.dto';
@@ -32,7 +33,10 @@ import {
 @Controller('admin/skills')
 @Roles('admin')
 export class AdminSkillsController {
-  constructor(private readonly competencies: CompetenciesService) {}
+  constructor(
+    private readonly competencies: CompetenciesService,
+    private readonly publicId: PublicIdService,
+  ) {}
 
   @Get()
   @Permissions('manage_courses')
@@ -69,8 +73,10 @@ export class AdminSkillsController {
   @Permissions('manage_courses')
   async courseSkills(
     @CurrentScope() scope: OrgScope,
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
   ) {
+    // The Course page passes the course's public UUID; integer ids still work.
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     const skills = await this.competencies.getCourseSkills(scope, courseId);
     return { skills };
   }
@@ -79,9 +85,10 @@ export class AdminSkillsController {
   @Permissions('manage_courses')
   async setCourseSkills(
     @CurrentScope() scope: OrgScope,
-    @Param('courseId', ParseIntPipe) courseId: number,
+    @Param('courseId') courseIdParam: string,
     @Body() dto: SetCourseSkillsDto,
   ) {
+    const courseId = await this.publicId.resolveIdOrThrow('courses', courseIdParam);
     return this.competencies.setCourseSkills(scope, courseId, dto);
   }
 }

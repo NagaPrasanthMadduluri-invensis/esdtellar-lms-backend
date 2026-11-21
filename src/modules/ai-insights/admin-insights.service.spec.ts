@@ -80,6 +80,14 @@ describe('AdminInsightsService generation', () => {
     );
   });
 
+  it('sends no tenant id to the model but still fences on it', async () => {
+    const { svc, ai } = deps(true);
+    await svc.generateForOrg(scope);
+    const params = ai.generateForTenant.mock.calls[0][1];
+    expect(params.contextOrgId).toBe(7);
+    expect(params.user).not.toMatch(/organizationId/);
+  });
+
   it('refresh short-circuits when the feature is off', async () => {
     const { svc } = deps(false);
     await expect(svc.refresh(scope)).resolves.toEqual({ enabled: false, insight: null, charts: null, error: null });

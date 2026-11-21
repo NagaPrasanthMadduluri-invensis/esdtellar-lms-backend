@@ -32,6 +32,14 @@ export interface CompletionVerdict {
   finalScore: number | null;
 }
 
+/**
+ * A Virtual or Webinar session is held online: its venue is a meeting link that
+ * a certificate never prints, and the document reads "Virtual" / "Online".
+ */
+export function isVirtualSessionType(type: string | null | undefined): boolean {
+  return type === 'Virtual' || type === 'Webinar';
+}
+
 @Injectable()
 export class CertificatesService {
   private readonly logger = new Logger(CertificatesService.name);
@@ -499,14 +507,15 @@ export class CertificatesService {
         this.certificateKind(row) === 'session'
           ? {
               title: row.sessionTitle ?? row.courseName,
-              // The stored enum is ILT / Virtual; the document says it in words.
-              format: row.sessionType === 'Virtual' ? 'Virtual' : 'In person',
-              mode: row.sessionType === 'Virtual' ? 'virtual' : 'ilt',
+              // The stored enum is ILT / Virtual / Webinar; the document says it
+              // in words, and a Webinar is a virtual sitting.
+              format: isVirtualSessionType(row.sessionType) ? 'Virtual' : 'In person',
+              mode: isVirtualSessionType(row.sessionType) ? 'virtual' : 'ilt',
               // A virtual session's venue is its meeting link. That is never
               // printed: it is a credential to a call, it goes stale, and on
               // a document somebody keeps it would read as an address.
               venue:
-                row.sessionType === 'Virtual'
+                isVirtualSessionType(row.sessionType)
                   ? 'Online'
                   : row.sessionVenue?.trim() || null,
               date: row.sessionDate ?? null,
@@ -624,7 +633,7 @@ export class CertificatesService {
       session:
         kind === 'session'
           ? {
-              format: row.sessionType === 'Virtual' ? 'Virtual' : 'In person',
+              format: isVirtualSessionType(row.sessionType) ? 'Virtual' : 'In person',
               date: row.sessionDate ?? null,
               trainer: row.sessionTrainer ?? null,
             }

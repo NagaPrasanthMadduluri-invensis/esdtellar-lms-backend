@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Post,
@@ -48,6 +49,7 @@ export class LearnerFeedbackController {
    * learner correcting their own answer has not created anything.
    */
   @Post('sessions/:sessionId')
+  @HttpCode(200)
   async submit(
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,

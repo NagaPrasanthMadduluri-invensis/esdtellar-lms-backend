@@ -485,7 +485,12 @@ export class SessionsService {
       scope,
       sessionId,
     );
-    await this.repository.deleteSession(scope, sessionId);
+    // A foreign or unknown id deletes nothing and is a 404 (§5.3), never a
+    // "Session deleted" that did not happen. `bulk()` relies on the throw to
+    // leave it out of `affected`.
+    if (!(await this.repository.deleteSession(scope, sessionId))) {
+      throw new NotFoundException('Session not found');
+    }
     await this.media.discardCourseThumbnail(thumbnailUrl);
     return { message: 'Session deleted' };
   }

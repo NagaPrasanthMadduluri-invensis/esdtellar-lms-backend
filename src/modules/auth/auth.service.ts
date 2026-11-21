@@ -115,6 +115,21 @@ export interface MfaChallenge {
  */
 export const IMPERSONATION_TTL_SECONDS = 60 * 60;
 
+/**
+ * `consent_required` for `/auth/me`. A support session is a platform admin in a
+ * borrowed account, not the account holder's own browser, so it never owes the
+ * holder's privacy acknowledgement (§10.39), exactly as `impersonate()` reports
+ * at the start of the session and as `mfa_setup_required` is exempt.
+ */
+export function consentRequiredForSession(
+  consentVersion: string | null | undefined,
+  consentedAt: string | null | undefined,
+  impersonatorId?: number | null,
+): boolean {
+  if (impersonatorId) return false;
+  return isConsentRequired(consentVersion, consentedAt);
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -372,9 +387,10 @@ export class AuthService {
       is_active: user.isActive === 1,
       organization_id: user.organizationId,
       avatar_url: user.avatarUrl ?? null,
-      consent_required: isConsentRequired(
+      consent_required: consentRequiredForSession(
         user.consentVersion,
         user.consentedAt,
+        claims?.impersonatorId,
       ),
       mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, claims?.impersonatorId),
       is_platform_admin:

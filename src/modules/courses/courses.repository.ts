@@ -601,14 +601,24 @@ export class CoursesRepository {
   }
 
   async deleteModule(scope: OrgScope, id: number): Promise<void> {
-    await this.db
-      .delete(courseModules)
-      .where(
-        and(
-          eq(courseModules.id, id),
-          eq(courseModules.organizationId, scope.organizationId),
-        ),
-      );
+    await this.db.transaction(async (tx) => {
+      // An assessment placed on this module becomes unattached ("none"), never
+      // deleted (CONTEXT.md Placement). The foreign key alone would null
+      // module_id and leave link_type saying "module". The module's lessons
+      // survive as staged lessons, so assessments placed on them are kept.
+      await tx.execute(sql`
+        UPDATE assessments SET link_type = 'none', module_id = NULL
+         WHERE module_id = ${id} AND link_type = 'module'
+           AND organization_id = ${scope.organizationId}`);
+      await tx
+        .delete(courseModules)
+        .where(
+          and(
+            eq(courseModules.id, id),
+            eq(courseModules.organizationId, scope.organizationId),
+          ),
+        );
+    });
   }
 
   /* ── Lessons ── */
@@ -776,9 +786,16 @@ export class CoursesRepository {
   }
 
   async deleteLesson(scope: OrgScope, id: number): Promise<void> {
-    await this.db
-      .delete(lessons)
-      .where(and(eq(lessons.id, id), eq(lessons.organizationId, scope.organizationId)));
+    await this.db.transaction(async (tx) => {
+      // Same rule as deleteModule: a lesson-placed assessment becomes "none".
+      await tx.execute(sql`
+        UPDATE assessments SET link_type = 'none', lesson_id = NULL
+         WHERE lesson_id = ${id} AND link_type = 'lesson'
+           AND organization_id = ${scope.organizationId}`);
+      await tx
+        .delete(lessons)
+        .where(and(eq(lessons.id, id), eq(lessons.organizationId, scope.organizationId)));
+    });
   }
 
   /* ── Assignments ── */
@@ -925,9 +942,12 @@ export class CoursesRepository {
           dueDate: sql`COALESCE(EXCLUDED.due_date, ${userCourseAssignments.dueDate})`,
         },
       })
-      .returning({ id: userCourseAssignments.id });
+      // `xmax = 0` is true only for a row this statement INSERTED; a row it
+      // updated through the conflict clause (a learner already on the
+      // course) reports false, so the count is newly assigned learners only.
+      .returning({ inserted: sql<boolean>`(xmax = 0)` });
 
-    return rows.length;
+    return rows.filter((r) => r.inserted).length;
   }
 
   async createAssignment(input: {

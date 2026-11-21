@@ -707,10 +707,11 @@ export class LearnerRepository {
   async findLessonCourse(scope: OrgScope, lessonId: number) {
     const rows = await this.db.all<{
       id: number;
+      module_id: number;
       course_id: number;
       content_type: string;
     }>(sql`
-      SELECT l.id, l.content_type, cm.course_id FROM lessons l
+      SELECT l.id, l.module_id, l.content_type, cm.course_id FROM lessons l
       JOIN course_modules cm ON cm.id = l.module_id
       WHERE l.id = ${lessonId} AND ${contentScope('l', scope)}
     `);

@@ -5,6 +5,8 @@
 >
 > **Status:** NestJS 11 · TypeScript 5.9 · Drizzle ORM 0.38 · PostgreSQL.
 > Migration from Next.js route handlers is COMPLETE — all 85 handlers live here.
+> The API has since grown to 339 route handlers across 59 controllers
+> (counted 2026-11-20; per-module counts at the end of §10's ledger).
 > `client/` is a pure frontend with no database access. See §10.
 >
 > **Rule:** every new endpoint, table, or query MUST follow this document. If a
@@ -49,62 +51,66 @@ the API, and holds no database driver, schema, credential or signing secret.
 
 ## 2. Directory structure
 
+Checked against the code on 2026-11-20. Files are named where they carry a
+rule; the rest of each directory follows §2.1.
+
 ```
 server/
 ├── src/
-│   ├── main.ts                  Bootstrap: global prefix, CORS, pipes, filters
+│   ├── main.ts                  Bootstrap: global prefix, CORS, pipes, filters;
+│   │                            WORKER=1 forks into worker.ts instead (§10.30)
 │   ├── app.module.ts            Root module — imports features, binds global guards
+│   ├── worker.ts / worker.module.ts   The pg-boss worker process (no HTTP)
+│   ├── retention-cli.ts         `npm run retention:sweep` (§10.48)
 │   │
 │   ├── config/
 │   │   ├── configuration.ts     Typed view of process.env (the ONLY env reader)
 │   │   └── env.validation.ts    Fail-fast validation at boot
 │   │
 │   ├── common/                  Cross-cutting, feature-agnostic
-│   │   ├── crypto/
-│   │   │   └── password.util.ts scrypt hash/verify (format-locked — see §6.4)
+│   │   ├── crypto/              password.util.ts (scrypt, format-locked §6.4),
+│   │   │                        secret-box.util.ts (MFA secrets), unknown-password.ts
 │   │   ├── decorators/
-│   │   │   └── index.ts         @Public, @Roles, @CurrentUser
+│   │   │   └── index.ts         @Public, @Roles, @Permissions, @PlatformAdmin,
+│   │   │                        @CurrentUser, @CurrentScope, @AllowBeforeMfa
 │   │   ├── filters/
 │   │   │   └── http-exception.filter.ts
-│   │   ├── guards/
-│   │   │   ├── auth.guard.ts    Global — verifies the JWT
-│   │   │   └── roles.guard.ts   Global — enforces @Roles
-│   │   └── types/
-│   │       └── authenticated-request.ts
+│   │   ├── guards/              Global, in this order: auth, rate-limit,
+│   │   │                        mfa-enrolment, roles, permissions,
+│   │   │                        platform-admin, tenant-context
+│   │   ├── interceptors/        presence.interceptor.ts (users.last_seen_at)
+│   │   ├── http/                security-headers.ts (§10.47)
+│   │   ├── rate-limit/          @RateLimit and the budget store (§10.47)
+│   │   ├── types/
+│   │   │   └── authenticated-request.ts
+│   │   └── *.ts                 Catalogues-as-code: permissions, notifications,
+│   │                            badges, lesson-content, course-taxonomy, consent,
+│   │                            incidents, certificate-branding, and others
 │   │
 │   ├── database/
 │   │   ├── database.module.ts   @Global — the only global feature module
 │   │   ├── database.service.ts  Owns the Postgres connection pool + Drizzle handle
-│   │   ├── migration.runner.ts  Applies additive .sql on boot
-│   │   ├── migrations/
-│   │   │   ├── 0000_baseline_schema.sql   18 tables (authoritative DDL)
-│   │   │   └── 0001_secondary_indexes.sql 20 indexes
+│   │   ├── migration.runner.ts  Applies additive .sql on boot (advisory-locked)
+│   │   ├── org-scope.ts         OrgScope, orgScope(), contentScope()
+│   │   ├── public-id.service.ts URL UUID -> integer id (§10.34)
+│   │   ├── id-list.ts           Shared `id IN (...)` helper
+│   │   ├── migrations/          0000_baseline_schema.sql to 0072_engagement.sql
 │   │   └── schema/              Drizzle table definitions, one file per domain
-│   │       ├── index.ts         Barrel — `import { users } from '@/database/schema'`
-│   │       ├── users.schema.ts
-│   │       ├── courses.schema.ts
-│   │       ├── enrollments.schema.ts
-│   │       ├── assessments.schema.ts
-│   │       ├── sessions.schema.ts
-│   │       ├── scorm.schema.ts
-│   │       └── certificates.schema.ts
+│   │       └── index.ts         Barrel — `import { users } from '@/database/schema'`
 │   │
-│   └── modules/                 One directory per business capability
-│       ├── assessments/         admin builder + learner attempts
-│       ├── courses/             courses, modules, lessons, assignments
-│       ├── learner/             dashboard, progress, achievements, hours
-│       ├── reports/             analytics + xlsx export
-│       ├── scorm/               upload, assign, tracking, storage driver
-│       ├── sessions/            sessions, roster, attendance
-│       ├── users/               learners + employees
-│       ├── auth/
-│       │   ├── auth.module.ts
-│       │   ├── auth.controller.ts
-│       │   ├── auth.service.ts
-│       │   ├── auth.repository.ts
-│       │   ├── token.service.ts
-│       │   ├── cookie.util.ts
-│       │   └── dto/
+│   └── modules/                 One directory per business capability (46)
+│       ├── HTTP:   ai-insights, assessments, audit, auth, badges, billing,
+│       │           catalogue, certificates, community, competencies, courses,
+│       │           email, engagement, external-certifications, feedback, geo,
+│       │           health, incidents, journeys, learner, media, messages,
+│       │           my-data, notifications, organizations, org-options,
+│       │           referrals, reports, roles, scorm, seats, services,
+│       │           sessions, surveys, users
+│       ├── no HTTP: activity, ai, alerts, consent, files, leaderboard,
+│       │           learning-hours, reminders, retention (services, crons)
+│       ├── auth/                e.g. auth + mfa controllers, auth/mfa/
+│       │                        password-reset services, token.service.ts,
+│       │                        cookie.util.ts, dto/
 │       └── certificates/
 │           ├── certificates.module.ts
 │           ├── learner-certificates.controller.ts
@@ -114,8 +120,10 @@ server/
 │           ├── certificates.repository.ts
 │           └── dto/
 │
-├── scripts/seed.mjs             Demo data for a fresh DB (npm run db:seed)
-├── storage/scorm/               Extracted SCORM packages, served at /scorm/*
+├── scripts/                     Ops scripts: seed.mjs (npm run db:seed), test-isolation,
+│                                backfills, wipe/reset, migrate-scorm-to-r2, cliq-notify
+├── storage/                     Local runtime files: uploads/, outbox/ (file mailer).
+│                                SCORM is no longer here: it lives in R2 (§10.9)
 ├── drizzle.config.ts            Introspection only — never `push` at production
 ├── nest-cli.json                Copies migrations/*.sql into dist
 └── .env
@@ -520,25 +528,28 @@ paragraphs. That is courtesy; this is enforcement.
 |---|---|---|
 | `DATABASE_URL` | yes | PostgreSQL connection string |
 | `DATABASE_SSL` | no (`false`) | Set `true` if the Postgres server requires/terminates TLS |
-| `JWT_SECRET` | yes | HMAC key, ≥32 chars; must match `client/.env.local` during migration |
+| `DATABASE_SSL_REJECT_UNAUTHORIZED` | no (`true`) | Set `false` only to accept a self-signed Postgres certificate |
+| `JWT_SECRET` | yes | HMAC key, ≥32 chars (boot fails otherwise). Server only: the client holds no signing secret now that the migration is complete |
 | `PORT` | no (3001) | HTTP port |
+| `NODE_ENV` | no (`development`) | `production` sets the cookie `Secure` flag |
+| `WORKER` | no | `1` makes `main.ts` boot the worker (`worker.ts`) instead of the HTTP API (§10.30) |
 | `CLIENT_ORIGIN` | no | Exact frontend origin(s) for CORS — comma-separated, no wildcard. The FIRST is canonical and is what email links are built from |
-| `COOKIE_DOMAIN` | no | Omitted for localhost; set to the shared parent domain in production |
+| `COOKIE_DOMAIN` | no (`localhost`) | At `localhost` the cookie is set with no domain; set to the shared parent domain in production |
+| `AUTH_COOKIE_NAME` | no (`lms_token`) | Name of the session cookie |
 | `AUTH_TOKEN_DAYS` | no (7) | Token + cookie lifetime |
-| `MFA_ENCRYPTION_KEY` | for MFA | AES-256-GCM key (32 bytes hex/base64, or a passphrase) for encrypting TOTP secrets at rest (0058). Absent = MFA enrolment 503s; losing it after enrolment locks out MFA admins |
-| `SCORM_STORAGE_DRIVER` | no (`local`) | `local` (single-instance) or `s3` (R2, multi-instance) — see §10.9. `s3` reuses the `R2_*` variables |
-| `SCORM_STORAGE_PATH` | no | Local SCORM root |
-| `R2_ACCOUNT_ID` | for video | Cloudflare account id; used to derive the endpoint |
-| `R2_ACCESS_KEY_ID` | for video | R2 API token key |
-| `R2_SECRET_ACCESS_KEY` | for video | R2 API token secret |
-| `R2_BUCKET` | for video | Bucket holding lesson videos and captions |
+| `MFA_ENCRYPTION_KEY` | for the app method | AES-256-GCM key (32 bytes hex/base64, or a passphrase) for encrypting TOTP secrets at rest (0058). Absent = the authenticator-app method is unavailable (the emailed-code method still works when email is on, §10.51); losing it after enrolment locks out everyone on the app method except by recovery code |
+| `MFA_ENFORCE` | no (`true`) | `false` lifts the mandatory admin two-step setup gate (§10.49), for local testing only. Does not turn off MFA for anyone already enrolled |
+| `R2_ACCOUNT_ID` | for video, documents, SCORM | Cloudflare account id; used to derive the endpoint |
+| `R2_ACCESS_KEY_ID` | for video, documents, SCORM | R2 API token key |
+| `R2_SECRET_ACCESS_KEY` | for video, documents, SCORM | R2 API token secret |
+| `R2_BUCKET` | for video, documents, SCORM | Bucket holding lesson videos, captions, documents and SCORM packages |
 | `R2_ENDPOINT` | no | Account-level S3 endpoint, **without** the bucket path |
 | `VIDEO_URL_TTL_SECONDS` | no (900) | Lifetime of a presigned playback URL |
 | `UPLOAD_URL_TTL_SECONDS` | no (3600) | Lifetime of a presigned upload URL |
 | `VIDEO_MAX_BYTES` | no (2 GiB) | Rejected at presign, re-checked against R2 on confirm |
 | `CAPTION_MAX_BYTES` | no (2 MiB) | Caption uploads are proxied, so this is a real body cap |
 | `DOCUMENT_MAX_BYTES` | no (100 MiB) | Cap for an uploaded document — a slide deck, not a feature film |
-| `UPLOAD_STORAGE_PATH` | no (`./storage/uploads`) | Root for files this process stores and serves itself — course thumbnails (§10.10) |
+| `UPLOAD_STORAGE_PATH` | no (`./storage/uploads`) | Root for files this process stores itself: course thumbnails, avatars and org logos (public, §10.10, §10.52), plus the private stores (certificate scans, shared files) served only through checked routes |
 | `REPORTING_REFERENCE_DATE` | no | Pins "today" for reports. Leave UNSET in production — set it only to demo the seeded period |
 | `CLIQ_CHANNEL_URL` · `CLIQ_WEBHOOK_TOKEN` · `CLIQ_BOT_NAME` | no | Operational alerts to the team's Zoho Cliq channel (§10.50). No token = alerts are only logged. The token is a credential: server `.env` only |
 | `RETENTION_ENABLED` | no (`false`) | Master switch for the data-retention sweep (§10.43). Off = the daily job is a no-op |
@@ -552,22 +563,30 @@ paragraphs. That is courtesy; this is enforcement.
 | `OPENROUTER_API_KEY` | for AI | OpenRouter key. Absent = AI stays off regardless of `AI_ENABLED` (warn-and-degrade) |
 | `AI_MODEL` | no (`deepseek/deepseek-v4-pro`) | OpenRouter model id. The default REASONS, so outputs cost extra tokens |
 | `AI_MAX_OUTPUT_TOKENS` · `AI_TIMEOUT_MS` · `AI_BASE_URL` · `AI_APP_TITLE` | no (3000 · 45000 · `https://openrouter.ai/api/v1` · `Spectra LMS`) | Token budget (covers reasoning), call timeout, endpoint, and the product name sent for OpenRouter attribution |
-| `ORG_NAME` | no (`Edstellar`) | Name of the first real organization created by `db:migrate:tenancy` |
-| `ORG_SLUG` | no (`edstellar`) | Organization `db:seed` seeds into |
+| `ORG_NAME` | no (`Edstellar`) | Script only (`scripts/migrate-tenancy.mjs`), not read by the API: name of the first real organization |
+| `ORG_SLUG` | no (`edstellar`) | Script only (`scripts/seed.mjs`), not read by the API: organization `db:seed` seeds into |
 | `EMAIL_ENABLED` | no (`false`) | Master switch. False writes no outbox rows at all |
 | `EMAIL_DRIVER` | no (`log`) | `log` · `file` · `ses` · `gmail`. **Production runs `gmail`** |
-| `EMAIL_FROM` / `EMAIL_FROM_NAME` / `EMAIL_REPLY_TO` | for sending | The envelope. `spectralms@edstellar.com` in production |
+| `EMAIL_FROM` | for sending | The sender address. `spectralms@edstellar.com` in production. The display name is the `PRODUCT_NAME` constant and there is no reply-to; `EMAIL_FROM_NAME` and `EMAIL_REPLY_TO` were removed (`EMAIL_CONSTANTS` in `configuration.ts`) |
 | `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REFRESH_TOKEN` | for `gmail` | OAuth. The refresh token expires in 7 days while the consent screen is in "Testing" |
-| `GMAIL_SERVICE_ACCOUNT_KEY` | alternative | Domain-wide delegation instead of a refresh token — does not expire |
+| `GMAIL_SERVICE_ACCOUNT_KEY` / `GMAIL_IMPERSONATE` | alternative | Domain-wide delegation instead of a refresh token (does not expire); `GMAIL_IMPERSONATE` is the mailbox the service account sends as |
+| `GMAIL_DAILY_CEILING` | no (2000) | Gmail's own daily cap, used to warn on misconfiguration; not enforced (`EMAIL_MAX_PER_DAY` is) |
 | `SES_REGION` / `SES_CONFIGURATION_SET` | for `ses` | Built, not in use |
 | `EMAIL_RATE_PER_SECOND` | no (1) | Worker pacing. One send, then sleep |
 | `EMAIL_MAX_PER_DAY` | no (200) | **2000 in production** — which is Gmail's own Workspace ceiling, so there is no headroom left |
-| `EMAIL_BATCH_SIZE` | no (25) | Rows claimed per drain tick |
 | `EMAIL_ALLOWLIST` | no (empty) | Comma-separated. Non-empty = a dry run: every other row is written `suppressed/not_allowlisted` and counted. **Empty in production — real learners are emailed** |
-| `EMAIL_MAX_RECIPIENTS_PER_NOTIFY` | no (200) | One notification above this is SKIPPED, not truncated |
+
+`EMAIL_BATCH_SIZE` (25 rows per drain tick) and `EMAIL_MAX_RECIPIENTS_PER_NOTIFY`
+(200; one notification above it is SKIPPED, not truncated) are no longer
+environment variables: they are `EMAIL_CONSTANTS.batchSize` and
+`.maxRecipientsPerNotify` in `config/configuration.ts`. `SCORM_STORAGE_DRIVER`
+and `SCORM_STORAGE_PATH` were removed with the local SCORM driver: SCORM is
+R2-only (`scorm.module.ts`), and only `scripts/migrate-scorm-to-r2.mjs` still
+reads `SCORM_STORAGE_PATH`.
 
 The R2 variables are **not** boot-required: without them the API starts, logs a
-warning, and returns 503 from the video routes only. `S3_API_ENDPOINT` from the
+warning, and returns 503 from the routes that need object storage: video,
+uploaded documents and, since SCORM became R2-only, every SCORM route. `S3_API_ENDPOINT` from the
 Cloudflare dashboard includes the bucket in its path and must not be used as
 `R2_ENDPOINT` — the SDK appends the bucket itself.
 
@@ -645,6 +664,37 @@ Update this table with every module you move.
 | engagement — active-time tracking + engagement-vs-learning trend (ping + learner/admin trend reads) | 3 | `server/src/modules/engagement` |
 | operational alerts to Zoho Cliq + `GET /api/health` (public) | 1 | `server/src/modules/alerts`, `health` |
 | two-step sign-in by authenticator app OR emailed code (resend at sign-in, email-me-a-code to turn off) | 2 | `server/src/modules/auth`, `email` |
+| audit log reads, tenant + platform (§10.32; recorded by middleware, not a controller per route) | 4 | `server/src/modules/audit` |
+| tenant email outbox read + resend (§10.32) | 2 | `server/src/modules/email` |
+| own avatar upload / remove (any role) | 2 | `server/src/modules/media` |
+| platform analytics overview | 1 | `server/src/modules/organizations` |
+| AI Insights page reads: learner charts and lenses (read + refresh) | 3 | `server/src/modules/ai-insights` |
+
+The rows above record what each change ADDED, so they do not sum to today's
+routes (some routes were later moved, merged or removed). The current count
+per module, from `@Get/@Post/@Put/@Patch/@Delete` in every `*.controller.ts`
+on 2026-11-20, is the check to repeat:
+
+| Module | Routes | Module | Routes | Module | Routes |
+|---|---|---|---|---|---|
+| ai-insights | 8 | external-certifications | 7 | org-options | 4 |
+| assessments | 15 | feedback | 3 | referrals | 6 |
+| audit | 4 | geo | 3 | reports | 17 |
+| auth | 20 | health | 1 | roles | 12 |
+| badges | 1 | incidents | 7 | scorm | 14 |
+| billing | 7 | journeys | 12 | seats | 6 |
+| catalogue | 4 | learner | 12 | services | 6 |
+| certificates | 7 | media | 17 | sessions | 25 |
+| community | 28 | messages | 5 | surveys | 13 |
+| competencies | 6 | my-data | 7 | users | 11 |
+| courses | 24 | notifications | 3 | | |
+| email | 9 | organizations | 12 | | |
+| engagement | 3 | | | **total** | **339** |
+
+`activity`, `ai`, `alerts`, `consent`, `files`, `leaderboard`,
+`learning-hours`, `reminders` and `retention` have no controller: their reads
+are served through other modules (the learner and admin leaderboard and
+learning-hours routes live on `learner` and `reports`).
 
 ### 10.33 No bulk-created learner slips through the welcome email
 
@@ -947,18 +997,23 @@ put it in front of, and the same course assigned directly to somebody else is
 a plain course for them. Keying off the course would have made one learner's
 history rewrite another's.
 
-**There is deliberately NO webinar branch.** `sessions.session_type` accepts
-`ILT` and `Virtual` only, so a webinar bucket would be zero on every row for
-every learner in every tenant — the empty-column failure §10.12 records. The
-reference design shows four series; three are built. The colour is reserved in
-`globals.css` and `lib/brand.js` so the day the enum gains Webinar the branch
-is one line and the hue is already decided.
+**There is deliberately NO webinar branch.** When this was written
+`sessions.session_type` accepted `ILT` and `Virtual` only, so a webinar bucket
+would have been zero on every row for every learner in every tenant — the
+empty-column failure §10.12 records. The reference design shows four series;
+three are built. The colour is reserved in `globals.css` and `lib/brand.js`.
+
+Superseded (2026-11-20): the enum now accepts `Webinar` too (`sessions.schema.ts`,
+`SessionDto`), treated as a virtual sitting. `learningTypeExpr` still has no
+webinar branch, so a Webinar session's hours are filed under `session`. Adding
+the branch is one line in that CASE.
 
 **Learning paths currently total zero everywhere, and that is DATA, not a
 gap.** `journeys` holds no rows in any environment yet, so the tab and the
 column are honestly empty and the empty state says an admin builds these from
 existing courses. That is the difference worth keeping straight: the webinar
-column *cannot* be non-zero, the paths column *is not yet*.
+column *is not built* (webinar hours count as sessions), the paths column *is
+not yet* non-zero.
 
 **The SCORM residual is folded in, not left out.** `minutesByUser` is lesson
 minutes PLUS reported time for packages no lesson completion has paid for, so
@@ -1147,7 +1202,7 @@ of the palette for that reason, and moves with `globals.css` like
 
 **FOUR mailer drivers, and `gmail` is the one that runs.** `log` (the
 default), `file` (writes `.eml`), `ses` and `gmail`, mirroring
-`SCORM_STORAGE_DRIVER` so the whole feature is exercisable with no account
+`SCORM_STORAGE_DRIVER` as it then was, so the whole feature is exercisable with no account
 anywhere. Production and development both set `EMAIL_DRIVER=gmail`, sending
 as `spectralms@edstellar.com` over the Gmail API.
 
@@ -2063,6 +2118,10 @@ and a button that silently sends nothing is worse than no button. The manager
 IS named in it, unlike session feedback (§10.20): a nudge from nobody is just
 nagging, and the learner should know who is asking. The path id is checked
 against the caller's own reports, so it cannot be swapped for a colleague's.
+
+Superseded (2026-11-20): email has since shipped (§10.30). `manager_nudge` is
+an `announcement` type, so it also emails when the organization has
+`email_announcements` on; it is still a bell notification first.
 
 **The export rebuilds through the same `team()` the screen reads**, so the file
 can never describe a different team from the one on screen — the rule §10.12
@@ -2983,7 +3042,11 @@ was right for multiple choice and impossible for the two types that have no
 options at all.
 
 **Seven lesson content types** — `common/lesson-content.ts`, mirrored by
-`client/lib/lesson-content.js`. Each entry carries its own `durationRequired`
+`client/lib/lesson-content.js`. Superseded (2026-11-20): the form now offers
+FIVE (`video`, `pdf`, `image`, `link`, `scorm`); Word and PowerPoint were
+removed as primary content (readable on old rows via `DOCUMENT_LIKE_TYPES`,
+still valid as resources), and `session` is generated by its session, never
+authored. Each entry carries its own `durationRequired`
 rule, which is what makes it code rather than data: video measures its own
 runtime, everything else must declare one or be worth zero hours (§10.4).
 
@@ -3385,6 +3448,13 @@ certificate for, which is what a fixture should have done anyway.
 
 ### 10.9 SCORM object storage, and the granular data-model log
 
+> Superseded in part (2026-11-20): the `local` driver and the
+> `SCORM_STORAGE_DRIVER` / `SCORM_STORAGE_PATH` switch were later removed.
+> SCORM is R2-only (`S3ScormStorageDriver` is the one provider in
+> `scorm.module.ts`), packages were moved with `scripts/migrate-scorm-to-r2.mjs`,
+> and R2 is a hard dependency for SCORM (503 without it). The two-driver
+> description below is the history; the same-origin serving rule still holds.
+
 `SCORM_STORAGE_DRIVER` now has both implementations §10.3 asked for.
 
 | Driver | Files live | Served by | Multi-instance |
@@ -3671,8 +3741,13 @@ resources** alongside it.
 | quiz | the question set | n/a |
 
 Documents are PDF, Word, PowerPoint, Excel, txt or csv (`ALLOWED_DOCUMENT_TYPES`
-in `modules/media/dto/media.dto.ts`). Upload and link are equivalent options,
-and every resource type offers both.
+in `modules/media/dto/media.dto.ts`, which also accepts raster images). Upload
+and link are equivalent options, and every resource type offers both.
+
+Superseded (2026-11-20): as PRIMARY lesson content the form now offers only
+`pdf` and `image` of the document-like kinds (plus `video`, `link`, `scorm`);
+Word, PowerPoint and spreadsheets remain valid only as resources, and existing
+rows holding them still render (`common/lesson-content.ts`).
 
 **Resources** (`lesson_resources`) are reference material: slides beside a
 video, a handout beside a live session, a link to a spec. Each is an uploaded
@@ -3806,8 +3881,8 @@ It does not touch uploaded files or the pg-boss schema.
 that targets a SINGLE organization — see §10.12. Dry-run by default like the
 other two.
 
-Neither script touches `server/storage/scorm/`, `server/storage/uploads/` or
-the R2 bucket — extracted packages, uploaded videos and course thumbnails
+Neither script touches `server/storage/uploads/` or the R2 bucket (which now
+also holds every SCORM package) — extracted packages, uploaded videos and course thumbnails
 outlive a database wipe and must be cleared separately.
 
 ### 10.5 Leaderboard
@@ -3897,8 +3972,10 @@ rendered as the "How Points Work" tab). Nothing in the browser holds a rate.
 Changed 2026-10-06 at the owner's request, to match the reference design. It
 replaced `lessons x 10 + DISTINCT passes x 50 + path bonus`, which reshuffled
 the board. The four community rules (post, answer, marked helpful, accepted
-answer) are left out because there is no community feature — add each in the
-change that builds what triggers it.
+answer) are left out because there was no community feature — add each in the
+change that builds what triggers it. Still true (2026-11-20): the Learning
+Community has since shipped (§10.35) and kudos are deliberately NOT points
+(§10.40); no community rule pays points yet.
 
 **`pointEvents()` is the one definition, and it has two readers.** The
 standings SUM it, in the same round trip as the rest of the row; the
@@ -4027,8 +4104,11 @@ is.
 
 ### 10.1 SCORM content serving
 
-Extracted packages live in `server/storage/scorm/` and are served by
-`useStaticAssets` at `/scorm/<uuid>/...` (outside the `/api` prefix).
+Extracted packages are served at `/scorm/<uuid>/...` (outside the `/api`
+prefix). Superseded (2026-11-20): they no longer live in
+`server/storage/scorm/` behind `useStaticAssets`; they are in R2 and streamed by
+`ScormContentHandler` after `ScormContentMiddleware` authorizes the request
+(§10.9). The proxy reasoning below is unchanged.
 
 The client **proxies** that path via a rewrite in `client/next.config.mjs`
 rather than pointing the player's iframe straight at the API. SCORM content
@@ -4063,7 +4143,8 @@ you compare old and new behaviour:
   packages already on local disk, so flipping an existing deployment to `s3`
   strands them (`storage_prefix IS NULL` serves 404 under the `s3` handler).
   Write a one-off script that re-uploads those directories and sets the prefix
-  before flipping the switch in production.
+  before flipping the switch in production. **Done:** `scripts/migrate-scorm-to-r2.mjs`
+  did that, and the local driver and the switch were then removed (§10.9).
 - `TokenService` can move to `@nestjs/jwt` once §10 reaches zero pending
   modules and the legacy verifier is deleted (§6.4).
 - ~~Rate-limit the public verify endpoint.~~ ~~Add security headers.~~ **Done, without either library: see §10.47.**
@@ -4485,6 +4566,14 @@ The client is the authority on the NOTICE COPY (a product/legal artifact); the
 server only records acceptance and says whether it is owed.
 
 #### Admin MFA — TOTP (0058)
+
+> Superseded in part (2026-11-20): this subsection describes the first,
+> admin-only, app-only version. Since §10.49 two-step sign-in is mandatory for
+> admin-portal accounts and optional for everyone, and the MFA routes are open
+> to every role (`POST /auth/mfa/disable` refuses an admin). Since §10.51 a
+> person may use an authenticator app OR an emailed code, so
+> `MFA_ENCRYPTION_KEY` gates only the app method. Read those sections for the
+> current behaviour; the route list below shows the original audiences.
 
 `user_mfa` (one row per enrolled user): the TOTP `secret` ENCRYPTED with
 AES-256-GCM under `MFA_ENCRYPTION_KEY` (`common/crypto/secret-box.util.ts`),
@@ -5192,6 +5281,25 @@ stay 200. Verified on dev: scan 404 (direct and through the web app's rewrite),
 thumbnail and avatar 200, `/uploads/` 404, a `../` traversal 404, and the
 checked route still 401 without a session.
 
+### 10.57 Bugs found by the e2e suites, fixed (2026-11-21)
+
+The API e2e suite (`server/test`) and browser journeys (`client/e2e`) were
+written against CONTEXT.md and found 19 real defects; each now has a passing
+test. Server-side: cross-org deletes of courses, sessions and assessments
+answered 200 instead of 404 (`remove()` never checked the row existed);
+bulk session delete counted unknown ids; course skill tags used
+`ParseIntPipe` (so the Course page's UUID failed) and had no org check;
+fill-in-the-blank and matching could not be answered or scored and the
+learner read carried `correct_answer`; multi-select compared one option with
+MAX(correct id); deleting a module or lesson left `link_type` pointing at it
+(now set to 'none' in the same transaction); `completeLesson` skipped the
+sequential lock §10.25 recorded; an archived course could be assigned; bulk
+assign counted conflict-updated rows (now `xmax = 0`); Webinar certificates
+were printed as in person; the AI context sent `organizationId` (now dropped
+by `forModel()`, still asserted by `assertSameTenant`); session feedback
+answered 201; `me()` ignored a support session for `consent_required`; the
+learner engagement trend took its axis from learning rows only.
+
 ### 10.53 Competencies — the AI Insights foundation
 
 `0070_competencies.sql`. The first slice of the AI Insights program
@@ -5235,6 +5343,11 @@ GET   /api/learner/competencies               the caller's own gained skills  (l
 **Known follow-up:** the course→skill mapping has no authoring-screen UI yet
 (it is API-only this slice), and the learner competency panel ships with the
 learner vertical (Wave 2).
+
+Superseded (2026-11-20): both shipped. The mapping is the course page's
+**Skills** tab (`client/components/admin/course-skills-tab.jsx`), and a
+learner's gained skills are drawn on the AI Insights page from
+`GET /api/learner/ai/charts` (§10.54).
 
 ### 10.54 AI foundation — the OpenRouter client and insight store
 

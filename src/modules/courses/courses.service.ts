@@ -252,6 +252,23 @@ export class CoursesService {
     }
   }
 
+  /**
+   * A course that can take a new assignment: it exists in this org's content
+   * scope (404 otherwise, §5.3) and is not archived (CONTEXT.md "Archived":
+   * an archived item can't be assigned again). People already on it keep
+   * their assignment; only NEW assignments are refused.
+   */
+  private assertAssignable(
+    course: { archivedAt?: string | Date | null } | null,
+  ): void {
+    if (!course) throw new NotFoundException('Course not found');
+    if (course.archivedAt) {
+      throw new UnprocessableEntityException(
+        'This course is archived. Restore it before assigning it.',
+      );
+    }
+  }
+
   private assertNotSessionTraining(sessionId: number | null): void {
     if (sessionId) {
       throw new UnprocessableEntityException(
@@ -812,12 +829,13 @@ export class CoursesService {
   }
 
   async remove(scope: OrgScope, courseId: number) {
-    this.assertNotSessionTraining(
-      await this.repository.findSessionIdForCourse(scope, courseId),
-    );
-    // Read before the delete — once the row is gone nothing records which
-    // file was its picture.
+    // Read before the delete: once the row is gone nothing records which
+    // file was its picture. A foreign id is a 404 (§5.3), never a silent
+    // "Course deleted" that deleted nothing.
     const existing = await this.repository.findById(scope, courseId);
+    if (!existing) throw new NotFoundException('Course not found');
+    this.assertNotGlobalContent(scope, existing.organizationId, 'course');
+    this.assertNotSessionTraining(existing.sessionId);
     await this.repository.deleteCourse(scope, courseId);
     await this.media.discardCourseThumbnail(existing?.thumbnailUrl);
     return { message: 'Course deleted' };
@@ -1333,9 +1351,7 @@ export class CoursesService {
   ) {
     // A foreign course id must 404 rather than create activity rows that
     // point at another org's course under this org's organization_id (§5.3).
-    if (!(await this.repository.findById(scope, courseId))) {
-      throw new NotFoundException('Course not found');
-    }
+    this.assertAssignable(await this.repository.findById(scope, courseId));
 
     // user_ids are caller-supplied; narrow them to this org so a foreign id
     // is a 404 rather than a constraint violation surfacing as a 500.
@@ -1451,9 +1467,7 @@ export class CoursesService {
   ) {
     // A foreign course id must 404 rather than create an activity row that
     // points at another org's course under this org's organization_id (§5.3).
-    if (!(await this.repository.findById(scope, courseId))) {
-      throw new NotFoundException('Course not found');
-    }
+    this.assertAssignable(await this.repository.findById(scope, courseId));
 
     const learner = await this.repository.findLearner(scope, dto.user_id);
     if (!learner) throw new NotFoundException('Learner not found');

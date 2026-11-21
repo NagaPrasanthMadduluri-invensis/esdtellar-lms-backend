@@ -2,8 +2,10 @@ import { Injectable } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
 import {
+  LIMITS,
   LearningHoursService,
   type Granularity,
+  type LabelledPeriod,
 } from '@/modules/learning-hours/learning-hours.service';
 
 import { EngagementRepository } from './engagement.repository';
@@ -48,6 +50,36 @@ function labelFor(iso: string, granularity: Granularity): string {
   return `${y}`;
 }
 
+/**
+ * One learner's series: the period axis is the UNION of the learning axis and
+ * the periods with engaged time, as the org trend does. The learning axis alone
+ * is empty for a learner with no learning hours yet, which dropped their
+ * engagement entirely. The learning axis keeps its zero-filled gaps and labels;
+ * an engagement-only period gets the same label format, and the union is capped
+ * to the same number of most recent buckets the learning axis uses.
+ */
+export function learnerSeries(
+  learningAxis: LabelledPeriod[],
+  engagedSeconds: Map<string, number>,
+  granularity: Granularity,
+): TrendPoint[] {
+  const learnMap = new Map(learningAxis.map((p) => [p.period, p]));
+  const periods = [...new Set([...learnMap.keys(), ...engagedSeconds.keys()])]
+    .sort()
+    .slice(-LIMITS[granularity]);
+  return periods.map((period) => {
+    const p = learnMap.get(period);
+    const learning = (p?.total ?? 0) / 60;
+    const tracked = (engagedSeconds.get(period) ?? 0) / 3600;
+    return {
+      period,
+      label: p?.label ?? labelFor(period, granularity),
+      learningHours: round1(learning),
+      engagementHours: round1(engagementFloor(tracked, learning)),
+    };
+  });
+}
+
 export interface TrendPoint {
   period: string;
   label: string;
@@ -84,9 +116,10 @@ export class EngagementService {
   }
 
   /**
-   * One learner's engagement-vs-learning trend. The axis and the learning series
-   * come from `learnerHoursTrend` (its labels and buckets), and engagement is
-   * overlaid by the same period key — so both lines share identical periods.
+   * One learner's engagement-vs-learning trend. The learning series comes from
+   * `learnerHoursTrend` (its labels and buckets) and the axis is unioned with the
+   * engaged periods (`learnerSeries`), so both lines share identical periods and
+   * active time shows even before any learning hours exist.
    */
   async learnerTrend(
     scope: OrgScope,
@@ -99,16 +132,7 @@ export class EngagementService {
       this.repository.learnerByPeriod(scope, userId, unit),
     ]);
     const engMap = new Map(eng.map((r) => [r.period, Number(r.seconds)]));
-    const series: TrendPoint[] = trend[granularity].map((p) => {
-      const learning = p.total / 60;
-      const tracked = (engMap.get(p.period) ?? 0) / 3600;
-      return {
-        period: p.period,
-        label: p.label,
-        learningHours: round1(learning),
-        engagementHours: round1(engagementFloor(tracked, learning)),
-      };
-    });
+    const series = learnerSeries(trend[granularity], engMap, granularity);
     return { granularity, series, totals: totalsOf(series) };
   }
 

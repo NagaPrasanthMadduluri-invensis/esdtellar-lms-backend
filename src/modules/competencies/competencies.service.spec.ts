@@ -12,6 +12,7 @@ function makeRepo(overrides: Partial<Record<string, any>> = {}) {
     createSkill: jest.fn().mockResolvedValue(42),
     updateSkill: jest.fn().mockResolvedValue(true),
     courseIsOwned: jest.fn().mockResolvedValue(true),
+    courseIsVisible: jest.fn().mockResolvedValue(true),
     getCourseSkills: jest.fn().mockResolvedValue([]),
     setCourseSkills: jest.fn().mockResolvedValue(2),
     recordCourseSkills: jest.fn().mockResolvedValue(undefined),
@@ -103,5 +104,24 @@ describe('CompetenciesService skill curation', () => {
       svc.setCourseSkills(scope, 100, { skills: [{ skillId: 1, level: 'advanced' }] }),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(repo.setCourseSkills).not.toHaveBeenCalled();
+  });
+});
+
+describe('CompetenciesService.getCourseSkills', () => {
+  it('404s a course not visible to the org (another tenant or missing)', async () => {
+    const repo = makeRepo({ courseIsVisible: jest.fn().mockResolvedValue(false) });
+    const svc = new CompetenciesService(repo, makeCerts(false));
+
+    await expect(svc.getCourseSkills(scope, 5)).rejects.toBeInstanceOf(NotFoundException);
+    expect(repo.getCourseSkills).not.toHaveBeenCalled();
+  });
+
+  it('returns the tags of a visible course', async () => {
+    const rows = [{ skill_id: 1, name: 'Excel', domain: null, level: 'beginner' }];
+    const repo = makeRepo({ getCourseSkills: jest.fn().mockResolvedValue(rows) });
+    const svc = new CompetenciesService(repo, makeCerts(false));
+
+    await expect(svc.getCourseSkills(scope, 5)).resolves.toEqual(rows);
+    expect(repo.courseIsVisible).toHaveBeenCalledWith(scope, 5);
   });
 });

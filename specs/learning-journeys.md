@@ -3,6 +3,13 @@
 > Owner decisions locked 2026-09-11. Four answers drive everything below; where a
 > rule here looks arbitrary, it is one of those four.
 
+> **Status (2026-11-20):** built (BACKEND_STRUCTURE §10.11, §10.28). The
+> journey certificate code `EDS-J<journeyId>-<userId>-<SHORTHASH>` in §3 is
+> superseded: new certificates of every kind get the 10-character
+> `<prefix><hex>` code (§10.23.2), and the kind is read from
+> `certificates.journey_id`, not from the code. Older `EDS-J…` codes still
+> verify. The admin page is no longer a mock.
+
 ## 1. Goal
 
 A **learning journey** is an ordered path of existing courses that an admin
