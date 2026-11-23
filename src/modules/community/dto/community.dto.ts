@@ -20,6 +20,10 @@ import {
   DESCRIPTION_MAX_LENGTH,
   KUDOS_MESSAGE_MAX,
 } from '@/common/content-limits';
+import {
+  COMMUNITY_REACTIONS,
+  type CommunityReaction,
+} from '@/common/community-reactions';
 
 export const COMMUNITY_POST_TYPES = [
   'question',
@@ -186,4 +190,20 @@ export class CreateReplyDto {
   @MaxLength(COMMUNITY_BODY_MAX)
   @Transform(trim)
   body!: string;
+
+  // Respond to a reply on the same post (its integer id), e.g. the asker
+  // answering a contribution. Same post + one level deep, checked in the
+  // service. Omitted for a top-level reply.
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  parentReplyId?: number;
+}
+
+/** Set (or change) the caller's one quick reaction on a post. */
+export class SetReactionDto {
+  @IsIn(COMMUNITY_REACTIONS, {
+    message: `kind must be one of ${COMMUNITY_REACTIONS.join(', ')}`,
+  })
+  kind!: CommunityReaction;
 }

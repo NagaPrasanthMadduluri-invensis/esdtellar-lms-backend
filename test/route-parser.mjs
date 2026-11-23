@@ -9,7 +9,10 @@ import fs from 'node:fs';
 
 /** Routes with guards, per controller class (handles several classes per file). */
 export function parseRoutes(file) {
-  const s = fs.readFileSync(file, 'utf8');
+  // Whole-line // comments are dropped first: one sitting between two
+  // decorators (e.g. above a multi-line @RateLimit) would otherwise break the
+  // decorator chain, and a @Public() above it was lost (login read as signed-in).
+  const s = fs.readFileSync(file, 'utf8').replace(/^[ \t]*\/\/.*$/gm, '');
   const routes = [];
   const parts = s.split(/(?=^@Controller\()/m);
   for (let i = 1; i < parts.length; i++) {

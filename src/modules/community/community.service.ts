@@ -9,6 +9,10 @@ import { actorLabel } from '@/common/notifications';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { collectHashtags, extractInlineHashtags } from '@/common/community-hashtags';
 import { leaderboardName, toNameDisplay } from '@/common/leaderboard-privacy';
+import {
+  type CommunityReaction,
+  normalizeReactionCounts,
+} from '@/common/community-reactions';
 import { type OrgScope } from '@/database/org-scope';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 import { SharedFileService } from '@/modules/files/shared-file.service';
@@ -106,7 +110,7 @@ export class CommunityService {
     });
     return {
       post: this.shapePost(post, user.userId),
-      replies: replies.map((r) => this.shapeReply(r, user.userId)),
+      replies: replies.map((r) => this.shapeReply(r, user.userId, post.author_id)),
     };
   }
 
@@ -525,6 +529,12 @@ export class CommunityService {
     return { hashtags: rows };
   }
 
+  /**
+   * Reply to a post, or respond to a reply on it (`parentReplyId`). Shared by
+   * the learner and admin controllers: an Admin takes part exactly like a
+   * Learner. A response is kept one level deep: answering a response files it
+   * under the same top-level reply, so a thread never becomes a staircase.
+   */
   async reply(
     scope: OrgScope,
     user: AuthenticatedUser,
@@ -535,14 +545,27 @@ export class CommunityService {
     const post = await this.repository.findPost(scope, postId);
     if (!post) throw new NotFoundException('Post not found');
 
+    let parent: Awaited<ReturnType<CommunityRepository['findReply']>> = null;
+    if (dto.parentReplyId !== undefined) {
+      parent = await this.repository.findReply(scope, dto.parentReplyId);
+      // Another post's reply (or another org's) is "not found" on this post.
+      if (!parent || parent.postId !== postId) {
+        throw new NotFoundException('Reply not found');
+      }
+    }
+    const parentReplyId = parent ? (parent.parentReplyId ?? parent.id) : null;
+
     const { id } = await this.repository.createReply({
       scope,
       postId,
       userId: user.userId,
       body: dto.body,
+      parentReplyId,
     });
 
-    // Tell the author, unless they replied to themselves. Best-effort (§8.4).
+    // Tell the post's author and, for a response, the reply's author. Never
+    // the person replying, never anyone twice. Best-effort (§8.4).
+    const link = `/community/${post.publicId}`;
     if (post.userId !== user.userId) {
       void this.notifications.notify({
         userIds: [post.userId],
@@ -553,7 +576,24 @@ export class CommunityService {
             ? 'New contribution to your question'
             : 'New reply to your post',
         body: `${actorLabel(user)} replied.`,
-        link: `/community/${post.publicId}`,
+        link,
+        subjectType: 'community_post',
+        subjectId: post.id,
+        actorName: actorLabel(user),
+        exceptUserId: user.userId,
+      });
+    }
+    if (parent && parent.userId !== user.userId && parent.userId !== post.userId) {
+      void this.notifications.notify({
+        userIds: [parent.userId],
+        organizationId: scope.organizationId,
+        type: 'community_reply',
+        title:
+          post.type === 'question'
+            ? 'Someone responded to your answer'
+            : 'Someone responded to your comment',
+        body: `${actorLabel(user)} responded.`,
+        link,
         subjectType: 'community_post',
         subjectId: post.id,
         actorName: actorLabel(user),
@@ -565,50 +605,110 @@ export class CommunityService {
     return {
       reply: {
         id,
+        parentReplyId,
         body: dto.body,
         likeCount: 0,
         createdAt: new Date().toISOString(),
         editedAt: null,
         likedByMe: false,
         isMine: true,
+        isPostAuthor: post.userId === user.userId,
         author: {
           name: lastInitial
             ? `${user.firstName} ${lastInitial}.`
             : user.firstName,
           avatar: null,
+          isStaff: user.role === 'admin',
         },
       },
     };
   }
 
-  async like(scope: OrgScope, user: AuthenticatedUser, postId: number) {
+  /**
+   * Set the caller's quick reaction on a post (0073). One per person per post:
+   * a different kind replaces the old one. Shared by both portals.
+   */
+  async react(
+    scope: OrgScope,
+    user: AuthenticatedUser,
+    postId: number,
+    kind: CommunityReaction,
+  ) {
     await this.assertEnabled(scope);
     const post = await this.repository.findPost(scope, postId);
     if (!post) throw new NotFoundException('Post not found');
-    const likeCount = await this.repository.likePost(scope, postId, user.userId);
-    return { liked: true, likeCount };
+    const { total, counts } = await this.repository.setPostReaction(
+      scope,
+      postId,
+      user.userId,
+      kind,
+    );
+    return this.reactionState(kind, total, counts);
+  }
+
+  async unreact(scope: OrgScope, user: AuthenticatedUser, postId: number) {
+    await this.assertEnabled(scope);
+    const post = await this.repository.findPost(scope, postId);
+    if (!post) throw new NotFoundException('Post not found');
+    const { total, counts } = await this.repository.removePostReaction(
+      postId,
+      user.userId,
+    );
+    return this.reactionState(null, total, counts);
+  }
+
+  /** The original heart: a Like is the `like` reaction. Kept for old clients. */
+  async like(scope: OrgScope, user: AuthenticatedUser, postId: number) {
+    const state = await this.react(scope, user, postId, 'like');
+    return { liked: true, likeCount: state.likeCount };
   }
 
   async unlike(scope: OrgScope, user: AuthenticatedUser, postId: number) {
-    await this.assertEnabled(scope);
-    const post = await this.repository.findPost(scope, postId);
-    if (!post) throw new NotFoundException('Post not found');
-    const likeCount = await this.repository.unlikePost(postId, user.userId);
-    return { liked: false, likeCount };
+    const state = await this.unreact(scope, user, postId);
+    return { liked: false, likeCount: state.likeCount };
   }
 
-  /** The people who liked a post — first name + last initial, newest first. */
+  /**
+   * Who reacted to a post, learner view: first name + last initial and the
+   * reaction, newest first. `likers` is the old name, kept for old clients.
+   */
   async postLikers(scope: OrgScope, user: AuthenticatedUser, postId: number) {
     await this.assertEnabled(scope);
     const post = await this.repository.findPost(scope, postId);
     if (!post) throw new NotFoundException('Post not found');
-    const rows = await this.repository.postLikers(scope, postId, 200);
+    const rows = await this.repository.postReactors(scope, postId, 200);
+    const likers = rows.map((r) => ({
+      user_id: r.author_id,
+      name: r.last_initial ? `${r.first_name} ${r.last_initial}.` : r.first_name,
+      avatar: r.avatar_url,
+      is_me: r.author_id === user.userId,
+      is_staff: r.author_portal === 'admin',
+      kind: r.kind,
+    }));
+    return { likers, counts: countKinds(rows) };
+  }
+
+  /**
+   * Who reacted to a post, admin view: the full participant record (full name,
+   * email, department, role, reaction, when) and the per-kind counts. No
+   * enabled gate: an Admin can inspect a switched-off community.
+   */
+  async adminPostReactors(scope: OrgScope, postId: number) {
+    const post = await this.repository.findPost(scope, postId);
+    if (!post) throw new NotFoundException('Post not found');
+    const rows = await this.repository.postReactors(scope, postId, 500);
     return {
-      likers: rows.map((r) => ({
-        user_id: r.author_id,
-        name: r.last_initial ? `${r.first_name} ${r.last_initial}.` : r.first_name,
+      total: rows.length,
+      counts: countKinds(rows),
+      reactors: rows.map((r) => ({
+        userId: r.author_id,
+        name: r.author_name || r.first_name,
+        email: r.author_email,
+        department: r.department,
         avatar: r.avatar_url,
-        is_me: r.author_id === user.userId,
+        portal: r.author_portal,
+        kind: r.kind,
+        reactedAt: r.created_at,
       })),
     };
   }
@@ -650,6 +750,7 @@ export class CommunityService {
 
   async adminFeed(
     scope: OrgScope,
+    admin: AuthenticatedUser,
     query: { type?: string; search?: string; page?: number; limit?: number },
   ) {
     const limit = clampLimit(query.limit);
@@ -658,11 +759,11 @@ export class CommunityService {
     const type = this.safeType(query.type);
     const search = query.search?.trim() || undefined;
     const [rows, total] = await Promise.all([
-      this.repository.adminFeed(scope, { type, search, limit, offset }),
+      this.repository.adminFeed(scope, admin.userId, { type, search, limit, offset }),
       this.repository.countForAdmin(scope, { type, search }),
     ]);
     return {
-      posts: rows.map((r) => this.shapePost(r, -1, true)),
+      posts: rows.map((r) => this.shapePost(r, admin.userId, true)),
       total,
       page,
       limit,
@@ -684,8 +785,10 @@ export class CommunityService {
       { limit: 200, offset: 0 },
     );
     return {
-      post: this.shapePost(post, -1, true),
-      replies: replies.map((r) => this.shapeReply(r, -1)),
+      post: this.shapePost(post, admin.userId, true),
+      replies: replies.map((r) =>
+        this.shapeReply(r, admin.userId, post.author_id, true),
+      ),
     };
   }
 
@@ -731,6 +834,21 @@ export class CommunityService {
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
+  private reactionState(
+    myReaction: CommunityReaction | null,
+    total: number,
+    counts: Record<string, number>,
+  ) {
+    return {
+      myReaction,
+      // `liked` / `likeCount` keep their old meaning for old clients: "I have
+      // reacted" and the post's total across every kind.
+      liked: myReaction !== null,
+      likeCount: total,
+      reactions: normalizeReactionCounts(counts),
+    };
+  }
+
   private async assertEnabled(scope: OrgScope) {
     const on = await this.repository.communityEnabled(scope);
     if (!on) {
@@ -769,11 +887,14 @@ export class CommunityService {
       createdAt: row.created_at,
       editedAt: row.edited_at,
       likedByMe: row.liked_by_me,
+      myReaction: row.my_reaction ?? null,
+      reactions: normalizeReactionCounts(row.reaction_counts),
       isMine: row.author_id === meId,
       author: {
         name,
         avatar: row.avatar_url,
         email: admin ? row.author_email : undefined,
+        isStaff: row.author_portal === 'admin',
       },
       certificate: row.cert_public_id
         ? {
@@ -809,19 +930,33 @@ export class CommunityService {
     };
   }
 
-  private shapeReply(row: ReplyRow, meId: number) {
-    const name = row.last_initial
-      ? `${row.first_name} ${row.last_initial}.`
-      : row.first_name;
+  private shapeReply(
+    row: ReplyRow,
+    meId: number,
+    postAuthorId: number,
+    admin = false,
+  ) {
+    const name = admin
+      ? row.author_name
+      : row.last_initial
+        ? `${row.first_name} ${row.last_initial}.`
+        : row.first_name;
     return {
       id: row.id,
+      parentReplyId: row.parent_reply_id ?? null,
       body: row.body,
       likeCount: row.like_count,
       createdAt: row.created_at,
       editedAt: row.edited_at,
       likedByMe: row.liked_by_me,
       isMine: row.author_id === meId,
-      author: { name, avatar: row.avatar_url },
+      // The post's own author answering on it: the asker, on a question.
+      isPostAuthor: row.author_id === postAuthorId,
+      author: {
+        name,
+        avatar: row.avatar_url,
+        isStaff: row.author_portal === 'admin',
+      },
     };
   }
 }
@@ -831,6 +966,12 @@ const DEFAULT_LIMIT = 20;
 function clampLimit(limit?: number): number {
   if (!limit || Number.isNaN(limit)) return DEFAULT_LIMIT;
   return Math.min(Math.max(Math.trunc(limit), 1), MAX_LIMIT);
+}
+
+function countKinds(rows: { kind: string }[]): Record<CommunityReaction, number> {
+  const raw: Record<string, number> = {};
+  for (const r of rows) raw[r.kind] = (raw[r.kind] ?? 0) + 1;
+  return normalizeReactionCounts(raw);
 }
 
 function truncate(s: string, n: number): string {

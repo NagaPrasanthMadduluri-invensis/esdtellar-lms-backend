@@ -7,6 +7,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Put,
   Query,
   Res,
   UploadedFile,
@@ -26,6 +27,7 @@ import {
   CreatePostDto,
   CreateReplyDto,
   CreateResourceDto,
+  SetReactionDto,
 } from './dto/community.dto';
 
 /**
@@ -212,6 +214,28 @@ export class LearnerCommunityController {
       postIdParam,
     );
     return this.community.reply(scope, user, postId, dto);
+  }
+
+  /** Set or change the caller's one quick reaction on a post (0073). */
+  @Put(':postId/reaction')
+  async react(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('postId') postIdParam: string,
+    @Body() dto: SetReactionDto,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow('community_posts', postIdParam);
+    return this.community.react(scope, user, postId, dto.kind);
+  }
+
+  @Delete(':postId/reaction')
+  async unreact(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('postId') postIdParam: string,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow('community_posts', postIdParam);
+    return this.community.unreact(scope, user, postId);
   }
 
   @Post(':postId/like')

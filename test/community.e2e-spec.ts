@@ -8,7 +8,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { createTestApp } from './app';
 import { dbQuery, fixtures, newPerson, signIn, uniq, type Agent } from './helpers';
-import { limitedAdmin, notificationsOf, tag, TINY_PDF, waitNotifications } from './support/5';
+import { limitedAdmin, notificationsOf, tag, TINY_PDF, waitFor, waitNotifications } from './support/5';
 
 describe('community', () => {
   let app: NestExpressApplication;
@@ -199,6 +199,140 @@ describe('community', () => {
       const [row] = await dbQuery('SELECT deleted_at, deleted_by FROM community_posts WHERE public_id = $1', [post.id]);
       expect(row.deleted_at).not.toBeNull();
       expect(row.deleted_by).toBe(fx.A.learner.id);
+    });
+  });
+
+  describe('quick reactions, responses to answers, admin participation (0073)', () => {
+    it('one reaction per person: a second kind replaces the first, counts stay exact, and remove clears it', async () => {
+      const post = await question(learner);
+      const a = await learner2.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'helpful' }).expect(200);
+      expect(a.body).toMatchObject({ myReaction: 'helpful', liked: true, likeCount: 1 });
+      expect(a.body.reactions).toMatchObject({ helpful: 1, like: 0, insightful: 0, thanks: 0, great_explanation: 0, agree: 0 });
+
+      // The same kind twice is idempotent; a different kind replaces it.
+      await learner2.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'helpful' }).expect(200);
+      const b = await learner2.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'great_explanation' }).expect(200);
+      expect(b.body.likeCount).toBe(1);
+      expect(b.body.reactions).toMatchObject({ helpful: 0, great_explanation: 1 });
+      const rows = await dbQuery('SELECT kind FROM community_reactions WHERE post_id = $1 AND user_id = $2', [await pk(post.id), fx.A.learner2.id]);
+      expect(rows).toEqual([{ kind: 'great_explanation' }]);
+
+      await learner.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'thanks' }).expect(200);
+
+      // The feed and the detail carry the caller's state and the breakdown.
+      const detail = await learner2.get(`/api/learner/community/${post.id}`).expect(200);
+      expect(detail.body.post).toMatchObject({ myReaction: 'great_explanation', likedByMe: true, likeCount: 2 });
+      expect(detail.body.post.reactions).toMatchObject({ great_explanation: 1, thanks: 1 });
+      const feed = await learner.get('/api/learner/community').query({ hashtag: post.hashtags[0].tag }).expect(200);
+      expect(feed.body.posts[0]).toMatchObject({ id: post.id, myReaction: 'thanks' });
+
+      // Who reacted, with what: first name + last initial on the learner side.
+      const who = await learner.get(`/api/learner/community/${post.id}/likes`).expect(200);
+      expect(who.body.likers.map((x: { kind: string }) => x.kind).sort()).toEqual(['great_explanation', 'thanks']);
+      expect(who.body.counts).toMatchObject({ great_explanation: 1, thanks: 1 });
+
+      const off = await learner2.delete(`/api/learner/community/${post.id}/reaction`).expect(200);
+      expect(off.body).toMatchObject({ myReaction: null, liked: false, likeCount: 1 });
+      const [row] = await dbQuery('SELECT like_count FROM community_posts WHERE public_id = $1', [post.id]);
+      expect(row.like_count).toBe(1);
+    });
+
+    it('refuses an unknown kind (400) and another organization\'s post (404)', async () => {
+      const post = await question(learner);
+      await learner.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'love' }).expect(400);
+      await learner.put(`/api/learner/community/${post.id}/reaction`).send({}).expect(400);
+      await learnerB.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'agree' }).expect(404);
+      await learnerB.delete(`/api/learner/community/${post.id}/reaction`).expect(404);
+    });
+
+    it('the asker responds under an answer; a response to a response stays one level deep; the answerer is told', async () => {
+      const post = await question(learner);
+      const answer = await learner2.post(`/api/learner/community/${post.id}/replies`).send({ body: 'Try this' }).expect(201);
+      expect(answer.body.reply.parentReplyId).toBeNull();
+      const answerId = answer.body.reply.id as number;
+
+      const resp = await learner.post(`/api/learner/community/${post.id}/replies`).send({ body: 'Thanks, that worked', parentReplyId: answerId }).expect(201);
+      expect(resp.body.reply).toMatchObject({ parentReplyId: answerId, isPostAuthor: true });
+
+      // Responding to the response files it under the same top-level answer.
+      const deeper = await learner2.post(`/api/learner/community/${post.id}/replies`).send({ body: 'Glad', parentReplyId: resp.body.reply.id }).expect(201);
+      expect(deeper.body.reply.parentReplyId).toBe(answerId);
+
+      const detail = await learner.get(`/api/learner/community/${post.id}`).expect(200);
+      const byId = new Map(detail.body.replies.map((r: { id: number }) => [r.id, r]));
+      expect(byId.get(resp.body.reply.id)).toMatchObject({ parentReplyId: answerId, isPostAuthor: true });
+      expect(byId.get(answerId)).toMatchObject({ parentReplyId: null, isPostAuthor: false });
+
+      // An admin responding to the answer tells the answerer (not the post author twice).
+      await adminA.post(`/api/admin/community/${post.id}/replies`).send({ body: 'Nice answer', parentReplyId: answerId }).expect(201);
+      const told = await waitFor(
+        () => notificationsOf(fx.A.learner2.id, 'community_reply'),
+        (rows) => rows.some((n) => /responded to your answer/i.test(n.title)),
+      );
+      expect(told.some((n) => /responded to your answer/i.test(n.title))).toBe(true);
+
+      // A parent from another post, or a missing one, is not found.
+      const other = await question(learner);
+      await learner.post(`/api/learner/community/${other.id}/replies`).send({ body: 'x', parentReplyId: answerId }).expect(404);
+      await learner.post(`/api/learner/community/${post.id}/replies`).send({ body: 'x', parentReplyId: 999999999 }).expect(404);
+    });
+
+    it('an admin takes part like a learner: replies, reacts and is marked as staff; it needs no moderation permission', async () => {
+      const post = await question(learner);
+      const r = await noModerator.post(`/api/admin/community/${post.id}/replies`).send({ body: 'From L&D' }).expect(201);
+      expect(r.body.reply).toMatchObject({ isMine: true, author: { isStaff: true } });
+      const re = await noModerator.put(`/api/admin/community/${post.id}/reaction`).send({ kind: 'insightful' }).expect(200);
+      expect(re.body).toMatchObject({ myReaction: 'insightful', likeCount: 1 });
+
+      // The learner sees the admin's reply, marked as staff.
+      const detail = await learner.get(`/api/learner/community/${post.id}`).expect(200);
+      expect(detail.body.replies.find((x: { body: string }) => x.body === 'From L&D').author.isStaff).toBe(true);
+
+      // The admin feed and detail carry the admin's own reaction.
+      const adminDetail = await noModerator.get(`/api/admin/community/${post.id}`).expect(200);
+      expect(adminDetail.body.post).toMatchObject({ myReaction: 'insightful', likedByMe: true });
+      await noModerator.delete(`/api/admin/community/${post.id}/reaction`).expect(200);
+      const after = await adminA.get(`/api/admin/community/${post.id}`).expect(200);
+      expect(after.body.post.likeCount).toBe(0);
+
+      // Org B's admin cannot touch org A's post; a learner cannot use the admin routes.
+      await adminB.post(`/api/admin/community/${post.id}/replies`).send({ body: 'x' }).expect(404);
+      await adminB.put(`/api/admin/community/${post.id}/reaction`).send({ kind: 'like' }).expect(404);
+      await adminB.delete(`/api/admin/community/${post.id}/reaction`).expect(404);
+      await learner.post(`/api/admin/community/${post.id}/replies`).send({ body: 'x' }).expect(403);
+      await learner.put(`/api/admin/community/${post.id}/reaction`).send({ kind: 'like' }).expect(403);
+    });
+
+    it('admin sees who reacted with full participant details and per-kind counts; another org gets 404', async () => {
+      const post = await question(learner);
+      await learner2.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'agree' }).expect(200);
+      await manager.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'agree' }).expect(200);
+      await adminA.put(`/api/admin/community/${post.id}/reaction`).send({ kind: 'helpful' }).expect(200);
+
+      const r = await noModerator.get(`/api/admin/community/${post.id}/reactions`).expect(200);
+      expect(r.body.total).toBe(3);
+      expect(r.body.counts).toMatchObject({ agree: 2, helpful: 1, like: 0 });
+      const l2 = r.body.reactors.find((x: { userId: number }) => x.userId === fx.A.learner2.id);
+      expect(l2).toMatchObject({ kind: 'agree', email: expect.stringContaining('@'), portal: 'learner' });
+      expect(l2.reactedAt).toBeTruthy();
+      expect(r.body.reactors.find((x: { userId: number }) => x.userId === fx.A.admin.id)).toMatchObject({ kind: 'helpful', portal: 'admin' });
+
+      await adminB.get(`/api/admin/community/${post.id}/reactions`).expect(404);
+      await learner.get(`/api/admin/community/${post.id}/reactions`).expect(403);
+    });
+
+    it('admin participation is refused while the community is switched off', async () => {
+      const post = await question(learner);
+      await adminA.patch('/api/admin/organization').send({ community_enabled: false }).expect(200);
+      try {
+        await adminA.post(`/api/admin/community/${post.id}/replies`).send({ body: 'x' }).expect(403);
+        await adminA.put(`/api/admin/community/${post.id}/reaction`).send({ kind: 'like' }).expect(403);
+        await learner.put(`/api/learner/community/${post.id}/reaction`).send({ kind: 'like' }).expect(403);
+        // Reading who reacted stays open to admins, like the rest of moderation.
+        await adminA.get(`/api/admin/community/${post.id}/reactions`).expect(200);
+      } finally {
+        await adminA.patch('/api/admin/organization').send({ community_enabled: true }).expect(200);
+      }
     });
   });
 

@@ -248,7 +248,7 @@ export class MyDataRepository {
 
   async communityReplies(userId: number) {
     return this.db.all<Record<string, unknown>>(sql`
-      SELECT post_id, body, like_count, created_at, edited_at, deleted_at
+      SELECT post_id, parent_reply_id, body, like_count, created_at, edited_at, deleted_at
         FROM community_replies
        WHERE user_id = ${userId}
        ORDER BY created_at DESC
@@ -257,7 +257,7 @@ export class MyDataRepository {
 
   async communityReactions(userId: number) {
     return this.db.all<Record<string, unknown>>(sql`
-      SELECT post_id, reply_id, created_at
+      SELECT post_id, reply_id, kind, created_at
         FROM community_reactions
        WHERE user_id = ${userId}
        ORDER BY created_at DESC

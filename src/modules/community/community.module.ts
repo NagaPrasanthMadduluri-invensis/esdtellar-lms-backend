@@ -10,7 +10,8 @@ import { LearnerCommunityController } from './learner-community.controller';
 
 /**
  * Learning Community (0049): a per-organization space for questions,
- * achievements and discussions, with replies and likes. Imports
+ * achievements and discussions, with replies, responses (0073) and quick
+ * reactions (0073), open to learners and admins alike. Imports
  * `NotificationsModule` to tell a post's author about new replies.
  */
 @Module({

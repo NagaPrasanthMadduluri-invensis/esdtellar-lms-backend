@@ -25,10 +25,16 @@ export interface PostRow {
   author_name: string;
   author_email: string | null;
   avatar_url: string | null;
+  // 'admin' | 'learner' | 'trainer': lets the UI mark an L&D participant.
+  author_portal: string | null;
   cert_public_id: string | null;
   cert_code: string | null;
   cert_revoked: number | null;
   liked_by_me: boolean;
+  // The caller's one quick reaction on the post, or null (0073).
+  my_reaction: string | null;
+  // {kind: count} for the kinds used on the post; `{}` when none.
+  reaction_counts: Record<string, number> | null;
   hashtags: { tag: string; label: string }[] | null;
   // Set only for a kudos post (type='kudos') — the person recognised, shown as
   // first name + last initial like every other community surface.
@@ -45,6 +51,8 @@ export interface PostRow {
 
 export interface ReplyRow {
   id: number;
+  // The reply this one responds to (0073), or null for a top-level reply.
+  parent_reply_id: number | null;
   body: string;
   like_count: number;
   created_at: string;
@@ -54,6 +62,7 @@ export interface ReplyRow {
   last_initial: string | null;
   author_name: string;
   avatar_url: string | null;
+  author_portal: string | null;
   liked_by_me: boolean;
 }
 
@@ -84,7 +93,26 @@ export class CommunityRepository {
       NULLIF(UPPER(LEFT(TRIM(${a}.last_name), 1)), '') AS last_initial,
       TRIM(COALESCE(${a}.first_name, '') || ' ' || COALESCE(${a}.last_name, '')) AS author_name,
       ${a}.email AS author_email,
-      ${a}.avatar_url`;
+      ${a}.avatar_url,
+      (SELECT ro.portal FROM roles ro WHERE ro.id = ${a}.role_id) AS author_portal`;
+  }
+
+  // The caller's quick reaction and the per-kind breakdown for a post (0073).
+  // Both ride the (post_id, user_id) unique index, one correlated read each.
+  private reactionColumns(postAlias: string, userId: number) {
+    const p = sql.identifier(postAlias);
+    return sql`
+      EXISTS (SELECT 1 FROM community_reactions r
+               WHERE r.post_id = ${p}.id AND r.user_id = ${userId}) AS liked_by_me,
+      (SELECT r.kind FROM community_reactions r
+        WHERE r.post_id = ${p}.id AND r.user_id = ${userId} LIMIT 1) AS my_reaction,
+      COALESCE((
+        SELECT json_object_agg(x.kind, x.n)
+          FROM (SELECT r.kind, COUNT(*)::int AS n
+                  FROM community_reactions r
+                 WHERE r.post_id = ${p}.id
+                 GROUP BY r.kind) x
+      ), '{}'::json) AS reaction_counts`;
   }
 
   // A post's hashtags as a JSON array of {tag,label}, ordered for display.
@@ -154,8 +182,7 @@ export class CommunityRepository {
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
              ${this.hashtagsJson('p')},
-             EXISTS (SELECT 1 FROM community_reactions r
-                      WHERE r.post_id = p.id AND r.user_id = ${userId}) AS liked_by_me
+             ${this.reactionColumns('p', userId)}
         FROM community_posts p
         JOIN users u ON u.id = p.user_id
    LEFT JOIN users ru ON ru.id = p.recipient_user_id
@@ -179,6 +206,7 @@ export class CommunityRepository {
   /** Admin moderation feed — all active posts in the org, limit/offset. */
   async adminFeed(
     scope: OrgScope,
+    userId: number,
     opts: { type?: string; search?: string; limit: number; offset: number },
   ): Promise<PostRow[]> {
     const typeFilter = opts.type ? sql` AND p.type = ${opts.type}` : sql``;
@@ -195,7 +223,7 @@ export class CommunityRepository {
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
              ${this.hashtagsJson('p')},
-             false AS liked_by_me
+             ${this.reactionColumns('p', userId)}
         FROM community_posts p
         JOIN users u ON u.id = p.user_id
    LEFT JOIN users ru ON ru.id = p.recipient_user_id
@@ -239,8 +267,7 @@ export class CommunityRepository {
              cert.certificate_code AS cert_code,
              cert.is_revoked       AS cert_revoked,
              ${this.hashtagsJson('p')},
-             EXISTS (SELECT 1 FROM community_reactions r
-                      WHERE r.post_id = p.id AND r.user_id = ${userId}) AS liked_by_me
+             ${this.reactionColumns('p', userId)}
         FROM community_posts p
         JOIN users u ON u.id = p.user_id
    LEFT JOIN users ru ON ru.id = p.recipient_user_id
@@ -258,7 +285,7 @@ export class CommunityRepository {
     opts: { limit: number; offset: number },
   ): Promise<ReplyRow[]> {
     return this.db.all<ReplyRow>(sql`
-      SELECT r.id, r.body, r.like_count, r.created_at, r.edited_at,
+      SELECT r.id, r.parent_reply_id, r.body, r.like_count, r.created_at, r.edited_at,
              ${this.authorColumns('u')},
              EXISTS (SELECT 1 FROM community_reactions rr
                       WHERE rr.reply_id = r.id AND rr.user_id = ${userId}) AS liked_by_me
@@ -657,6 +684,7 @@ export class CommunityRepository {
     postId: number;
     userId: number;
     body: string;
+    parentReplyId?: number | null;
   }): Promise<{ id: number }> {
     const id = await this.db.transaction(async (tx) => {
       const [row] = await tx
@@ -666,6 +694,7 @@ export class CommunityRepository {
           postId: input.postId,
           userId: input.userId,
           body: input.body,
+          parentReplyId: input.parentReplyId ?? null,
         })
         .returning({ id: communityReplies.id });
       await tx
@@ -679,45 +708,73 @@ export class CommunityRepository {
     return { id };
   }
 
-  /** Like a post. Idempotent; returns the fresh count. */
-  async likePost(
+  /**
+   * Set the caller's one reaction on a post (0073). Idempotent: the unique
+   * (post_id, user_id) index means a second call CHANGES the kind rather than
+   * adding a row, so nobody is counted twice. The total is recounted in the
+   * same transaction. Returns the fresh total and per-kind breakdown.
+   */
+  async setPostReaction(
     scope: OrgScope,
     postId: number,
     userId: number,
-  ): Promise<number> {
-    await this.db.run(sql`
-      INSERT INTO community_reactions (organization_id, user_id, post_id)
-      VALUES (${scope.organizationId}, ${userId}, ${postId})
-      ON CONFLICT (post_id, user_id) WHERE post_id IS NOT NULL DO NOTHING
-    `);
-    const rows = await this.db.all<{ like_count: number }>(sql`
-      UPDATE community_posts
-         SET like_count = (SELECT COUNT(*)::int FROM community_reactions WHERE post_id = ${postId})
-       WHERE id = ${postId}
-       RETURNING like_count
-    `);
-    return rows[0]?.like_count ?? 0;
+    kind: string,
+  ): Promise<{ total: number; counts: Record<string, number> }> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        INSERT INTO community_reactions (organization_id, user_id, post_id, kind)
+        VALUES (${scope.organizationId}, ${userId}, ${postId}, ${kind})
+        ON CONFLICT (post_id, user_id) WHERE post_id IS NOT NULL
+          DO UPDATE SET kind = EXCLUDED.kind
+      `);
+      return this.recountPost(tx, postId);
+    });
   }
 
-  async unlikePost(postId: number, userId: number): Promise<number> {
-    await this.db.run(sql`
-      DELETE FROM community_reactions WHERE post_id = ${postId} AND user_id = ${userId}
+  /** Remove the caller's reaction, whatever its kind. Idempotent. */
+  async removePostReaction(
+    postId: number,
+    userId: number,
+  ): Promise<{ total: number; counts: Record<string, number> }> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        DELETE FROM community_reactions WHERE post_id = ${postId} AND user_id = ${userId}
+      `);
+      return this.recountPost(tx, postId);
+    });
+  }
+
+  // Recount like_count (all kinds) and read the breakdown, inside the caller's
+  // transaction so the counter and the rows never disagree.
+  private async recountPost(
+    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
+    postId: number,
+  ): Promise<{ total: number; counts: Record<string, number> }> {
+    const res = await tx.execute(sql`
+      WITH counts AS (
+        SELECT kind, COUNT(*)::int AS n FROM community_reactions
+         WHERE post_id = ${postId} GROUP BY kind
+      ), upd AS (
+        UPDATE community_posts
+           SET like_count = (SELECT COALESCE(SUM(n), 0)::int FROM counts)
+         WHERE id = ${postId}
+     RETURNING like_count
+      )
+      SELECT (SELECT like_count FROM upd) AS total,
+             COALESCE((SELECT json_object_agg(kind, n) FROM counts), '{}'::json) AS counts
     `);
-    const rows = await this.db.all<{ like_count: number }>(sql`
-      UPDATE community_posts
-         SET like_count = (SELECT COUNT(*)::int FROM community_reactions WHERE post_id = ${postId})
-       WHERE id = ${postId}
-       RETURNING like_count
-    `);
-    return rows[0]?.like_count ?? 0;
+    const row = (res as unknown as { rows: { total: number; counts: Record<string, number> }[] })
+      .rows[0];
+    return { total: row?.total ?? 0, counts: row?.counts ?? {} };
   }
 
   /**
-   * Who liked a post — newest first, org-scoped on the reaction so a like never
-   * crosses a tenant. Returns the same author columns the feed uses, so the
-   * caller shows first name + last initial on the learner surface (§10.24).
+   * Who reacted to a post, and with what: newest first, org-scoped on the
+   * reaction so it never crosses a tenant. Carries the author columns plus
+   * department, so the learner surface shows first name + last initial
+   * (§10.24) and the admin surface the full participant record.
    */
-  async postLikers(scope: OrgScope, postId: number, limit: number) {
+  async postReactors(scope: OrgScope, postId: number, limit: number) {
     return this.db.all<{
       author_id: number;
       first_name: string;
@@ -725,13 +782,16 @@ export class CommunityRepository {
       author_name: string;
       author_email: string | null;
       avatar_url: string | null;
+      author_portal: string | null;
+      department: string | null;
+      kind: string;
       created_at: string;
     }>(sql`
-      SELECT ${this.authorColumns('u')}, cr.created_at
+      SELECT ${this.authorColumns('u')}, u.department, cr.kind, cr.created_at
       FROM community_reactions cr
       JOIN users u ON u.id = cr.user_id
       WHERE cr.post_id = ${postId} AND ${orgScope('cr', scope)}
-      ORDER BY cr.created_at DESC
+      ORDER BY cr.created_at DESC, cr.id DESC
       LIMIT ${limit}
     `);
   }
@@ -768,13 +828,28 @@ export class CommunityRepository {
   async findReply(
     scope: OrgScope,
     replyId: number,
-  ): Promise<{ id: number; userId: number; postId: number } | null> {
-    const rows = await this.db.all<{ id: number; user_id: number; post_id: number }>(sql`
-      SELECT id, user_id, post_id FROM community_replies r
+  ): Promise<{
+    id: number;
+    userId: number;
+    postId: number;
+    parentReplyId: number | null;
+  } | null> {
+    const rows = await this.db.all<{
+      id: number;
+      user_id: number;
+      post_id: number;
+      parent_reply_id: number | null;
+    }>(sql`
+      SELECT id, user_id, post_id, parent_reply_id FROM community_replies r
        WHERE id = ${replyId} AND ${orgScope('r', scope)} AND deleted_at IS NULL
     `);
     return rows[0]
-      ? { id: rows[0].id, userId: rows[0].user_id, postId: rows[0].post_id }
+      ? {
+          id: rows[0].id,
+          userId: rows[0].user_id,
+          postId: rows[0].post_id,
+          parentReplyId: rows[0].parent_reply_id,
+        }
       : null;
   }
 

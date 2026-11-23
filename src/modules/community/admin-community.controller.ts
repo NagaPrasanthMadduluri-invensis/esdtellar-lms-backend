@@ -8,6 +8,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 
@@ -25,14 +26,18 @@ import { CommunityService } from './community.service';
 import {
   CreateDiscussionDto,
   CreateGroupDto,
+  CreateReplyDto,
+  SetReactionDto,
   UpdateGroupDto,
 } from './dto/community.dto';
 
 /**
- * Admin moderation of the Learning Community. The READ is open to the admin
- * audience (content reads are, §5.2.1); the DELETEs are writes gated by
- * `moderate_community`. Everything is org-scoped in the service — an admin
- * only ever sees and removes their own tenant's posts.
+ * Admin moderation of, and participation in, the Learning Community. The
+ * READS are open to the admin audience (content reads are, §5.2.1), and so is
+ * TAKING PART (replying, reacting): a Learner needs no Permission to join in,
+ * and neither does an Admin (owner request 2026-11-23). Removing other
+ * people's content and curating Groups and Discussions are moderation, gated by
+ * `moderate_community`. Everything is org-scoped in the service.
  */
 @Controller('admin/community')
 @Roles('admin')
@@ -45,12 +50,13 @@ export class AdminCommunityController {
   @Get()
   async feed(
     @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
     @Query('type') type?: string,
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.community.adminFeed(scope, {
+    return this.community.adminFeed(scope, admin, {
       type,
       search,
       page: page ? Number(page) : undefined,
@@ -110,6 +116,51 @@ export class AdminCommunityController {
       postIdParam,
     );
     return this.community.adminDetail(scope, user, postId);
+  }
+
+  /** Who reacted, with what and when: the full participant record. */
+  @Get(':postId/reactions')
+  async reactions(
+    @CurrentScope() scope: OrgScope,
+    @Param('postId') postIdParam: string,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow('community_posts', postIdParam);
+    return this.community.adminPostReactors(scope, postId);
+  }
+
+  /** Take part: reply to a post, or respond to a reply on it. */
+  @Post(':postId/replies')
+  @HttpCode(201)
+  async reply(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('postId') postIdParam: string,
+    @Body() dto: CreateReplyDto,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow('community_posts', postIdParam);
+    return this.community.reply(scope, admin, postId, dto);
+  }
+
+  /** Take part: set or change the admin's own quick reaction. */
+  @Put(':postId/reaction')
+  async react(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('postId') postIdParam: string,
+    @Body() dto: SetReactionDto,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow('community_posts', postIdParam);
+    return this.community.react(scope, admin, postId, dto.kind);
+  }
+
+  @Delete(':postId/reaction')
+  async unreact(
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('postId') postIdParam: string,
+  ) {
+    const postId = await this.publicId.resolveIdOrThrow('community_posts', postIdParam);
+    return this.community.unreact(scope, admin, postId);
   }
 
   @Delete(':postId')

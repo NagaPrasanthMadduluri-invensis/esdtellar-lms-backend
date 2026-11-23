@@ -145,6 +145,9 @@ export const communityReplies = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     body: text('body').notNull(),
+    // A response to another reply on the same post (0073), one level deep:
+    // the asker answering a contribution. NULL for a top-level reply.
+    parentReplyId: integer('parent_reply_id'),
     likeCount: integer('like_count').notNull().default(0),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
@@ -156,6 +159,9 @@ export const communityReplies = pgTable(
   (table) => [
     index('idx_community_replies_post').on(table.postId, table.createdAt),
     index('idx_community_replies_org').on(table.organizationId),
+    index('idx_community_replies_parent')
+      .on(table.parentReplyId)
+      .where(sql`${table.parentReplyId} IS NOT NULL`),
   ],
 );
 
@@ -173,6 +179,10 @@ export const communityReactions = pgTable(
     replyId: integer('reply_id').references(() => communityReplies.id, {
       onDelete: 'cascade',
     }),
+    // The quick reaction (0073): like | helpful | insightful | thanks |
+    // great_explanation | agree (`common/community-reactions.ts`). One per
+    // person per target; choosing another replaces it.
+    kind: text('kind').notNull().default('like'),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -5564,6 +5564,48 @@ effectiveness and the (empty, honest) skill section all returned.
 the Analytics page; the AI page links there), per-learner risk prediction as a
 dedicated learner-facing view, and the nightly pre-generation cron.
 
+### 10.59 Community reactions, responses, and admins taking part (0073, 2026-11-23)
+
+**A reaction is a KIND on the existing row, not a second table.**
+`community_reactions` gained `kind` (like, helpful, insightful, thanks,
+great_explanation, agree; CHECK-constrained, catalogue in
+`common/community-reactions.ts`). The `(post_id, user_id)` unique index already
+existed, so "no duplicate reactions" is enforced by Postgres: `PUT
+:postId/reaction` is an `ON CONFLICT ... DO UPDATE SET kind`, and changing kind
+moves the person's one count rather than adding one. Every pre-0073 row was a
+heart, so the column default backfills them as `like`, and the old `like`
+routes are now `react(..., 'like')` with unchanged response shapes.
+
+**`like_count` means the TOTAL across kinds**, recounted in the same
+transaction as the write (one CTE that groups by kind, updates the counter and
+returns the breakdown). The per-kind breakdown on the feed is a correlated
+`json_object_agg` per card riding the unique index, so the feed still costs one
+round trip.
+
+**Responses are one level deep.** `community_replies.parent_reply_id` (ON
+DELETE CASCADE, partial index). The service resolves a response-to-a-response
+to its top-level parent, so threads never become staircases, and refuses a
+parent from another Post (or org) with 404. The parent's author is notified in
+addition to the Post's author, never twice and never the replier.
+
+**Taking part carries no Permission; moderating does.** An Admin replies and
+reacts through `POST admin/community/:postId/replies` and `PUT/DELETE
+admin/community/:postId/reaction`, open to the whole admin audience exactly as
+the learner routes are open to every learner (participation is not a granted
+capability). Deleting OTHER people's content stays `moderate_community`. Both
+participation paths go through the same service methods as the learner's, so
+the community switch (`assertEnabled`) and org scoping apply identically.
+
+**Who reacted: two views of one query.** `postReactors` returns the author
+columns plus department and kind. The learner route shapes first name + last
+initial (§10.24); `GET admin/community/:postId/reactions` returns full name,
+email, department, portal and time, the same disclosure the admin feed already
+makes for authors. `author_portal` is read on every author row so the UI can
+mark an Admin as "L&D".
+
+Pinned by `community.service.spec.ts` and the "quick reactions, responses to
+answers, admin participation" block of `test/community.e2e-spec.ts`.
+
 ## 11. Adding a new module — checklist
 
 Answer these before writing code:
