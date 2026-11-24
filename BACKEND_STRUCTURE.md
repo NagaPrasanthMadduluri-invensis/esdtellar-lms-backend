@@ -5654,6 +5654,31 @@ Pinned by `job-role-fit.spec.ts` (the demo org's real roles and catalogue),
 `learner-insights.service.spec.ts` and `client/e2e/ai-insights.spec.mjs`, where
 the fake model echoes names from the list it is sent so the filter is real.
 
+### 10.62 Skills reach people where they look, and late tags still count (2026-11-24)
+
+Three gaps made gained skills invisible in production. A course was created with
+free-text Tags and no Skill tags (so completion granted nothing), the learner
+course page labelled those Tags "Skills you'll gain", and no screen listed a
+learner's own skills; `GET learner/competencies` had no caller.
+
+- **Late tags still count.** `setCourseSkills` now calls `awardToCompleters`:
+  SQL narrows to active, assigned people with at least one lesson done, then each
+  is checked with the ONE completion definition (`isCourseComplete`) before
+  `recordCourseSkills`. A per-person loop, deliberately: it is bounded by one
+  course's assignments, runs only when an admin saves, and keeps a single
+  definition of "complete". The response gains `awarded`.
+- **Learner course detail** carries `skills` (the course's Skill tags, each
+  `earned` when held at that level or above). Tags are shown as Topics.
+- **`GET admin/skills/analytics`** (`view_reports`, like the other insight
+  reads): coverage per skill split by level, holders (names, for the
+  drill-down), a 12-month trend (awards, people gaining, people holding at the
+  month end), awards per area per month, department coverage and untagged live
+  courses. Every holder count carries its own `orgScope` inside the content row
+  (§10.12) and excludes deactivated people. One `Promise.all` of fixed reads.
+
+Pinned by `competencies.service.spec.ts`, `test/competencies.e2e-spec.ts` and
+`client/e2e/admin-course-skills.spec.mjs`.
+
 ## 11. Adding a new module — checklist
 
 Answer these before writing code:

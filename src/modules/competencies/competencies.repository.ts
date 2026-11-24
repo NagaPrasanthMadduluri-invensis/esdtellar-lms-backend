@@ -240,4 +240,211 @@ export class CompetenciesRepository {
       ORDER BY s.domain NULLS LAST, s.name
     `);
   }
+
+  // ── Award-on-save (2026-11-24) ────────────────────────────────────────────
+
+  /**
+   * Active learners assigned to this course who have finished at least one of
+   * its lessons: the only people who CAN have completed it. The service then
+   * asks the one completion definition about each, so this is a narrowing
+   * read, not a second definition of "complete".
+   */
+  async completionCandidates(scope: OrgScope, courseId: number): Promise<number[]> {
+    const rows = await this.db.all<{ user_id: number }>(sql`
+      SELECT DISTINCT uca.user_id
+      FROM user_course_assignments uca
+      JOIN users u ON u.id = uca.user_id AND u.is_active = 1
+      WHERE uca.course_id = ${courseId}
+        AND ${orgScope('uca', scope)}
+        AND EXISTS (
+          SELECT 1 FROM user_lesson_completions ulc
+          JOIN lessons l ON l.id = ulc.lesson_id
+          WHERE ulc.user_id = uca.user_id AND l.course_id = ${courseId}
+            AND ${orgScope('ulc', scope)}
+        )
+    `);
+    return rows.map((r) => Number(r.user_id));
+  }
+
+  /**
+   * A course's skill tags for one learner, each marked earned when they hold
+   * that skill at the tagged level or above (from this course or any other).
+   */
+  async courseSkillsForLearner(
+    scope: OrgScope,
+    courseId: number,
+    userId: number,
+  ): Promise<{ skill_id: number; name: string; domain: string | null; level: string; earned: boolean; held_level: string | null }[]> {
+    return this.db.all(sql`
+      SELECT s.id AS skill_id, s.name, s.domain, cs.level,
+             us.level AS held_level,
+             (us.id IS NOT NULL AND ${rank(sql`us.level`)} >= ${rank(sql`cs.level`)}) AS earned
+      FROM course_skills cs
+      JOIN skills s ON s.id = cs.skill_id AND s.is_active = 1
+      LEFT JOIN user_skills us
+        ON us.skill_id = cs.skill_id AND us.user_id = ${userId} AND ${orgScope('us', scope)}
+      WHERE cs.course_id = ${courseId}
+      ORDER BY s.name
+    `);
+  }
+
+  // ── Admin skills analytics (2026-11-24) ───────────────────────────────────
+
+  /**
+   * Every skill visible to the org that is either tagged on a live course or
+   * held by somebody, with holders split by level. Holder counts are ACTIVITY,
+   * so they carry their own orgScope inside the content row (the recurring
+   * leak, BACKEND_STRUCTURE §10.12); deactivated people are not counted.
+   */
+  async skillCoverage(scope: OrgScope) {
+    return this.db.all<{
+      skill_id: number;
+      name: string;
+      domain: string;
+      people: number;
+      beginner: number;
+      intermediate: number;
+      advanced: number;
+      courses_tagged: number;
+    }>(sql`
+      WITH held AS (
+        SELECT us.skill_id, us.level
+        FROM user_skills us
+        JOIN users u ON u.id = us.user_id AND u.is_active = 1
+        WHERE ${orgScope('us', scope)}
+      ),
+      tagged AS (
+        SELECT cs.skill_id, COUNT(DISTINCT cs.course_id)::int AS n
+        FROM course_skills cs
+        JOIN courses c ON c.id = cs.course_id
+        WHERE ${contentScope('c', scope)} AND c.is_active = 1 AND c.archived_at IS NULL
+        GROUP BY cs.skill_id
+      )
+      SELECT s.id AS skill_id, s.name, COALESCE(s.domain, 'General') AS domain,
+             COUNT(h.skill_id)::int AS people,
+             COUNT(h.skill_id) FILTER (WHERE h.level = 'beginner')::int AS beginner,
+             COUNT(h.skill_id) FILTER (WHERE h.level = 'intermediate')::int AS intermediate,
+             COUNT(h.skill_id) FILTER (WHERE h.level = 'advanced')::int AS advanced,
+             COALESCE(MAX(t.n), 0)::int AS courses_tagged
+      FROM skills s
+      LEFT JOIN held h ON h.skill_id = s.id
+      LEFT JOIN tagged t ON t.skill_id = s.id
+      WHERE ${contentScope('s', scope)} AND s.is_active = 1
+      GROUP BY s.id, s.name, s.domain
+      HAVING COUNT(h.skill_id) > 0 OR COALESCE(MAX(t.n), 0) > 0
+      ORDER BY people DESC, s.name
+    `);
+  }
+
+  /** Who holds each skill: for the drill-down beside the chart. */
+  async skillHolders(scope: OrgScope, limit: number) {
+    return this.db.all<{
+      skill_id: number;
+      user_id: number;
+      name: string;
+      department: string | null;
+      job_role: string | null;
+      level: string;
+      earned_at: string;
+    }>(sql`
+      SELECT us.skill_id, u.id AS user_id,
+             TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS name,
+             u.department, u.job_role, us.level, us.earned_at
+      FROM user_skills us
+      JOIN users u ON u.id = us.user_id AND u.is_active = 1
+      WHERE ${orgScope('us', scope)}
+      ORDER BY us.earned_at DESC
+      LIMIT ${limit}
+    `);
+  }
+
+  /**
+   * The last `months` calendar months, oldest first: skills earned in each,
+   * people who gained one, and people holding at least one by the month's end.
+   * One round trip; each month is a correlated scalar read (§7.5).
+   */
+  async skillTrend(scope: OrgScope, months: number) {
+    return this.db.all<{ month: string; earned: number; learners: number; holders: number }>(sql`
+      WITH m AS (
+        SELECT generate_series(
+          date_trunc('month', now()) - make_interval(months => ${months - 1}),
+          date_trunc('month', now()),
+          interval '1 month'
+        ) AS start
+      ),
+      us AS (
+        SELECT x.user_id, x.earned_at
+        FROM user_skills x
+        JOIN users u ON u.id = x.user_id AND u.is_active = 1
+        WHERE ${orgScope('x', scope)}
+      )
+      SELECT to_char(m.start, 'YYYY-MM') AS month,
+             (SELECT COUNT(*) FROM us WHERE us.earned_at >= m.start AND us.earned_at < m.start + interval '1 month')::int AS earned,
+             (SELECT COUNT(DISTINCT us.user_id) FROM us WHERE us.earned_at >= m.start AND us.earned_at < m.start + interval '1 month')::int AS learners,
+             (SELECT COUNT(DISTINCT us.user_id) FROM us WHERE us.earned_at < m.start + interval '1 month')::int AS holders
+      FROM m
+      ORDER BY m.start
+    `);
+  }
+
+  /** Skills earned per month per skill area, for the multi-line chart. */
+  async skillTrendByDomain(scope: OrgScope, months: number) {
+    return this.db.all<{ month: string; domain: string; earned: number }>(sql`
+      SELECT to_char(date_trunc('month', us.earned_at), 'YYYY-MM') AS month,
+             COALESCE(s.domain, 'General') AS domain,
+             COUNT(*)::int AS earned
+      FROM user_skills us
+      JOIN users u ON u.id = us.user_id AND u.is_active = 1
+      JOIN skills s ON s.id = us.skill_id
+      WHERE ${orgScope('us', scope)}
+        AND us.earned_at >= date_trunc('month', now()) - make_interval(months => ${months - 1})
+      GROUP BY 1, 2
+    `);
+  }
+
+  /** Skill coverage per department: people holding any skill, of headcount. */
+  async departmentCoverage(scope: OrgScope) {
+    return this.db.all<{ department: string; headcount: number; with_skills: number; skills_held: number }>(sql`
+      SELECT COALESCE(NULLIF(TRIM(u.department), ''), 'No department') AS department,
+             COUNT(DISTINCT u.id)::int AS headcount,
+             COUNT(DISTINCT us.user_id)::int AS with_skills,
+             COUNT(us.id)::int AS skills_held
+      FROM users u
+      JOIN roles r ON r.id = u.role_id AND r.portal = 'learner'
+      LEFT JOIN user_skills us ON us.user_id = u.id AND ${orgScope('us', scope)}
+      WHERE ${orgScope('u', scope)} AND u.is_active = 1
+      GROUP BY 1
+      ORDER BY with_skills DESC, headcount DESC
+    `);
+  }
+
+  /** Live courses this org owns that carry no skill tag: they grow nobody's skills. */
+  async untaggedCourses(scope: OrgScope) {
+    return this.db.all<{ id: number; public_id: string; name: string; learners: number }>(sql`
+      SELECT c.id, c.public_id, c.name,
+             (SELECT COUNT(*) FROM user_course_assignments uca
+               WHERE uca.course_id = c.id AND ${orgScope('uca', scope)})::int AS learners
+      FROM courses c
+      WHERE ${orgScope('c', scope)} AND c.is_active = 1 AND c.archived_at IS NULL
+        AND c.session_id IS NULL AND c.external_certification_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM course_skills cs WHERE cs.course_id = c.id)
+      ORDER BY learners DESC, c.name
+      LIMIT 20
+    `);
+  }
+
+  /** Active learners in the org: the denominator for coverage. */
+  async activeLearnerCount(scope: OrgScope): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM users u
+      JOIN roles r ON r.id = u.role_id AND r.portal = 'learner'
+      WHERE ${orgScope('u', scope)} AND u.is_active = 1
+    `);
+    return rows[0]?.n ?? 0;
+  }
+}
+
+/** A level as a comparable number, in SQL (beginner < intermediate < advanced). */
+function rank(col: SQL): SQL {
+  return sql`(CASE ${col} WHEN 'advanced' THEN 3 WHEN 'intermediate' THEN 2 WHEN 'beginner' THEN 1 ELSE 0 END)`;
 }

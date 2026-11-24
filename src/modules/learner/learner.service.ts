@@ -1008,6 +1008,10 @@ export class LearnerService {
     const thisRow =
       assignedRows.find((r) => Number(r.course_id) === courseId) ?? null;
 
+    // The course's real skill tags (not its free-text Tags), each marked
+    // earned when the learner already holds it at that level.
+    const skills = await this.competencies.courseSkillsFor(scope, courseId, userId);
+
     return {
       course: {
         ...(course as Record<string, unknown>),
@@ -1025,6 +1029,7 @@ export class LearnerService {
         last_attempt: latestByAssessment.get(Number(a.id)) ?? null,
       })),
       assessmentsUnlocked: totalLessons > 0 && completedLessons === totalLessons,
+      skills,
       // Null only if the assignment vanished between the two reads, which the
       // 404 above has already ruled out for any realistic request.
       reward: thisRow ? this.rewardMapper(assignedRows)(thisRow) : null,

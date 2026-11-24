@@ -114,7 +114,136 @@ export class CompetenciesService {
       courseId,
       dto.skills.map((s) => ({ skillId: s.skillId, level: s.level })),
     );
-    return { ok: true, count };
+    // People who ALREADY completed the course gain the skills now. Skills were
+    // only ever recorded at the moment of completion, so tagging a course
+    // after people finished it left them with nothing (2026-11-24).
+    const awarded = count > 0 ? await this.awardToCompleters(scope, courseId) : 0;
+    return { ok: true, count, awarded };
+  }
+
+  /**
+   * Record the course's skills for everyone who has completed it. Candidates
+   * are narrowed in SQL (assigned, active, at least one lesson done), then each
+   * is checked with the ONE completion definition. Bounded by one course's
+   * assignments and run only when an admin saves the mapping. Returns how many
+   * people were recorded. Best-effort per person: one failure never blocks the
+   * save or the rest.
+   */
+  async awardToCompleters(scope: OrgScope, courseId: number): Promise<number> {
+    const candidates = await this.repository.completionCandidates(scope, courseId);
+    let awarded = 0;
+    for (const userId of candidates) {
+      try {
+        if (await this.certificates.isCourseComplete(scope, userId, courseId)) {
+          await this.repository.recordCourseSkills(scope, userId, courseId);
+          awarded += 1;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Skill award skipped for user=${userId} course=${courseId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return awarded;
+  }
+
+  /** A course's skills for one learner, each marked earned or not. */
+  async courseSkillsFor(scope: OrgScope, courseId: number, userId: number) {
+    const rows = await this.repository.courseSkillsForLearner(scope, courseId, userId);
+    return rows.map((r) => ({
+      skillId: r.skill_id,
+      name: r.name,
+      domain: r.domain,
+      level: r.level,
+      earned: r.earned === true,
+      heldLevel: r.held_level,
+    }));
+  }
+
+  /**
+   * The admin's Skills and competencies page: who holds what, at which level,
+   * how that grew month by month, coverage per department, and the courses
+   * that teach no skill yet. Every figure is read from `user_skills`, the same
+   * rows a learner's own skills come from.
+   */
+  async skillsAnalytics(scope: OrgScope) {
+    const MONTHS = 12;
+    const [coverage, holders, trend, byDomain, departments, untagged, activeLearners] =
+      await Promise.all([
+        this.repository.skillCoverage(scope),
+        this.repository.skillHolders(scope, 2000),
+        this.repository.skillTrend(scope, MONTHS),
+        this.repository.skillTrendByDomain(scope, MONTHS),
+        this.repository.departmentCoverage(scope),
+        this.repository.untaggedCourses(scope),
+        this.repository.activeLearnerCount(scope),
+      ]);
+
+    const holdersBySkill = new Map<number, { userId: number; name: string; department: string | null; jobRole: string | null; level: string; earnedAt: string }[]>();
+    for (const h of holders) {
+      const list = holdersBySkill.get(h.skill_id) ?? [];
+      list.push({
+        userId: h.user_id,
+        name: h.name,
+        department: h.department,
+        jobRole: h.job_role,
+        level: h.level,
+        earnedAt: h.earned_at,
+      });
+      holdersBySkill.set(h.skill_id, list);
+    }
+
+    const domains = Array.from(new Set(coverage.map((c) => c.domain))).sort();
+    const domainSeries = trend.map((t) => {
+      const row: Record<string, string | number> = { month: t.month };
+      for (const d of domains) row[d] = 0;
+      for (const b of byDomain) if (b.month === t.month) row[b.domain] = b.earned;
+      return row;
+    });
+
+    const peopleWithSkills = new Set(holders.map((h) => h.user_id)).size;
+    const held = coverage.filter((c) => c.people > 0);
+    const totalAwards = coverage.reduce((n, c) => n + c.people, 0);
+
+    return {
+      kpis: {
+        activeLearners,
+        peopleWithSkills,
+        coveragePct: activeLearners > 0 ? Math.round((peopleWithSkills / activeLearners) * 100) : null,
+        skillsHeld: held.length,
+        totalAwards,
+        avgPerPerson: peopleWithSkills > 0 ? Math.round((totalAwards / peopleWithSkills) * 10) / 10 : null,
+        earnedThisMonth: trend.at(-1)?.earned ?? 0,
+      },
+      skills: coverage.map((c) => ({
+        skillId: c.skill_id,
+        name: c.name,
+        domain: c.domain,
+        people: c.people,
+        levels: { beginner: c.beginner, intermediate: c.intermediate, advanced: c.advanced },
+        coursesTagged: c.courses_tagged,
+        holders: holdersBySkill.get(c.skill_id) ?? [],
+      })),
+      domains: domains.map((d) => ({
+        domain: d,
+        people: new Set(
+          holders.filter((h) => coverage.find((c) => c.skill_id === h.skill_id)?.domain === d).map((h) => h.user_id),
+        ).size,
+        skills: coverage.filter((c) => c.domain === d && c.people > 0).length,
+      })),
+      trend: trend.map((t) => ({ month: t.month, earned: t.earned, learners: t.learners, holders: t.holders })),
+      trendByDomain: { domains, series: domainSeries },
+      departments: departments.map((d) => ({
+        department: d.department,
+        headcount: d.headcount,
+        withSkills: d.with_skills,
+        skillsHeld: d.skills_held,
+        coveragePct: d.headcount > 0 ? Math.round((d.with_skills / d.headcount) * 100) : 0,
+      })),
+      untaggedCourses: untagged.map((c) => ({ id: c.public_id ?? c.id, name: c.name, learners: c.learners })),
+    };
   }
 
   listMyCompetencies(scope: OrgScope, userId: number) {

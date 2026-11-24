@@ -69,6 +69,17 @@ export class AdminSkillsController {
     return { skill };
   }
 
+  /**
+   * The Skills and competencies page (2026-11-24): coverage per skill by level,
+   * monthly trends, departments and untagged courses. A read worth gating like
+   * the rest of the insight pages, so `view_reports`, not `manage_courses`.
+   */
+  @Get('analytics')
+  @Permissions('view_reports')
+  async analytics(@CurrentScope() scope: OrgScope) {
+    return this.competencies.skillsAnalytics(scope);
+  }
+
   @Get('course/:courseId')
   @Permissions('manage_courses')
   async courseSkills(
