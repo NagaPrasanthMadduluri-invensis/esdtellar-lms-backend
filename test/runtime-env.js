@@ -29,6 +29,8 @@ function runtimeEnv(databaseUrl, extra = {}) {
     AI_BASE_URL: `http://127.0.0.1:${FAKE_AI_PORT}/api/v1`,
     MFA_ENCRYPTION_KEY: 'e2e0'.repeat(16),
     MFA_ENFORCE: 'true',
+    // One exempt admin address (mixed case: matching is case-insensitive).
+    MFA_EXEMPT_EMAILS: 'Mfa-Exempt@org-a-e2e.e2e.test, other@nowhere.test',
     RETENTION_ENABLED: 'false',
     RETENTION_DRY_RUN: 'true',
     CLIQ_WEBHOOK_TOKEN: '',

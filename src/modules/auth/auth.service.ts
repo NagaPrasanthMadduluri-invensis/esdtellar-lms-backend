@@ -169,7 +169,13 @@ export class AuthService {
      * real token is issued. Anyone who has it ON is challenged: mandatory for
      * admins, optional (but then enforced) for learners and trainers.
      */
-    if (await this.mfa.isEnabledForLogin(user.id)) {
+    // An exempt account (MFA_EXEMPT_EMAILS, §10.60) signs in on its password
+    // alone, even with a method enrolled. Logged so it is never silent.
+    const exempt = this.mfa.isExempt(user.email);
+    if (exempt) {
+      this.logger.warn(`Two-step sign-in skipped for exempt account user=${user.id}`);
+    }
+    if (!exempt && (await this.mfa.isEnabledForLogin(user.id))) {
       const method = await this.mfa.methodFor(user.id);
       const challenge: MfaChallenge = {
         mfaRequired: true,
@@ -215,7 +221,7 @@ export class AuthService {
           user.consentVersion,
           user.consentedAt,
         ),
-      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, undefined),
+      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, undefined, user.email),
       },
       roleContext,
     );
@@ -283,7 +289,7 @@ export class AuthService {
           user.consentVersion,
           user.consentedAt,
         ),
-      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, undefined),
+      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, undefined, user.email),
       },
       roleContext,
     );
@@ -359,10 +365,12 @@ export class AuthService {
   private async mfaSetupRequired(
     role: string,
     userId: number,
-    impersonatorId?: number | null,
+    impersonatorId: number | null | undefined,
+    email: string | null | undefined,
   ): Promise<boolean> {
     if (role !== 'admin' || impersonatorId || !this.mfa.isEnforced() || !this.mfa.canEnrol())
       return false;
+    if (this.mfa.isExempt(email)) return false;
     return !(await this.mfa.isEnabledForLogin(userId));
   }
 
@@ -392,7 +400,7 @@ export class AuthService {
         user.consentedAt,
         claims?.impersonatorId,
       ),
-      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, claims?.impersonatorId),
+      mfa_setup_required: await this.mfaSetupRequired(user.role, user.id, claims?.impersonatorId, user.email),
       is_platform_admin:
         user.role === 'admin' &&
         user.organizationId === this.organizations.getPlatformOrganizationId(),
@@ -823,7 +831,7 @@ export class AuthService {
           platformAdmin.consentVersion,
           platformAdmin.consentedAt,
         ),
-      mfa_setup_required: await this.mfaSetupRequired(platformAdmin.role, platformAdmin.id, undefined),
+      mfa_setup_required: await this.mfaSetupRequired(platformAdmin.role, platformAdmin.id, undefined, platformAdmin.email),
       },
       roleContext,
     );

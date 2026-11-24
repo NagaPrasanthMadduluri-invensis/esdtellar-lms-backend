@@ -91,6 +91,34 @@ describe('auth', () => {
       expect(after.body.enabled).toBe(false);
     });
 
+    it('an exempt admin (MFA_EXEMPT_EMAILS) signs in on the password alone, even enrolled; other admins are still held', async () => {
+      // Two new admins: one on the exempt list, one not. Both have email
+      // two-step ON; the exempt one is never challenged.
+      const make = async (email: string) => {
+        await adminA.post('/api/admin/users').send({ first_name: 'Demo', last_name: 'Admin', email, role_id: fx.A.roles.admin }).expect((r) => expect(r.status).toBeLessThan(300));
+        const { hashPassword } = await import('@/common/crypto/password.util');
+        const [u] = await dbQuery<{ id: number }>('UPDATE users SET password = $2 WHERE email = $1 RETURNING id', [email, await hashPassword('E2e-Passw0rd!')]);
+        return u.id;
+      };
+      const exemptId = await make('mfa-exempt@org-a-e2e.e2e.test');
+      const heldId = await make(`mfa-held-${Date.now()}@org-a-e2e.e2e.test`);
+      await dbQuery("INSERT INTO user_mfa (user_id, method, enabled_at) VALUES ($1, 'email', now()), ($2, 'email', now())", [exemptId, heldId]);
+
+      const exempt = anon(app);
+      const ok = await exempt.post('/api/auth/login').send({ email: 'MFA-EXEMPT@org-a-e2e.e2e.test', password: 'E2e-Passw0rd!' });
+      expect(ok.status).toBeLessThan(300);
+      expect(ok.body.mfa_required).toBeUndefined();
+      expect(String(ok.headers['set-cookie'])).toMatch(/lms_token=/);
+      const me = await exempt.get('/api/auth/me').expect(200);
+      expect(me.body.user?.mfa_setup_required ?? me.body.mfa_setup_required).toBe(false);
+      await exempt.get('/api/admin/community').expect(200);
+
+      const [held] = await dbQuery<{ email: string }>('SELECT email FROM users WHERE id = $1', [heldId]);
+      const challenged = await anon(app).post('/api/auth/login').send({ email: held.email, password: 'E2e-Passw0rd!' });
+      expect(challenged.body.mfa_required).toBe(true);
+      expect(challenged.headers['set-cookie']).toBeUndefined();
+    });
+
     it('stores emailed codes only as hashes', async () => {
       const rows = await dbQuery("SELECT * FROM mfa_email_codes LIMIT 5");
       for (const r of rows) expect(JSON.stringify(r)).not.toMatch(/"\d{6}"/);

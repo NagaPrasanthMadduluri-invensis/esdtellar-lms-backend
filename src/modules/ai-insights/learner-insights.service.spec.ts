@@ -28,7 +28,7 @@ function deps(enabled: boolean, overrides: Record<string, any> = {}) {
   const repository = {
     learnerProfile: jest.fn().mockResolvedValue({ job_role: 'Engineer', job_level: 'Senior', department: 'R&D' }),
     recommendableCourses: jest.fn().mockResolvedValue([
-      { name: 'Course E', category: 'Business', skills: ['Negotiation', 'Leadership'] },
+      { name: 'Course E', category: 'Business', tags: null, skills: ['Problem solving', 'Leadership'] },
     ]),
   };
   const learner = { courses: jest.fn().mockResolvedValue(coursesData()) };
@@ -55,7 +55,7 @@ describe('LearnerInsightsService.buildContext', () => {
     const ctx = await svc.buildContext(scope, 10);
 
     expect(ctx.organizationId).toBe(7); // tenant fence: context is bound to the scope's org
-    expect(ctx.learner).toEqual({ id: 10, jobRole: 'Engineer', jobLevel: 'Senior' });
+    expect(ctx.learner).toEqual({ id: 10, jobRole: 'Engineer', jobLevel: 'Senior', jobFunction: 'Engineering' });
     expect(ctx.engagement.points).toBe(390);
     expect(ctx.engagement.completionPct).toBe(60);
     expect(ctx.engagement.certificatesEarned).toBe(1);
@@ -64,7 +64,7 @@ describe('LearnerInsightsService.buildContext', () => {
     expect(ctx.overdue.map((c) => c.name).sort()).toEqual(['Course C', 'Course D']);
     expect(ctx.pendingAssessments).toEqual(['Course C']);
     expect(ctx.pendingFeedback).toEqual({ count: 1, courses: ['Course B'] });
-    expect(ctx.competencies.gaps).toEqual(['Negotiation']);
+    expect(ctx.competencies.gaps).toEqual(['Problem solving']);
     expect(ctx.nearestBadge?.label).toBe('Fast Learner');
   });
 
@@ -141,5 +141,51 @@ describe('LearnerInsightsService generation', () => {
     const res = await svc.refresh(scope, 10);
     expect(res).toEqual({ enabled: false, insight: null, charts: null, error: null });
     expect(ai.generateForTenant).not.toHaveBeenCalled();
+  });
+});
+
+describe('LearnerInsightsService job-role fit', () => {
+  const POOL = [
+    { name: 'Consultative Selling', category: 'Soft Skills', tags: 'sales', skills: ['Negotiation'] },
+    { name: 'Secure Coding', category: 'Technical', tags: null, skills: ['Software development'] },
+    { name: 'Data Privacy Awareness', category: 'Compliance', tags: null, skills: [] },
+  ];
+
+  it('an engineer\'s context never offers a sales course; role courses lead', async () => {
+    const { svc, repository } = deps(true);
+    repository.recommendableCourses.mockResolvedValue(POOL);
+    const ctx = await svc.buildContext(scope, 10);
+    expect(ctx.recommendable.map((c) => [c.name, c.roleFit])).toEqual([
+      ['Secure Coding', 'role'],
+      ['Data Privacy Awareness', 'general'],
+    ]);
+  });
+
+  it('drops anything the model returns outside the role list, and records the role', async () => {
+    const { svc, repository, ai } = deps(true);
+    repository.recommendableCourses.mockResolvedValue(POOL);
+    ai.generateForTenant.mockResolvedValue({
+      intro: 'x',
+      recommendations: [
+        { name: 'Consultative Selling', reason: 'r', skillsGained: [], fit: 'high' },
+        { name: 'secure coding', reason: 'r', skillsGained: [], fit: 'high' },
+        { name: 'Invented Course', reason: 'r', skillsGained: [], fit: 'low' },
+      ],
+    });
+    const out = (await svc.generateLens(scope, 10, 'course_recommendations' as any)) as any;
+    expect(out.recommendations.map((r: any) => [r.name, r.roleFit])).toEqual([['secure coding', 'role']]);
+    expect(out.role).toEqual({ jobRole: 'Engineer', jobFunction: 'Engineering' });
+    expect(ai.storeInsight.mock.calls.at(-1)[4].recommendations).toHaveLength(1);
+  });
+
+  it('the coach\'s recommendedCourses are filtered the same way', async () => {
+    const { svc, repository, ai } = deps(true);
+    repository.recommendableCourses.mockResolvedValue(POOL);
+    ai.generateForTenant.mockResolvedValue({
+      summary: 's', priorities: [], nextMilestone: null, motivation: 'm',
+      recommendedCourses: [{ name: 'Consultative Selling', reason: 'r' }, { name: 'Data Privacy Awareness', reason: 'r' }],
+    });
+    const out = (await svc.generateForLearner(scope, 10)) as any;
+    expect(out.recommendedCourses.map((r: any) => r.name)).toEqual(['Data Privacy Awareness']);
   });
 });

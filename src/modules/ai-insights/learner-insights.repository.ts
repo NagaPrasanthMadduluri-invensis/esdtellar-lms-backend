@@ -16,6 +16,8 @@ export interface LearnerProfileRow {
 export interface RecommendableCourseRow {
   name: string;
   category: string | null;
+  /** Course tags (comma-separated), read for job-role fit only. */
+  tags: string | null;
   skills: string[];
 }
 
@@ -72,6 +74,7 @@ export class LearnerInsightsRepository {
       SELECT
         c.name,
         c.category,
+        c.tags,
         COALESCE(
           array_agg(s.name) FILTER (WHERE s.name IS NOT NULL),
           '{}'
@@ -90,7 +93,7 @@ export class LearnerInsightsRepository {
             AND uca.user_id = ${userId}
             AND ${orgScope('uca', scope)}
         )
-      GROUP BY c.id, c.name, c.category
+      GROUP BY c.id, c.name, c.category, c.tags
       ORDER BY c.id DESC
       LIMIT ${limit}
     `);

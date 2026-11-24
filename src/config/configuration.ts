@@ -50,6 +50,13 @@ export interface AppConfig {
      * that have already enrolled.
      */
     mfaEnforce: boolean;
+    /**
+     * Admin email addresses that skip two-step sign-in entirely (2026-11-24,
+     * owner request: a shared demo account). Lower-cased. Every other admin
+     * keeps the mandatory second factor. Remove an address to restore it; no
+     * deploy is needed, only a restart (config is read once at boot).
+     */
+    mfaExemptEmails: string[];
   };
   storage: {
     /**
@@ -297,6 +304,11 @@ export default (): AppConfig => ({
     mfaEncryptionKey: process.env.MFA_ENCRYPTION_KEY ?? '',
     // Default ON; only `MFA_ENFORCE=false` lifts the mandatory admin gate (testing).
     mfaEnforce: process.env.MFA_ENFORCE !== 'false',
+    // Comma-separated; empty (the default) exempts nobody.
+    mfaExemptEmails: (process.env.MFA_EXEMPT_EMAILS ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean),
   },
   storage: {
     uploadsPath: process.env.UPLOAD_STORAGE_PATH ?? './storage/uploads',

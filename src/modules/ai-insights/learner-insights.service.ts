@@ -1,6 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { COMPETENCY_LEVELS, levelRank } from '@/common/competencies';
+import {
+  JOB_FUNCTION_LABELS,
+  jobFunctionOf,
+  rankForRole,
+  type RoleFit,
+} from '@/common/job-role-fit';
 import type { OrgScope } from '@/database/org-scope';
 import { AiInsightsService } from '@/modules/ai/ai-insights.service';
 import { forModel } from '@/modules/ai/ai-tenant';
@@ -63,6 +69,8 @@ export interface LearnerFeatureContext {
     id: number;
     jobRole: string | null;
     jobLevel: string | null;
+    /** The job function read from jobRole (common/job-role-fit.ts), or null. */
+    jobFunction: string | null;
   };
   engagement: {
     assigned: number;
@@ -87,12 +95,60 @@ export interface LearnerFeatureContext {
   overdue: { name: string; daysOverdue: number }[];
   pendingFeedback: { count: number; courses: string[] };
   pendingAssessments: string[];
-  recommendable: { name: string; category: string | null; skills: string[] }[];
+  /**
+   * Courses the learner may be recommended, already filtered to their job
+   * function and ranked best fit first. `roleFit` says why it is here: built
+   * for their role, for a related role, or for everyone. A course built only
+   * for another function never reaches this list.
+   */
+  recommendable: {
+    name: string;
+    category: string | null;
+    skills: string[];
+    roleFit: Exclude<RoleFit, 'off'>;
+  }[];
   competencies: { gained: { skill: string; level: string }[]; gaps: string[] };
   nearestBadge: { label: string; description: string | null; hint: string | null } | null;
 }
 
 const DAY_MS = 86_400_000;
+
+/**
+ * Keep only recommendations naming a course in the role-filtered list, with
+ * that list's `roleFit` attached. The model is told to choose only from it;
+ * this makes it a guarantee rather than a request.
+ */
+function keepAllowed<T extends { name?: unknown }>(
+  items: T[] | undefined,
+  allowed: LearnerFeatureContext['recommendable'],
+): (T & { roleFit: Exclude<RoleFit, 'off'> })[] {
+  const byName = new Map(allowed.map((c) => [c.name.trim().toLowerCase(), c.roleFit]));
+  return (items ?? []).flatMap((item) => {
+    const fit =
+      typeof item.name === 'string' ? byName.get(item.name.trim().toLowerCase()) : undefined;
+    return fit ? [{ ...item, roleFit: fit }] : [];
+  });
+}
+
+/**
+ * The course-recommendations lens, filtered to the role list and carrying the
+ * role it was matched to, so the panel can say "Matched to your role".
+ */
+function shapeRoleMatched(
+  payload: Record<string, unknown>,
+  context: LearnerFeatureContext,
+) {
+  const recs = Array.isArray(payload.recommendations)
+    ? (payload.recommendations as { name?: unknown }[])
+    : [];
+  return {
+    recommendations: keepAllowed(recs, context.recommendable),
+    role: {
+      jobRole: context.learner.jobRole,
+      jobFunction: context.learner.jobFunction,
+    },
+  };
+}
 
 /** Cap a user-authored string before it enters the prompt, so an over-long or
  *  crafted value cannot flood or steer the model (prompt-injection defence). */
@@ -139,8 +195,14 @@ export class LearnerInsightsService {
         this.badges.listForLearner(scope, userId),
         this.competencies.listMyCompetencies(scope, userId),
         this.surveys.pendingForLearner(scope, userId),
-        this.repository.recommendableCourses(scope, userId, 20),
+        // A wider pool than is sent, so filtering by role still leaves enough.
+        this.repository.recommendableCourses(scope, userId, 80),
       ]);
+
+    // Job-role fit (deterministic): off-role courses are removed here, so the
+    // model can only ever choose from courses that suit this learner.
+    const jobFn = jobFunctionOf(profile?.job_role ?? null);
+    const fitted = rankForRole(recommendable, jobFn).slice(0, 20);
 
     const courses = coursesData.courses;
     const entry = standings.entries.find((e) => e.id === userId) ?? null;
@@ -182,7 +244,7 @@ export class LearnerInsightsService {
     const gainedSet = new Set(gained.map((g) => g.skill.toLowerCase()));
     const gaps = Array.from(
       new Set(
-        recommendable
+        fitted
           .flatMap((c) => c.skills)
           .filter((s) => s && !gainedSet.has(s.toLowerCase())),
       ),
@@ -196,6 +258,7 @@ export class LearnerInsightsService {
         id: userId,
         jobRole: profile?.job_role ?? null,
         jobLevel: profile?.job_level ?? null,
+        jobFunction: jobFn ? JOB_FUNCTION_LABELS[jobFn] : null,
       },
       engagement: {
         assigned: coursesData.overview.totalAssigned,
@@ -227,10 +290,11 @@ export class LearnerInsightsService {
           .map((n) => clip(n)),
       },
       pendingAssessments,
-      recommendable: recommendable.map((c) => ({
+      recommendable: fitted.map((c) => ({
         name: clip(c.name),
         category: c.category,
         skills: (c.skills ?? []).slice(0, 8).map((s) => clip(s, 60)),
+        roleFit: c.roleFit,
       })),
       competencies: { gained, gaps },
       nearestBadge: next
@@ -264,6 +328,11 @@ export class LearnerInsightsService {
         subject: `learner=${userId}`,
       });
       if (!payload) return null;
+      // Belt and braces: keep only courses from the role-filtered list.
+      payload.recommendedCourses = keepAllowed(
+        payload.recommendedCourses,
+        context.recommendable,
+      );
       await this.ai.storeInsight(
         scope,
         'learner',
@@ -488,6 +557,9 @@ export class LearnerInsightsService {
         subject: `learner=${userId} lens=${lens}`,
       });
       if (!payload) return null;
+      if (lens === 'course_recommendations') {
+        Object.assign(payload, shapeRoleMatched(payload, context));
+      }
       await this.ai.storeInsight(scope, 'learner', userId, spec.kind, payload);
       return payload;
     } catch (error) {

@@ -58,6 +58,7 @@ export class MfaEnrolmentGuard implements CanActivate {
     // MFA_ENFORCE=false lifts the mandatory gate for local testing (re-enabled
     // for production). Accounts already enrolled still challenge at sign-in.
     if (!this.mfa.isEnforced()) return true;
+    if (this.mfa.isExempt(user.email)) return true;
 
     if (!this.mfa.canEnrol()) {
       if (!this.warnedUnconfigured) {

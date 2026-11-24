@@ -59,6 +59,7 @@ export class MfaService {
   private readonly key: string;
   private readonly pepper: string;
   private readonly enforce: boolean;
+  private readonly exempt: ReadonlySet<string>;
 
   constructor(
     private readonly repository: MfaRepository,
@@ -67,6 +68,12 @@ export class MfaService {
   ) {
     this.key = config.get<string>('auth.mfaEncryptionKey') ?? '';
     this.enforce = config.get<boolean>('auth.mfaEnforce') ?? true;
+    this.exempt = new Set(config.get<string[]>('auth.mfaExemptEmails') ?? []);
+    if (this.exempt.size > 0) {
+      this.logger.warn(
+        `Two-step sign-in is SKIPPED for ${this.exempt.size} exempt account(s) (MFA_EXEMPT_EMAILS).`,
+      );
+    }
     // Emailed codes are hashed with a server secret, so a database copy alone
     // cannot be brute-forced through a million-code space offline.
     this.pepper = config.get<string>('auth.jwtSecret') ?? '';
@@ -101,6 +108,15 @@ export class MfaService {
    */
   isEnforced(): boolean {
     return this.enforce;
+  }
+
+  /**
+   * Whether this account skips two-step sign-in altogether (`MFA_EXEMPT_EMAILS`,
+   * §10.60): no challenge at sign-in and no mandatory setup. Matched on the
+   * address, case-insensitively.
+   */
+  isExempt(email: string | null | undefined): boolean {
+    return !!email && this.exempt.has(email.trim().toLowerCase());
   }
 
   async status(userId: number) {

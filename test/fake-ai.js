@@ -40,7 +40,18 @@ function start(port) {
       fs.mkdirSync(path.dirname(LOG), { recursive: true });
       fs.appendFileSync(LOG, JSON.stringify({ url: req.url, headers: req.headers, body: parsed }) + '\n');
       const schema = parsed.response_format?.json_schema?.schema;
-      const content = JSON.stringify(schema ? sample(schema) : { sections: [] });
+      const out = schema ? sample(schema) : { sections: [] };
+      // Like a real model told to "choose only from the recommendable list",
+      // name real courses from the context it was sent, so the server's
+      // role filter has something real to keep or drop.
+      try {
+        const ctx = JSON.parse((parsed.messages || []).find((m) => m.role === 'user')?.content || '{}');
+        const pool = Array.isArray(ctx.recommendable) ? ctx.recommendable.map((c) => c.name) : [];
+        if (pool.length && Array.isArray(out.recommendations) && out.recommendations[0]) {
+          out.recommendations = pool.slice(0, 3).map((name) => ({ ...out.recommendations[0], name }));
+        }
+      } catch {}
+      const content = JSON.stringify(out);
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ id: 'e2e', choices: [{ message: { role: 'assistant', content } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
     });

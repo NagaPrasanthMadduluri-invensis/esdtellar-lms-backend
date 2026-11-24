@@ -539,6 +539,7 @@ paragraphs. That is courtesy; this is enforcement.
 | `AUTH_TOKEN_DAYS` | no (7) | Token + cookie lifetime |
 | `MFA_ENCRYPTION_KEY` | for the app method | AES-256-GCM key (32 bytes hex/base64, or a passphrase) for encrypting TOTP secrets at rest (0058). Absent = the authenticator-app method is unavailable (the emailed-code method still works when email is on, §10.51); losing it after enrolment locks out everyone on the app method except by recovery code |
 | `MFA_ENFORCE` | no (`true`) | `false` lifts the mandatory admin two-step setup gate (§10.49), for local testing only. Does not turn off MFA for anyone already enrolled |
+| `MFA_EXEMPT_EMAILS` | no (empty) | Comma-separated addresses that skip two-step sign-in entirely: no challenge, no mandatory setup (§10.60). A shared demo account only; every other admin keeps it. Read once at boot |
 | `R2_ACCOUNT_ID` | for video, documents, SCORM | Cloudflare account id; used to derive the endpoint |
 | `R2_ACCESS_KEY_ID` | for video, documents, SCORM | R2 API token key |
 | `R2_SECRET_ACCESS_KEY` | for video, documents, SCORM | R2 API token secret |
@@ -5605,6 +5606,53 @@ mark an Admin as "L&D".
 
 Pinned by `community.service.spec.ts` and the "quick reactions, responses to
 answers, admin participation" block of `test/community.e2e-spec.ts`.
+
+### 10.60 Two-step sign-in exemption for named accounts (2026-11-24)
+
+The owner asked for one shared demo admin to sign in without the second
+factor, while every other admin keeps it. `MFA_EXEMPT_EMAILS` (comma list,
+case-insensitive) is read once at boot into `MfaService.isExempt()`, and an
+exempt address is honoured in exactly three places: `login` (no challenge even
+with a method enrolled), `mfaSetupRequired` (never sent to `/mfa-setup`) and
+`MfaEnrolmentGuard`. Nothing else changes for that account: its profile still
+says two-step is required and cannot be turned off.
+
+**Why configuration, not a database flag.** It is a deliberate weakening of
+one control, so it should live where the operator can see it, need a shell to
+change, and leave no trace in the product's own screens that an admin could
+toggle for themselves. Removing the address and restarting restores the
+challenge with no deploy. The boot logs how many accounts are exempt, and every
+exempt sign-in logs a warning with the user id, so it is never silent.
+
+Pinned by `test/auth.e2e-spec.ts` (an enrolled exempt admin signs in on the
+password and reaches an admin route; an enrolled non-exempt admin is still
+challenged).
+
+### 10.61 Course recommendations are fenced by job role (2026-11-24)
+
+"Courses chosen for you" sent the model the 20 newest unassigned courses and
+the learner's job role, and trusted it to choose sensibly. It did not always:
+nothing stopped a sales course reaching a software engineer. The fix is
+deterministic, in `common/job-role-fit.ts`:
+
+- the learner's free-text Job role is read into one of eight job functions by
+  keyword (business words before craft words);
+- each course is read into the functions it is built for from its name, tags,
+  skills and category, with Compliance and "for managers"-style titles for
+  everyone;
+- `rankForRole` drops courses built only for other functions and orders the
+  rest role, related, general. The pool read is widened to 80 so filtering
+  still leaves enough, and 20 are sent.
+
+The model is told what `roleFit` means, but is not trusted with it: both the
+coach's `recommendedCourses` and the lens's `recommendations` are filtered
+again after generation (`keepAllowed`), dropping anything not in the list.
+The lens payload also stores the role it matched, so the panel can say so.
+Department is still never read (§10.54's PII rule): the job role alone decides.
+
+Pinned by `job-role-fit.spec.ts` (the demo org's real roles and catalogue),
+`learner-insights.service.spec.ts` and `client/e2e/ai-insights.spec.mjs`, where
+the fake model echoes names from the list it is sent so the filter is real.
 
 ## 11. Adding a new module — checklist
 
