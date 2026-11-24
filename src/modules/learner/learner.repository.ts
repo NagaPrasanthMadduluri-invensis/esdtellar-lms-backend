@@ -521,6 +521,19 @@ export class LearnerRepository {
    * confirmed this courseId belongs to `scope` (the driving assignment row).
    * Re-checking here would be a redundant predicate on an already-verified id.
    */
+  /**
+   * The course an Admin previews (§10.64): in scope, published OR draft, and
+   * archived too, so a course can be audited before it is published. The
+   * query root of the preview, so it carries the tenancy check itself.
+   */
+  async findCourseForPreview(scope: OrgScope, courseId: number) {
+    const rows = await this.db.all<Record<string, unknown> & { id: number }>(sql`
+      SELECT c.* FROM courses c
+      WHERE c.id = ${courseId} AND ${contentScope('c', scope)}
+    `);
+    return rows[0] ?? null;
+  }
+
   async findActiveCourse(courseId: number) {
     const rows = await this.db.all(sql`
       SELECT * FROM courses WHERE id = ${courseId} AND is_active = 1
@@ -576,7 +589,7 @@ export class LearnerRepository {
     `);
   }
 
-  async courseAssessments(courseId: number, userId: number) {
+  async courseAssessments(courseId: number, userId: number, includeNotLive = false) {
     return this.db.all<Record<string, unknown> & { id: number }>(sql`
       SELECT a.*,
         (SELECT COUNT(*) FROM assessment_questions
@@ -591,7 +604,8 @@ export class LearnerRepository {
         (SELECT MAX(is_passed) FROM user_assessment_attempts
          WHERE assessment_id = a.id AND user_id = ${userId}) AS has_passed
       FROM assessments a
-      WHERE a.course_id = ${courseId} AND a.is_active = 1
+      WHERE a.course_id = ${courseId}
+        AND (a.is_active = 1 OR ${includeNotLive})
       ORDER BY a.created_at
     `);
   }

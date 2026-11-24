@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import {
   AdminMediaController,
   AdminMediaUploadController,
+  AdminResourcesPreviewController,
 } from './admin-media.controller';
 import {
   LearnerMediaController,
@@ -27,6 +28,7 @@ import { R2StorageService } from './storage/r2-storage.service';
   controllers: [
     AdminMediaUploadController,
     AdminMediaController,
+    AdminResourcesPreviewController,
     LearnerMediaController,
     LearnerResourcesController,
     ProfileMediaController,

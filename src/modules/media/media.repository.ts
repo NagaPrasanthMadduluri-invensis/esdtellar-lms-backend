@@ -61,6 +61,31 @@ export class MediaRepository {
   }
 
   /**
+   * A resource for the Admin course preview (§10.64): any resource on an
+   * active lesson in the Admin's content scope. No entitlement subquery, an
+   * Admin needs no assignment to audit a course.
+   */
+  async findResourceForAdmin(scope: OrgScope, resourceId: number) {
+    const rows = await this.db.all<{
+      id: number;
+      title: string;
+      source: string;
+      file_key: string | null;
+      file_name: string | null;
+      mime_type: string | null;
+      url: string | null;
+    }>(sql`
+      SELECT r.id, r.title, r.source, r.file_key, r.file_name, r.mime_type, r.url
+      FROM lesson_resources r
+      JOIN lessons l ON l.id = r.lesson_id
+      JOIN course_modules cm ON cm.id = l.module_id
+      WHERE r.id = ${resourceId} AND l.is_active = 1 AND cm.is_active = 1
+        AND ${contentScope('r', scope)}
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
    * A resource plus whether this learner may have it, in ONE round trip.
    *
    * Entitlement is the lesson's, not the resource's: a resource is reachable

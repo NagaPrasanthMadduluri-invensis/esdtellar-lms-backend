@@ -11,6 +11,9 @@ function makeService(repoOverrides: Record<string, any> = {}) {
     findActiveWithCourse: jest
       .fn()
       .mockResolvedValue({ id: 3, course_id: 11, passing_score: 60 }),
+    findWithCourseForPreview: jest
+      .fn()
+      .mockResolvedValue({ id: 3, course_id: 11, passing_score: 60, is_active: 0 }),
     isAssignedToCourse: jest.fn().mockResolvedValue(true),
     answerKey: jest.fn().mockResolvedValue([]),
     recordAttempt: jest.fn().mockResolvedValue(99),
@@ -85,5 +88,50 @@ describe('AssessmentsService.getForLearner', () => {
     expect(JSON.stringify(questions)).not.toMatch(/Rome/);
     expect(questions[0].correct_answer).toBeNull();
     expect(questions[1]).toEqual(expect.objectContaining({ correct_answer: null, match_left: ['B', 'A'], match_right: ['1', '2'] }));
+  });
+});
+
+describe('AssessmentsService preview (§10.64)', () => {
+  const key = [
+    { id: 1, question_text: 'q', question_type: 'multiple_choice', correct_answer: null, correct_option_id: 11, correct_option_ids: [11], option_ids: [10, 11] },
+    { id: 2, question_text: 'fb', question_type: 'fillblank', correct_answer: 'Rome', correct_option_id: null, correct_option_ids: [], option_ids: [] },
+  ];
+
+  it('grades a preview attempt like a real one and records nothing', async () => {
+    const { svc, repo } = makeService({ answerKey: jest.fn().mockResolvedValue(key) });
+    const { result } = await svc.previewAttempt(scope, 3, {
+      answers: [{ question_id: 1, selected_option_id: 11 }, { question_id: 2, answer: 'Paris' }],
+    } as any);
+    expect(result).toEqual(expect.objectContaining({
+      attempt_id: null, score: 1, total_questions: 2, percentage: 50, is_passed: false, passing_score: 60, preview: true,
+    }));
+    expect(result.questions_review.map((q: any) => q.is_correct)).toEqual([true, false]);
+    expect(result.questions_review[1].correct_answer).toBe('Rome');
+    expect(repo.recordAttempt).not.toHaveBeenCalled();
+    // No enrolment or journey check: an admin is not assigned.
+    expect(repo.isAssignedToCourse).not.toHaveBeenCalled();
+  });
+
+  it('a preview attempt and a real attempt score the same answers identically', async () => {
+    const answers = { answers: [{ question_id: 1, selected_option_id: 11 }, { question_id: 2, answer: ' rome ' }] } as any;
+    const a = makeService({ answerKey: jest.fn().mockResolvedValue(key) });
+    const b = makeService({ answerKey: jest.fn().mockResolvedValue(key) });
+    const real = (await a.svc.submitAttempt(scope, 3, 5, answers)).result;
+    const preview = (await b.svc.previewAttempt(scope, 3, answers)).result;
+    expect(preview.score).toBe(real.score);
+    expect(preview.questions_review).toEqual(real.questions_review);
+  });
+
+  it('the preview read hides the answer key, and both 404 outside scope', async () => {
+    const { svc } = makeService({
+      listQuestions: jest.fn().mockResolvedValue([{ id: 2, questionText: 'fb', questionType: 'fillblank', correctAnswer: 'Rome' }]),
+    });
+    const r = await svc.previewForAdmin(scope, 3);
+    expect(r.questions[0].correct_answer).toBeNull();
+    expect(r).toEqual(expect.objectContaining({ attempt_count: 0, preview: true }));
+
+    const missing = makeService({ findWithCourseForPreview: jest.fn().mockResolvedValue(null) });
+    await expect(missing.svc.previewForAdmin(scope, 3)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(missing.svc.previewAttempt(scope, 3, { answers: [] } as any)).rejects.toBeInstanceOf(NotFoundException);
   });
 });

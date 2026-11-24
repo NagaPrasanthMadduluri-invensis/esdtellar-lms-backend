@@ -1037,6 +1037,101 @@ export class LearnerService {
   }
 
   /* ─────────────────────────────────────────────
+     GET /admin/courses/:courseId/preview  (§10.64)
+  ───────────────────────────────────────────── */
+
+  /**
+   * The course exactly as a learner is shown it, for an Admin to audit and
+   * test. Same payload as `courseDetail`, built from the same reads, with three
+   * differences that make it a preview rather than an enrolment:
+   *  - no assignment is needed, only that the course is in the Admin's
+   *    content scope (own or Platform); another org's course is a 404;
+   *  - a draft or archived course opens too, so it can be checked BEFORE it
+   *    is published;
+   *  - nothing is locked or complete, and there is no enrolment or reward:
+   *    the Admin has no progress, and the preview never writes any.
+   */
+  async previewCourse(scope: OrgScope, adminId: number, courseId: number) {
+    const course = await this.repository.findCourseForPreview(scope, courseId);
+    if (!course) throw new NotFoundException('Course not found');
+
+    const [modules, lessons, assessments, skills] = await Promise.all([
+      this.repository.activeModules(courseId),
+      this.repository.lessonsWithStatus(courseId, adminId),
+      // Not-yet-Live assessments too, each carrying is_active, so the
+      // Admin can try one before it goes live (§10.64).
+      this.repository.courseAssessments(courseId, adminId, true),
+      this.competencies.courseSkillsFor(scope, courseId, adminId),
+    ]);
+
+    const byModule = new Map<number, typeof lessons>();
+    for (const lesson of lessons) {
+      const key = Number(lesson.module_id);
+      const list = byModule.get(key);
+      if (list) list.push(lesson);
+      else byModule.set(key, [lesson]);
+    }
+
+    let totalLessons = 0;
+    const shapedModules = modules.map((module) => {
+      const moduleLessons = (byModule.get(Number(module.id)) ?? []).map((lesson) => ({
+        ...lesson,
+        progress_status: 'not_started',
+        is_locked: false,
+      }));
+      totalLessons += moduleLessons.length;
+      return {
+        ...module,
+        lessons: moduleLessons,
+        total_count: moduleLessons.length,
+        completed_count: 0,
+      };
+    });
+
+    return {
+      course: {
+        ...(course as Record<string, unknown>),
+        modules_count: modules.length,
+        lessons_count: totalLessons,
+      },
+      enrollment: null,
+      modules: shapedModules,
+      assessments: assessments.map((a) => ({
+        ...a,
+        attempt_count: 0,
+        best_score: null,
+        has_passed: null,
+        last_attempt: null,
+      })),
+      // Every assessment opens in a preview, so it can be tried at once.
+      assessmentsUnlocked: true,
+      skills: skills.map((s) => ({ ...s, earned: false, heldLevel: null })),
+      reward: null,
+      preview: true,
+    };
+  }
+
+  /* ─────────────────────────────────────────────
+     GET /admin/lessons/:lessonId/preview  (§10.64)
+  ───────────────────────────────────────────── */
+
+  /**
+   * One lesson as a learner is shown it, for the Admin preview: the shared
+   * `shapeLesson` payload with every lesson open. No assignment or journey
+   * gate applies; the scoped lesson read is the tenancy check.
+   */
+  async previewLesson(scope: OrgScope, adminId: number, lessonId: number) {
+    const lesson = await this.repository.findLessonWithModule(scope, lessonId);
+    if (!lesson) throw new NotFoundException('Lesson not found');
+
+    const [all, resources] = await Promise.all([
+      this.repository.lessonsWithStatus(Number(lesson.course_id), adminId),
+      this.repository.lessonResources(lessonId),
+    ]);
+    return this.shapeLesson(lesson, all, resources, lessonId, true);
+  }
+
+  /* ─────────────────────────────────────────────
      GET /learner/lessons/:lessonId
   ───────────────────────────────────────────── */
 
@@ -1069,13 +1164,29 @@ export class LearnerService {
 
     assertLessonUnlocked(all, lessonId, Number(lesson.module_id));
 
+    return this.shapeLesson(lesson, all, resources, lessonId, false);
+  }
+
+  /**
+   * The lesson payload both the learner and the Admin preview (§10.64) read,
+   * so the preview cannot drift from what a learner is shown. In preview
+   * nothing is locked and nothing is complete: the Admin is not a learner and
+   * has no progress of their own.
+   */
+  private shapeLesson(
+    lesson: NonNullable<Awaited<ReturnType<LearnerRepository['findLessonWithModule']>>>,
+    all: Awaited<ReturnType<LearnerRepository['lessonsWithStatus']>>,
+    resources: Awaited<ReturnType<LearnerRepository['lessonResources']>>,
+    lessonId: number,
+    preview: boolean,
+  ) {
     const flatIndex = all.findIndex((l) => Number(l.id) === lessonId);
     const next = flatIndex >= 0 ? all[flatIndex + 1] : undefined;
     const prev = flatIndex > 0 ? all[flatIndex - 1] : undefined;
     const current = all[flatIndex];
 
     // Per-lesson lock state for the playlist sidebar, computed with the SAME
-    // sequential rule this method enforces above: within a module each lesson
+    // sequential rule `lesson()` enforces: within a module each lesson
     // opens once the previous is complete, and a module's first lesson opens
     // once the previous module is fully complete. Done once over the ordered
     // flat list, grouped by module in order.
@@ -1096,9 +1207,9 @@ export class LearnerService {
     }
 
     const playlist = all.map((l) => {
-      const done = l.progress_status === 'completed';
+      const done = !preview && l.progress_status === 'completed';
       const isCurrent = Number(l.id) === lessonId;
-      const locked = lockedById.get(Number(l.id)) ?? false;
+      const locked = !preview && (lockedById.get(Number(l.id)) ?? false);
       return {
         id: l.public_id ?? Number(l.id),
         title: l.title,
@@ -1179,7 +1290,7 @@ export class LearnerService {
         // fetched from /learner/resources/:id/url on click.
         url: resource.source === 'link' ? resource.url : null,
       })),
-      progress_status: current?.progress_status ?? 'not_started',
+      progress_status: preview ? 'not_started' : (current?.progress_status ?? 'not_started'),
       // The NEXT lesson's public uuid (0046), so "Next lesson" navigates by
       // UUID. Falls back to the integer id if a row somehow lacks one.
       next_lesson_id: next ? (next.public_id ?? Number(next.id)) : null,
@@ -1206,6 +1317,9 @@ export class LearnerService {
       total: all.length,
       // The ordered lesson list for the collapsible playlist sidebar.
       playlist,
+      // True on the Admin preview: the page shows the preview banner and
+      // writes nothing (no completion, no watch time, no SCORM tracking).
+      preview,
     };
   }
 

@@ -77,7 +77,32 @@ export class CourseAssessmentsController {
 @Controller('admin/assessments')
 @Roles('admin')
 export class AdminAssessmentsController {
-  constructor(private readonly assessments: AssessmentsService) {}
+  constructor(
+    private readonly assessments: AssessmentsService,
+    private readonly publicId: PublicIdService,
+  ) {}
+
+  /** Course preview (§10.64): the learner's view, no answer key. */
+  @Get(':assessmentId/preview')
+  async preview(
+    @Param('assessmentId') assessmentIdParam: string,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    const assessmentId = await this.publicId.resolveIdOrThrow('assessments', assessmentIdParam);
+    return this.assessments.previewForAdmin(scope, assessmentId);
+  }
+
+  /** Course preview (§10.64): graded like a real attempt, recorded nowhere. */
+  @Post(':assessmentId/preview-attempt')
+  @HttpCode(HttpStatus.OK)
+  async previewAttempt(
+    @Param('assessmentId') assessmentIdParam: string,
+    @Body() dto: SubmitAttemptDto,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    const assessmentId = await this.publicId.resolveIdOrThrow('assessments', assessmentIdParam);
+    return this.assessments.previewAttempt(scope, assessmentId, dto);
+  }
 
   @Get(':assessmentId')
   async get(

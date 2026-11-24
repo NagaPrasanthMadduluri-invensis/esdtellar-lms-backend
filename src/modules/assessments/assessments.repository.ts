@@ -116,6 +116,23 @@ export class AssessmentsRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * The Admin course preview's read (§10.64): like `findActiveWithCourse` but
+   * a not-yet-Live assessment opens too, so it can be tried before it goes
+   * live. Content scope, so Platform content previews as well.
+   */
+  async findWithCourseForPreview(scope: OrgScope, id: number) {
+    const rows = await this.db.all<
+      Record<string, unknown> & { course_id: number; passing_score: number }
+    >(sql`
+      SELECT a.*, c.name AS course_name
+      FROM assessments a
+      JOIN courses c ON c.id = a.course_id
+      WHERE a.id = ${id} AND ${contentScope('a', scope)}
+    `);
+    return rows[0] ?? null;
+  }
+
   async findActiveWithCourse(scope: OrgScope, id: number) {
     const rows = await this.db.all<
       Record<string, unknown> & { course_id: number; passing_score: number }

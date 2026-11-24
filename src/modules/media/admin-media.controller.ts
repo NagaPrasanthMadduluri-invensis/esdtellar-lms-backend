@@ -5,13 +5,16 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Param,
   ParseIntPipe,
   Post,
+  Res,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 
 import { CurrentScope, Permissions, Roles } from '@/common/decorators';
 import type { OrgScope } from '@/database/org-scope';
@@ -150,6 +153,27 @@ export class AdminMediaController {
     return this.media.adminLessonMedia(scope, lessonId);
   }
 
+  /**
+   * The lesson's document, streamed for the course preview (§10.64). Same
+   * headers as the learner's stream: inline, no-store, a sanitised filename.
+   */
+  @Get(':lessonId/document')
+  async document(
+    @Param('lessonId', ParseIntPipe) lessonId: number,
+    @CurrentScope() scope: OrgScope,
+    @Res() res: Response,
+  ) {
+    const doc = await this.media.openAdminDocument(scope, lessonId);
+    if (!doc) throw new NotFoundException('This lesson has no document.');
+    res.setHeader('Content-Type', doc.contentType);
+    const safeName = doc.filename.replace(/["\r\n\\]/g, '').slice(0, 200);
+    res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    if (doc.contentLength !== null) res.setHeader('Content-Length', String(doc.contentLength));
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    doc.stream.pipe(res);
+  }
+
   @Post(':lessonId/video/presign')
   @HttpCode(HttpStatus.OK)
   @Permissions('upload_content')
@@ -200,5 +224,23 @@ export class AdminMediaController {
     @CurrentScope() scope: OrgScope,
   ) {
     return this.media.removeCaptions(scope, lessonId);
+  }
+}
+
+/**
+ * A supporting resource's link for the course preview (§10.64). Its own
+ * controller, beside the courses module's DELETE on the same base path.
+ */
+@Controller('admin/resources')
+@Roles('admin')
+export class AdminResourcesPreviewController {
+  constructor(private readonly media: MediaService) {}
+
+  @Get(':resourceId/url')
+  async url(
+    @Param('resourceId', ParseIntPipe) resourceId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.media.adminResourceUrl(scope, resourceId);
   }
 }

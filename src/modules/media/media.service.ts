@@ -616,6 +616,60 @@ export class MediaService {
         ? await this.storage.presignDownload(lesson.caption_key, ttl)
         : null,
       expiresIn: ttl,
+      // For the course preview (§10.64): the same fields the learner's media
+      // read gives, so one player renders both. The document is a same-origin,
+      // cookie-checked path, never a presigned link (see learnerLessonMedia).
+      durationSeconds: lesson.video_duration_seconds,
+      watchedSeconds: 0,
+      resumeAtSeconds: 0,
+      documentUrl: lesson.document_key
+        ? `/api/admin/lessons/${lesson.id}/document`
+        : null,
+      documentName: lesson.document_name,
+      documentMime: lesson.document_mime,
+      documentSizeBytes: lesson.document_size_bytes,
+    };
+  }
+
+  /**
+   * A lesson's document streamed for the Admin course preview (§10.64). The
+   * scoped lesson read is the check: in scope (own or Platform content) or a
+   * 404. Null when the lesson has no document or the object is gone.
+   */
+  async openAdminDocument(scope: OrgScope, lessonId: number) {
+    const lesson = await this.repository.findLesson(scope, lessonId);
+    if (!lesson) throw new NotFoundException('Lesson not found');
+    if (!lesson.document_key) return null;
+
+    const object = await this.storage.getObjectStream(lesson.document_key);
+    if (!object) return null;
+    return {
+      stream: object.stream,
+      contentType: lesson.document_mime || object.contentType || 'application/octet-stream',
+      contentLength: object.contentLength,
+      filename: lesson.document_name || `lesson-${lesson.id}`,
+    };
+  }
+
+  /**
+   * A supporting resource's link for the Admin course preview (§10.64): the
+   * same answer `learnerResourceUrl` gives, with the scoped read in place of
+   * the enrolment check.
+   */
+  async adminResourceUrl(scope: OrgScope, resourceId: number) {
+    const resource = await this.repository.findResourceForAdmin(scope, resourceId);
+    if (!resource) throw new NotFoundException('Resource not found');
+    if (resource.source === 'link') {
+      return { url: resource.url, expiresIn: 0, title: resource.title };
+    }
+    if (!resource.file_key) throw new NotFoundException('Resource file is missing.');
+    const ttl = this.config.get<number>('media.videoUrlTtlSeconds') ?? 900;
+    return {
+      url: await this.storage.presignDownload(resource.file_key, ttl),
+      expiresIn: ttl,
+      title: resource.title,
+      fileName: resource.file_name,
+      mimeType: resource.mime_type,
     };
   }
 

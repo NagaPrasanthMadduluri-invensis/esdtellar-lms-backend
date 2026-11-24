@@ -343,6 +343,61 @@ export class AssessmentsService {
 
     const key = await this.repository.answerKey(scope, assessmentId);
 
+    const { scored, score } = this.gradeAnswers(key, dto.answers);
+
+    const total = key.length;
+    const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
+    const passingScore = Number(assessment.passing_score);
+    const isPassed = percentage >= passingScore ? 1 : 0;
+
+    const attemptId = await this.repository.recordAttempt(scope, {
+      userId,
+      assessmentId,
+      score,
+      totalQuestions: total,
+      percentage,
+      isPassed,
+      answers: scored.map(({ question_id, selected_option_id, is_correct }) => ({
+        question_id,
+        selected_option_id,
+        is_correct,
+      })),
+    });
+
+    // Passing can complete the course. Best-effort — never breaks the attempt.
+    if (isPassed === 1) {
+      await this.certificates.autoIssue(scope, userId, courseId);
+      // Passing the assessment can be what finishes the course, and the
+      // course can be the last step of a journey (spec §4.2).
+      await this.journeys.onCourseProgress(scope, userId, courseId);
+      // Record any competencies the course imparts (spec ai-insights.md).
+      await this.competencies.onCourseCompleted(scope, userId, courseId);
+    }
+
+    return {
+      result: {
+        attempt_id: attemptId,
+        score,
+        total_questions: total,
+        percentage,
+        is_passed: isPassed === 1,
+        passing_score: passingScore,
+        questions_review: this.reviewOf(key, scored),
+      },
+    };
+  }
+
+  /* ── Helpers ── */
+
+  /**
+   * Grades a set of answers against the answer key: the one rule both a real
+   * attempt and the Admin preview attempt (§10.64) use, so a preview scores
+   * exactly as a learner would be scored.
+   */
+  private gradeAnswers(
+    key: Awaited<ReturnType<AssessmentsRepository['answerKey']>>,
+    answers: SubmitAttemptDto['answers'],
+  ) {
     let score = 0;
     // question_id and selected_option_id arrive in the request body, and both
     // are SINGLE-column foreign keys — the composite set deliberately excludes
@@ -354,7 +409,7 @@ export class AssessmentsService {
     //
     // One answer per question: a repeated question_id keeps the first.
     const seen = new Set<number>();
-    const scored = dto.answers
+    const scored = answers
       .filter((answer) => {
         if (seen.has(answer.question_id)) return false;
         seen.add(answer.question_id);
@@ -396,68 +451,86 @@ export class AssessmentsService {
         };
       });
 
+    return { scored, score };
+  }
+
+  /** The per-question review shown after an attempt, real or preview. */
+  private reviewOf(
+    key: Awaited<ReturnType<AssessmentsRepository['answerKey']>>,
+    scored: ReturnType<AssessmentsService['gradeAnswers']>['scored'],
+  ) {
+    return key.map((question) => {
+      const answer = scored.find(
+        (a) => a.question_id === Number(question.id),
+      );
+      return {
+        question_id: question.id,
+        question_text: question.question_text,
+        question_type: question.question_type,
+        correct_option_id: question.correct_option_id,
+        correct_option_ids: question.correct_option_ids ?? [],
+        selected_option_id: answer?.selected_option_id ?? null,
+        selected_option_ids: answer?.selected_option_ids ?? [],
+        // The expected answer, shown once the attempt is in (the option
+        // types already reveal correct_option_id the same way).
+        correct_answer: isOptionBacked(question.question_type)
+          ? null
+          : question.correct_answer,
+        is_correct: answer?.is_correct === 1,
+      };
+    });
+  }
+
+  /* ── Admin preview (§10.64) ── */
+
+  /**
+   * An assessment as a learner is shown it (no answer key), for the Admin
+   * course preview. Scoped read only: no assignment needed.
+   */
+  async previewForAdmin(scope: OrgScope, assessmentId: number) {
+    const assessment = await this.repository.findWithCourseForPreview(scope, assessmentId);
+    if (!assessment) throw new NotFoundException('Assessment not found');
+    const [questions, options] = await Promise.all([
+      this.repository.listQuestions(scope, assessmentId),
+      this.repository.listOptionsForAssessment(scope, assessmentId, false),
+    ]);
+    return {
+      assessment,
+      questions: this.attachOptions(questions, options).map((question) =>
+        this.forLearner(question),
+      ),
+      attempt_count: 0,
+      preview: true,
+    };
+  }
+
+  /**
+   * Grades an Admin's preview attempt with the same rule as a real one and
+   * returns the same result, but RECORDS NOTHING: no attempt row, no
+   * certificate, no journey step, no skill, no points. `attempt_id` is null.
+   */
+  async previewAttempt(scope: OrgScope, assessmentId: number, dto: SubmitAttemptDto) {
+    const assessment = await this.repository.findWithCourseForPreview(scope, assessmentId);
+    if (!assessment) throw new NotFoundException('Assessment not found');
+    const key = await this.repository.answerKey(scope, assessmentId);
+    const { scored, score } = this.gradeAnswers(key, dto.answers);
     const total = key.length;
     const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
     const passingScore = Number(assessment.passing_score);
-    const isPassed = percentage >= passingScore ? 1 : 0;
-
-    const attemptId = await this.repository.recordAttempt(scope, {
-      userId,
-      assessmentId,
-      score,
-      totalQuestions: total,
-      percentage,
-      isPassed,
-      answers: scored.map(({ question_id, selected_option_id, is_correct }) => ({
-        question_id,
-        selected_option_id,
-        is_correct,
-      })),
-    });
-
-    // Passing can complete the course. Best-effort — never breaks the attempt.
-    if (isPassed === 1) {
-      await this.certificates.autoIssue(scope, userId, courseId);
-      // Passing the assessment can be what finishes the course, and the
-      // course can be the last step of a journey (spec §4.2).
-      await this.journeys.onCourseProgress(scope, userId, courseId);
-      // Record any competencies the course imparts (spec ai-insights.md).
-      await this.competencies.onCourseCompleted(scope, userId, courseId);
-    }
-
     return {
       result: {
-        attempt_id: attemptId,
+        attempt_id: null,
         score,
         total_questions: total,
         percentage,
-        is_passed: isPassed === 1,
+        is_passed: percentage >= passingScore,
         passing_score: passingScore,
-        questions_review: key.map((question) => {
-          const answer = scored.find(
-            (a) => a.question_id === Number(question.id),
-          );
-          return {
-            question_id: question.id,
-            question_text: question.question_text,
-            question_type: question.question_type,
-            correct_option_id: question.correct_option_id,
-            correct_option_ids: question.correct_option_ids ?? [],
-            selected_option_id: answer?.selected_option_id ?? null,
-            selected_option_ids: answer?.selected_option_ids ?? [],
-            // The expected answer, shown once the attempt is in (the option
-            // types already reveal correct_option_id the same way).
-            correct_answer: isOptionBacked(question.question_type)
-              ? null
-              : question.correct_answer,
-            is_correct: answer?.is_correct === 1,
-          };
-        }),
+        questions_review: this.reviewOf(key, scored),
+        preview: true,
       },
     };
   }
 
-  /* ── Helpers ── */
 
   /**
    * The learner's copy of a question: never the answer key. `correct_answer`

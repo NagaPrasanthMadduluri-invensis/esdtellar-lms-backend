@@ -10,6 +10,7 @@ import { BadgesModule } from '@/modules/badges/badges.module';
 import { CertificatesModule } from '@/modules/certificates/certificates.module';
 import { CompetenciesModule } from '@/modules/competencies/competencies.module';
 
+import { AdminCoursePreviewController } from './admin-course-preview.controller';
 import { LearnerController } from './learner.controller';
 import { LearnerRepository } from './learner.repository';
 import { LearnerService } from './learner.service';
@@ -22,7 +23,7 @@ import { JourneysModule } from '@/modules/journeys/journeys.module';
  */
 @Module({
   imports: [NotificationsModule, ReportsModule, LeaderboardModule, LearningHoursModule, CertificatesModule, CompetenciesModule, BadgesModule, JourneysModule],
-  controllers: [LearnerController],
+  controllers: [LearnerController, AdminCoursePreviewController],
   providers: [LearnerService, LearnerRepository],
   // Exported so the AI Insights vertical can reuse the ONE definition of a
   // learner's course progress/status/due/reward (§10.54) instead of writing a

@@ -5718,6 +5718,33 @@ Pinned by `session-schedule.spec.ts`, the "batch scheduling, capacity and
 reports" block of `test/sessions.e2e-spec.ts`, and
 `client/e2e/admin-session-report.spec.mjs`.
 
+### 10.64 Course preview: the learner's payload, no learner, no writes (2026-11-24)
+
+An Admin previews any course in their content scope as a learner sees it, to
+audit and test it before or after publishing. Three decisions:
+
+- **One payload, not a second copy.** The lesson read is `shapeLesson` in
+  `LearnerService`, shared by `lesson()` and `previewLesson()`; the course read
+  is built from the same repository calls as `courseDetail`. A preview that
+  drifted from the learner page would audit the wrong thing.
+- **Scope is the only check.** `findCourseForPreview` and the scoped lesson,
+  resource and assessment reads are the tenancy gate (another org: 404). No
+  assignment, journey gate or lock applies, and drafts, Archived courses and
+  not-yet-Live assessments open, because checking them before learners see
+  them is the point. Content reads stay open to every admin-portal role
+  (§5.2.1), so no new Permission.
+- **Nothing is written.** The client skips completion, watch time and SCORM
+  tracking in preview; the server has no preview write route except
+  `preview-attempt`, which grades with the same `gradeAnswers` rule as a real
+  attempt and returns `attempt_id: null` without recording, issuing a
+  certificate, advancing a journey, awarding a skill or paying points.
+  Documents stream through `GET admin/lessons/:id/document` (same-origin,
+  cookie-checked, `no-store`), never a presigned link (§10.8 reasoning).
+
+Pinned by the preview blocks of `learner.service.spec.ts` and
+`assessments.service.spec.ts`, `test/course-preview.e2e-spec.ts`, and
+`client/e2e/admin-course-preview.spec.mjs`.
+
 ## 11. Adding a new module — checklist
 
 Answer these before writing code:

@@ -7,5 +7,6 @@
   "POST /api/admin/lessons/:lessonId/captions": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
   "GET /api/learner/lessons/:lessonId/document": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
   "POST /api/admin/lessons/:lessonId/video/confirm": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
-  "POST /api/admin/scorm/upload": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm)."
+  "POST /api/admin/scorm/upload": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm).",
+  "GET /api/admin/lessons/:lessonId/document": "Needs R2 object storage, which the e2e world does not have; e2e asserts the documented answer (503 'not configured', or 422 'upload not found' for confirm)."
 }
