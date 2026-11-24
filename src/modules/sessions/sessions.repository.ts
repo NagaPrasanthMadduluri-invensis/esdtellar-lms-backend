@@ -163,6 +163,7 @@ export class SessionsRepository {
       batch_no: number;
       label: string | null;
       date: string | null;
+      end_date: string | null;
       start_time: string | null;
       end_time: string | null;
       capacity: number | null;
@@ -170,13 +171,16 @@ export class SessionsRepository {
       trainer_name: string | null;
       status: string;
       roster_count: number;
+      waitlist_count: number;
     }>(sql`
-      SELECT b.id, b.session_id, b.batch_no, b.label, b.date, b.start_time,
+      SELECT b.id, b.session_id, b.batch_no, b.label, b.date, b.end_date, b.start_time,
              b.end_time, b.capacity, b.trainer_user_id, b.status,
              CASE WHEN u.id IS NULL THEN NULL
                   ELSE u.first_name || ' ' || u.last_name END AS trainer_name,
-             (SELECT COUNT(*) FROM session_roster sr
-               WHERE sr.batch_id = b.id) AS roster_count
+             (SELECT COUNT(*)::int FROM session_roster sr
+               WHERE sr.batch_id = b.id) AS roster_count,
+             (SELECT COUNT(*)::int FROM session_waitlist w
+               WHERE w.batch_id = b.id) AS waitlist_count
         FROM session_batches b
         LEFT JOIN users u ON u.id = b.trainer_user_id
        WHERE b.session_id IN ${idList(sessionIds)} AND ${orgScope('b', scope)}
@@ -185,8 +189,19 @@ export class SessionsRepository {
   }
 
   async findBatch(scope: OrgScope, batchId: number) {
-    const rows = await this.db.all<{ id: number; session_id: number; batch_no: number }>(sql`
-      SELECT b.id, b.session_id, b.batch_no FROM session_batches b
+    const rows = await this.db.all<{
+      id: number;
+      session_id: number;
+      batch_no: number;
+      label: string | null;
+      date: string | null;
+      end_date: string | null;
+      capacity: number | null;
+      status: string;
+    }>(sql`
+      SELECT b.id, b.session_id, b.batch_no, b.label, b.date, b.end_date,
+             b.capacity, b.status
+        FROM session_batches b
        WHERE b.id = ${batchId} AND ${orgScope('b', scope)}
        LIMIT 1
     `);
@@ -208,6 +223,7 @@ export class SessionsRepository {
     batchNo: number;
     label: string | null;
     date: string | null;
+    endDate: string | null;
     startTime: string | null;
     endTime: string | null;
     capacity: number | null;
@@ -221,6 +237,7 @@ export class SessionsRepository {
         batchNo: input.batchNo,
         label: input.label,
         date: input.date,
+        endDate: input.endDate,
         startTime: input.startTime,
         endTime: input.endTime,
         capacity: input.capacity,
@@ -236,6 +253,7 @@ export class SessionsRepository {
     input: {
       label: string | null;
       date: string | null;
+      endDate: string | null;
       startTime: string | null;
       endTime: string | null;
       capacity: number | null;
@@ -248,6 +266,7 @@ export class SessionsRepository {
       .set({
         label: input.label,
         date: input.date,
+        endDate: input.endDate,
         startTime: input.startTime,
         endTime: input.endTime,
         capacity: input.capacity,
@@ -322,11 +341,14 @@ export class SessionsRepository {
       email: string;
       department: string | null;
       created_at: string;
+      batch_id: number | null;
+      batch_no: number | null;
     }>(sql`
       SELECT w.id, w.user_id, u.first_name, u.last_name, u.email,
-             u.department, w.created_at
+             u.department, w.created_at, w.batch_id, b.batch_no
         FROM session_waitlist w
         JOIN users u ON u.id = w.user_id
+        LEFT JOIN session_batches b ON b.id = w.batch_id
        WHERE w.session_id = ${sessionId} AND ${orgScope('w', scope)}
        ORDER BY w.created_at
     `);
@@ -617,10 +639,11 @@ export class SessionsRepository {
     scope: OrgScope,
     sessionId: number,
     userId: number,
+    batchId: number | null = null,
   ): Promise<number | null> {
     const inserted = await this.db.all<{ id: number }>(sql`
-      INSERT INTO session_waitlist (organization_id, session_id, user_id)
-      VALUES (${scope.organizationId}, ${sessionId}, ${userId})
+      INSERT INTO session_waitlist (organization_id, session_id, user_id, batch_id)
+      VALUES (${scope.organizationId}, ${sessionId}, ${userId}, ${batchId})
       ON CONFLICT (session_id, user_id) DO NOTHING
       RETURNING id
     `);
@@ -633,15 +656,17 @@ export class SessionsRepository {
     sessionId: number,
     userId: number,
   ): Promise<number | null> {
+    // Position within the same queue: the batch they wait for, or the
+    // session-wide queue when they wait for no particular batch.
     const rows = await this.db.all<{ position: number }>(sql`
       SELECT COUNT(*)::int + 1 AS position
         FROM session_waitlist w
+        JOIN session_waitlist m
+          ON m.session_id = ${sessionId} AND m.user_id = ${userId}
        WHERE w.session_id = ${sessionId}
          AND ${orgScope('w', scope)}
-         AND w.created_at < (
-           SELECT m.created_at FROM session_waitlist m
-            WHERE m.session_id = ${sessionId} AND m.user_id = ${userId}
-         )
+         AND w.batch_id IS NOT DISTINCT FROM m.batch_id
+         AND w.created_at < m.created_at
     `);
     return rows[0] ? Number(rows[0].position) : null;
   }
@@ -1067,13 +1092,139 @@ export class SessionsRepository {
     `);
   }
 
+  /* ── Feedback and the session report (0074) ─────────────────────────── */
+
+  /**
+   * Every learner's feedback on one session, newest first, with who they are
+   * and which batch they sat in. ACTIVITY, so orgScope on the feedback row.
+   */
+  async feedbackForSession(scope: OrgScope, sessionId: number) {
+    return this.db.all<{
+      id: number;
+      user_id: number;
+      name: string;
+      email: string;
+      department: string | null;
+      job_role: string | null;
+      batch_id: number | null;
+      batch_no: number | null;
+      batch_label: string | null;
+      rating_content: number;
+      rating_trainer: number;
+      rating_delivery: number;
+      comment: string | null;
+      created_at: string;
+    }>(sql`
+      SELECT f.id, u.id AS user_id,
+             TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS name,
+             u.email, u.department, u.job_role,
+             sr.batch_id, b.batch_no, b.label AS batch_label,
+             f.rating_content, f.rating_trainer, f.rating_delivery,
+             f.comment, f.created_at
+        FROM session_feedback f
+        JOIN users u ON u.id = f.user_id
+   LEFT JOIN session_roster sr ON sr.session_id = f.session_id AND sr.user_id = f.user_id
+   LEFT JOIN session_batches b ON b.id = sr.batch_id
+       WHERE f.session_id = ${sessionId} AND ${orgScope('f', scope)}
+       ORDER BY f.created_at DESC
+    `);
+  }
+
+  /**
+   * One row per person on the roster for the report: who, which batch, when
+   * they joined the roster, their attendance and their feedback. One query.
+   */
+  async reportLearners(scope: OrgScope, sessionId: number) {
+    return this.db.all<{
+      user_id: number;
+      name: string;
+      email: string;
+      department: string | null;
+      job_role: string | null;
+      batch_id: number | null;
+      batch_no: number | null;
+      batch_label: string | null;
+      enrolled_at: string | null;
+      attendance: string | null;
+      join_time: string | null;
+      notes: string | null;
+      rating_content: number | null;
+      rating_trainer: number | null;
+      rating_delivery: number | null;
+      comment: string | null;
+      feedback_at: string | null;
+    }>(sql`
+      SELECT u.id AS user_id,
+             TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS name,
+             u.email, u.department, u.job_role,
+             sr.batch_id, b.batch_no, b.label AS batch_label, sr.enrolled_at,
+             sa.status AS attendance, sa.join_time, sa.notes,
+             f.rating_content, f.rating_trainer, f.rating_delivery, f.comment,
+             f.created_at AS feedback_at
+        FROM session_roster sr
+        JOIN users u ON u.id = sr.user_id
+   LEFT JOIN session_batches b ON b.id = sr.batch_id
+   LEFT JOIN session_attendance sa ON sa.session_id = sr.session_id AND sa.user_id = sr.user_id
+   LEFT JOIN session_feedback f ON f.session_id = sr.session_id AND f.user_id = sr.user_id
+       WHERE sr.session_id = ${sessionId} AND ${orgScope('sr', scope)}
+       ORDER BY b.batch_no NULLS LAST, u.first_name, u.last_name
+    `);
+  }
+
+  /* ── Seats (0074) ────────────────────────────────────────────────────── */
+
+  /** People currently placed in one batch. */
+  async batchRosterCount(scope: OrgScope, batchId: number): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM session_roster sr
+       WHERE sr.batch_id = ${batchId} AND ${orgScope('sr', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /** Whether this person is already placed in this batch. */
+  async isInBatch(scope: OrgScope, batchId: number, userId: number): Promise<boolean> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM session_roster sr
+       WHERE sr.batch_id = ${batchId} AND sr.user_id = ${userId} AND ${orgScope('sr', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+
+  /** The waitlisted batch for one person, or null (session queue / not queued). */
+  async waitlistEntry(scope: OrgScope, sessionId: number, userId: number) {
+    const rows = await this.db.all<{ batch_id: number | null }>(sql`
+      SELECT w.batch_id FROM session_waitlist w
+       WHERE w.session_id = ${sessionId} AND w.user_id = ${userId}
+         AND ${orgScope('w', scope)}
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Run `fn` while holding a per-session lock, so two people cannot both take
+   * the last seat. The count-then-insert inside `fn` is serialised against
+   * every other booking or move on the same session; the lock is released
+   * when this transaction ends, after `fn`'s own writes have committed.
+   */
+  async withSeatLock<T>(sessionId: number, fn: () => Promise<T>): Promise<T> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(7401, ${sessionId})`);
+      return fn();
+    });
+  }
+
   /* ── Learner ── */
 
   async listForLearner(scope: OrgScope, userId: number) {
     return this.db.all(sql`
-      SELECT s.id, s.title, s.session_type, s.department, s.date,
+      SELECT s.id, s.title, s.session_type, s.department, s.date, s.end_date,
              s.start_time, s.end_time, s.trainer, s.venue_url,
              s.description, s.status, s.capacity,
+             sr.batch_id AS my_batch_id,
+             (SELECT COUNT(*)::int FROM session_roster r2
+               WHERE r2.session_id = s.id) AS roster_count,
              c.name AS course_name,
              tc.id AS training_course_id,
              -- A session's picture IS its companion training course's (§10.10),

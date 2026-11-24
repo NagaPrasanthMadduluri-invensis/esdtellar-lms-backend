@@ -5679,6 +5679,45 @@ learner's own skills; `GET learner/competencies` had no caller.
 Pinned by `competencies.service.spec.ts`, `test/competencies.e2e-spec.ts` and
 `client/e2e/admin-course-skills.spec.mjs`.
 
+### 10.63 Batch scheduling: one derived sitting shape, per-batch seats, session report (0074, 2026-11-24)
+
+**Model.** `session_batches.end_date` and `sessions.end_date` (NULL = one day)
+let a batch, or a batch-less session, span days; times stay daily.
+`session_waitlist.batch_id` gives each batch its own queue (ON DELETE SET
+NULL falls back to the session queue). Nothing is duplicated: one session row,
+one roster row per person (at most one batch), one attendance row per person.
+
+**One derivation.** `common/session-schedule.ts buildSittings` turns a session
+and its batches into sittings (dates, daily times, capacity with the session's
+as fallback, registered, available, waitlist, status, total minutes).
+`SessionsService.sittingsFor` reads batches and waitlist counts for a set of
+rows in two queries and attaches it to the admin list, learner list, trainer
+list and catalogue; the report uses it too. A view never recomputes seats.
+
+**No overbooking.** Every path that puts someone in a batch (self-booking,
+admin add with `batch_id`, move between batches, waitlist promotion) runs its
+count-then-write inside `withSeatLock`, a transaction holding
+`pg_advisory_xact_lock(7401, sessionId)`, so concurrent bookings on one
+session serialise. A full batch: a learner queues for that batch; an admin gets
+a 409 naming the batch and its count. Lowering a batch's capacity below its
+people is a 409. A session with batches must be booked with `batch_id` (422).
+Seats are never stored, so a cancellation frees one at once. Promotion stays
+manual (Waitlist promotion), now into the queued batch.
+
+**Learning hours.** The companion lesson's duration is the daily length times
+the session's days. A batched session still credits the session's own length
+(one companion lesson); per-batch lengths are reported, not credited.
+
+**Admin reads.** `GET admin/sessions/:id/feedback` (names, batch, ratings,
+comment, date, averages), `GET :id/report` (JSON, which the client prints as
+the PDF) and `GET :id/report.xlsx` (four sheets from the same payload, built by
+`session-report.xlsx.ts`). Open to the admin audience like the roster and
+attendance reads beside them.
+
+Pinned by `session-schedule.spec.ts`, the "batch scheduling, capacity and
+reports" block of `test/sessions.e2e-spec.ts`, and
+`client/e2e/admin-session-report.spec.mjs`.
+
 ## 11. Adding a new module — checklist
 
 Answer these before writing code:

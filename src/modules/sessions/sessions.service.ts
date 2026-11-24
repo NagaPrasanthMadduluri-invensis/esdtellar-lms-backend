@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
+  ConflictException,
 } from '@nestjs/common';
 
 import type { OrgScope } from '@/database/org-scope';
@@ -17,6 +18,14 @@ import type {
   SessionBatchDto,
   SessionDto,
 } from './dto/session.dto';
+import {
+  batchName,
+  buildSittings,
+  datesBetween,
+  MAX_SITTING_DAYS,
+  sittingIsBookable,
+  type Sitting,
+} from '@/common/session-schedule';
 import { batchDisplayStatus } from '@/common/session-enrolment';
 import { displayStatus } from './session-status.util';
 import {
@@ -140,7 +149,160 @@ export class SessionsService {
           // Derived, never stored — a batch with no date yet is pending.
           display_status: batchDisplayStatus(b),
         })),
+        // Every sitting with its dates and seats (common/session-schedule.ts),
+        // the same shape the learner, trainer and catalogue reads carry.
+        sittings: buildSittings(
+          {
+            ...(row as never as SittingSessionRow),
+            roster_count: Number(row.roster_count ?? 0),
+            waitlist_count: waitingBySession.get(Number(row.id)) ?? 0,
+          },
+          batchesBySession.get(Number(row.id)) ?? [],
+        ),
       })),
+    };
+  }
+
+  /**
+   * Sittings for a set of session rows, in one batch read (§7.1). Used by the
+   * learner, trainer and catalogue reads so every view derives seats the same
+   * way as the admin list.
+   */
+  async sittingsFor(
+    scope: OrgScope,
+    rows: Record<string, unknown>[],
+  ): Promise<Map<number, Sitting[]>> {
+    const ids = rows.map((r) => Number(r.id));
+    const [batches, waiting] = await Promise.all([
+      this.repository.listBatchesForSessions(scope, ids),
+      this.repository.waitlistCounts(scope, ids),
+    ]);
+    const waitingBySession = new Map(waiting.map((w) => [w.session_id, Number(w.n)]));
+    const out = new Map<number, Sitting[]>();
+    for (const row of rows) {
+      const id = Number(row.id);
+      out.set(
+        id,
+        buildSittings(
+          {
+            ...(row as never as SittingSessionRow),
+            roster_count: Number(row.roster_count ?? 0),
+            waitlist_count: waitingBySession.get(id) ?? 0,
+          },
+          batches.filter((b) => Number(b.session_id) === id),
+        ),
+      );
+    }
+    return out;
+  }
+
+  /* ── Feedback and report (0074) ──────────────────────────────────────── */
+
+  /** Every learner's feedback on one session, with averages. Admin read. */
+  async sessionFeedback(scope: OrgScope, sessionId: number) {
+    const session = await this.repository.findStatus(scope, sessionId);
+    if (!session) throw new NotFoundException('Session not found');
+    const rows = await this.repository.feedbackForSession(scope, sessionId);
+    const feedback = rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      name: r.name,
+      email: r.email,
+      department: r.department,
+      jobRole: r.job_role,
+      batch: r.batch_no ? batchName(r.batch_no, r.batch_label) : null,
+      ratings: { content: r.rating_content, trainer: r.rating_trainer, delivery: r.rating_delivery },
+      average: round1((r.rating_content + r.rating_trainer + r.rating_delivery) / 3),
+      comment: r.comment,
+      submittedAt: r.created_at,
+    }));
+    return { summary: feedbackSummary(feedback), feedback };
+  }
+
+  /**
+   * Everything the Download Session Report needs, in one payload: the session,
+   * every sitting with its schedule and seats, totals, each learner's batch,
+   * attendance and feedback, and the feedback summary. The Excel file and the
+   * printable PDF are both drawn from this, so they cannot disagree.
+   */
+  async sessionReport(scope: OrgScope, sessionId: number) {
+    const row = (await this.repository.findWithCourse(scope, sessionId)) as Record<string, unknown> | null;
+    if (!row) throw new NotFoundException('Session not found');
+    const [learnerRows, rosterCount, waiting] = await Promise.all([
+      this.repository.reportLearners(scope, sessionId),
+      this.repository.rosterCount(scope, sessionId),
+      this.repository.waitlistCounts(scope, [sessionId]),
+    ]);
+    const sittings = (
+      await this.sittingsFor(scope, [{ ...row, roster_count: rosterCount }])
+    ).get(sessionId) ?? [];
+
+    const learners = learnerRows.map((r) => ({
+      name: r.name,
+      email: r.email,
+      department: r.department,
+      jobRole: r.job_role,
+      batch: r.batch_no ? batchName(r.batch_no, r.batch_label) : (sittings[0]?.batch_id === null ? 'Single sitting' : 'Not placed in a batch'),
+      enrolledAt: r.enrolled_at,
+      attendance: r.attendance,
+      joinTime: r.join_time,
+      notes: r.notes,
+      feedback: r.rating_content === null
+        ? null
+        : {
+            content: r.rating_content,
+            trainer: r.rating_trainer,
+            delivery: r.rating_delivery,
+            average: round1(((r.rating_content ?? 0) + (r.rating_trainer ?? 0) + (r.rating_delivery ?? 0)) / 3),
+            comment: r.comment,
+            submittedAt: r.feedback_at,
+          },
+    }));
+
+    const tally = { present: 0, late: 0, partial: 0, absent: 0, excused: 0, unmarked: 0 };
+    for (const l of learners) {
+      const k = (l.attendance ?? 'unmarked') as keyof typeof tally;
+      tally[k in tally ? k : 'unmarked'] += 1;
+    }
+    const attended = tally.present + tally.late + tally.partial;
+    const marked = learners.length - tally.unmarked;
+    const scheduledMinutes = sittings.reduce((n, x) => n + (x.total_minutes ?? 0), 0);
+    const feedback = learners
+      .filter((l) => l.feedback)
+      .map((l) => ({ ...l.feedback!, average: l.feedback!.average }));
+
+    const startDates = sittings.map((x) => x.start_date).filter(Boolean) as string[];
+    const endDates = sittings.map((x) => x.end_date).filter(Boolean) as string[];
+
+    return {
+      generatedAt: new Date().toISOString(),
+      session: {
+        id: sessionId,
+        title: String(row.title ?? ''),
+        type: String(row.session_type ?? ''),
+        trainer: String(row.trainer ?? ''),
+        venue: String(row.venue_url ?? ''),
+        status: displayStatus(row as Parameters<typeof displayStatus>[0]),
+        enrollMode: String(row.enroll_mode ?? 'assigned'),
+        description: (row.description as string | null) ?? null,
+        firstDate: startDates.sort()[0] ?? null,
+        lastDate: endDates.sort().at(-1) ?? null,
+      },
+      totals: {
+        learners: learners.length,
+        batches: sittings.filter((x) => x.batch_id !== null).length,
+        capacity: sittings.filter((x) => x.status !== 'cancelled').reduce((n, x) => n + x.capacity, 0),
+        registered: rosterCount,
+        available: sittings.filter((x) => x.status !== 'cancelled').reduce((n, x) => n + x.available, 0),
+        waitlist: Number(waiting[0]?.n ?? 0),
+        attendance: tally,
+        attendanceRatePct: marked > 0 ? Math.round((attended / marked) * 100) : null,
+        scheduledMinutes,
+        feedbackCount: feedback.length,
+      },
+      sittings,
+      learners,
+      feedbackSummary: feedbackSummary(feedback),
     };
   }
 
@@ -157,6 +319,7 @@ export class SessionsService {
       batchNo,
       label: dto.label ?? null,
       date: dto.date ?? null,
+      endDate: endDateFor(dto.date, dto.end_date),
       startTime: dto.start_time ?? null,
       endTime: dto.end_time ?? null,
       capacity: dto.capacity ?? null,
@@ -169,9 +332,21 @@ export class SessionsService {
     const existing = await this.repository.findBatch(scope, batchId);
     if (!existing) throw new NotFoundException('Batch not found');
 
+    // Capacity can be raised freely; lowering it below the people already
+    // placed would overbook the batch on paper, so it is refused in words.
+    if (dto.capacity !== undefined && dto.capacity !== null) {
+      const placed = await this.repository.batchRosterCount(scope, batchId);
+      if (dto.capacity < placed) {
+        throw new ConflictException(
+          `${batchName(existing.batch_no, existing.label)} already has ${placed} learner${placed === 1 ? '' : 's'}, so its capacity cannot be lower than that. Move people out first.`,
+        );
+      }
+    }
+
     const batch = await this.repository.updateBatch(scope, batchId, {
       label: dto.label ?? null,
       date: dto.date ?? null,
+      endDate: endDateFor(dto.date, dto.end_date),
       startTime: dto.start_time ?? null,
       endTime: dto.end_time ?? null,
       capacity: dto.capacity ?? null,
@@ -197,20 +372,43 @@ export class SessionsService {
     sessionId: number,
     dto: MoveToBatchDto,
   ) {
-    if (dto.batch_id !== null && dto.batch_id !== undefined) {
-      const batch = await this.repository.findBatch(scope, dto.batch_id);
-      if (!batch || batch.session_id !== sessionId) {
-        throw new NotFoundException('Batch not found on this session');
-      }
-    }
-    const moved = await this.repository.setRosterBatch(
-      scope,
-      sessionId,
-      dto.user_id,
-      dto.batch_id ?? null,
-    );
+    const batchId = dto.batch_id ?? null;
+    const moved = await this.repository.withSeatLock(sessionId, async () => {
+      if (batchId !== null) await this.assertBatchHasRoom(scope, sessionId, batchId, dto.user_id);
+      return this.repository.setRosterBatch(scope, sessionId, dto.user_id, batchId);
+    });
     if (moved === 0) throw new NotFoundException('That learner is not on this session');
     return { ok: true };
+  }
+
+  /**
+   * The one capacity rule for placing a person in a batch (0074): the batch
+   * must belong to this session, be open (scheduled or pending a date) and
+   * have a seat. A person already in the batch does not need a new seat.
+   * Callers hold `withSeatLock`, so the count cannot change underneath.
+   */
+  private async assertBatchHasRoom(
+    scope: OrgScope,
+    sessionId: number,
+    batchId: number,
+    userId?: number,
+  ) {
+    const batch = await this.repository.findBatch(scope, batchId);
+    if (!batch || Number(batch.session_id) !== sessionId) {
+      throw new NotFoundException('Batch not found on this session');
+    }
+    const name = batchName(batch.batch_no, batch.label);
+    if (batch.status === 'cancelled' || batch.status === 'completed') {
+      throw new UnprocessableEntityException(`${name} is ${batch.status} and takes no more learners.`);
+    }
+    if (userId !== undefined && (await this.repository.isInBatch(scope, batchId, userId))) return batch;
+    const session = await this.repository.findStatus(scope, sessionId);
+    const capacity = batch.capacity ?? Number((session as { capacity?: number } | null)?.capacity ?? 0);
+    const placed = await this.repository.batchRosterCount(scope, batchId);
+    if (capacity > 0 && placed >= capacity) {
+      throw new ConflictException(`${name} is full (${placed} of ${capacity}). Choose another batch or raise its capacity.`);
+    }
+    return batch;
   }
 
   /* ── Waitlist ────────────────────────────────────────────────────────── */
@@ -241,7 +439,14 @@ export class SessionsService {
     const session = await this.repository.findWithCourse(scope, sessionId);
     if (!session) throw new NotFoundException('Session not found');
 
-    await this.addToRoster(scope, sessionId, adminUserId, { user_id: userId });
+    // Promoted into the batch they queued for, when they queued for one; that
+    // batch must have a seat (no overbooking, 0074).
+    const entry = await this.repository.waitlistEntry(scope, sessionId, userId);
+    if (!entry) throw new NotFoundException('That learner is not on this waitlist');
+    await this.addToRoster(scope, sessionId, adminUserId, {
+      user_id: userId,
+      batch_id: entry.batch_id ?? null,
+    });
     await this.repository.removeFromWaitlist(scope, sessionId, userId);
     return { ok: true };
   }
@@ -550,6 +755,16 @@ export class SessionsService {
     let added: number[];
     if (dto.enroll_all && dto.department) {
       added = await this.repository.enrollDepartment(scope, sessionId, dto.department);
+    } else if (dto.user_id && dto.batch_id) {
+      // Straight into a batch: the seat check and the insert are one locked step.
+      const userId = dto.user_id;
+      const batchId = dto.batch_id;
+      added = await this.repository.withSeatLock(sessionId, async () => {
+        await this.assertBatchHasRoom(scope, sessionId, batchId, userId);
+        const ids = await this.repository.addToRoster(scope, sessionId, userId);
+        await this.repository.setRosterBatch(scope, sessionId, userId, batchId);
+        return ids;
+      });
     } else if (dto.user_id) {
       added = await this.repository.addToRoster(scope, sessionId, dto.user_id);
     } else {
@@ -630,7 +845,12 @@ export class SessionsService {
    * what a full self-enrol session is for, and it already exists (0025); a
    * 409 would send them away with nothing to do.
    */
-  async selfEnrol(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {
+  async selfEnrol(
+    scope: OrgScope,
+    sessionId: number,
+    user: AuthenticatedUser,
+    batchId?: number,
+  ) {
     const userId = user.userId;
     const session = await this.repository.findWithCourse(scope, sessionId);
     if (!session) throw new NotFoundException('Session not found');
@@ -654,22 +874,59 @@ export class SessionsService {
       return { state: 'enrolled' as const, already: true, position: null };
     }
 
-    const capacity = Number(session.capacity ?? 0);
-    const taken = await this.repository.rosterCount(scope, sessionId);
-    if (capacity > 0 && taken >= capacity) {
-      const position =
-        (await this.repository.addToWaitlist(scope, sessionId, userId)) ??
-        (await this.repository.waitlistPosition(scope, sessionId, userId));
-      void this.notifySelfWaitlisted(scope, session, user, position);
-      return { state: 'waitlisted' as const, already: false, position };
+    // A session with batches is booked into ONE batch, chosen by the learner;
+    // each batch has its own seats and its own queue (0074).
+    const [batchRows] = await Promise.all([
+      this.repository.listBatchesForSessions(scope, [sessionId]),
+    ]);
+    const open = batchRows.filter((b) => sittingIsBookable({ status: batchDisplayStatus(b) }) && b.date);
+    if (batchRows.length > 0) {
+      if (batchId === undefined) {
+        throw new UnprocessableEntityException('Choose a batch to book. This session runs in more than one sitting.');
+      }
+      const chosen = open.find((b) => Number(b.id) === batchId);
+      if (!chosen) {
+        throw new UnprocessableEntityException('That batch is not open for booking. Choose another batch.');
+      }
     }
 
-    // addToRoster's own notify EXCLUDES the person it was told is the "admin",
-    // which here is the learner themselves — so it sends them nothing, and the
-    // self-enrol receipt is sent explicitly below with its own wording.
-    await this.addToRoster(scope, sessionId, userId, { user_id: userId });
+    const outcome = await this.repository.withSeatLock(sessionId, async () => {
+      if (batchId !== undefined && batchRows.length > 0) {
+        const b = open.find((x) => Number(x.id) === batchId)!;
+        const capacity = b.capacity ?? Number(session.capacity ?? 0);
+        const placed = await this.repository.batchRosterCount(scope, batchId);
+        if (capacity > 0 && placed >= capacity) {
+          const position =
+            (await this.repository.addToWaitlist(scope, sessionId, userId, batchId)) ??
+            (await this.repository.waitlistPosition(scope, sessionId, userId));
+          return { state: 'waitlisted' as const, position };
+        }
+        await this.addToRoster(scope, sessionId, userId, { user_id: userId });
+        await this.repository.setRosterBatch(scope, sessionId, userId, batchId);
+        return { state: 'enrolled' as const, position: null };
+      }
+
+      const capacity = Number(session.capacity ?? 0);
+      const taken = await this.repository.rosterCount(scope, sessionId);
+      if (capacity > 0 && taken >= capacity) {
+        const position =
+          (await this.repository.addToWaitlist(scope, sessionId, userId)) ??
+          (await this.repository.waitlistPosition(scope, sessionId, userId));
+        return { state: 'waitlisted' as const, position };
+      }
+      // addToRoster's own notify EXCLUDES the person it was told is the "admin",
+      // which here is the learner themselves — so it sends them nothing, and the
+      // self-enrol receipt is sent explicitly below with its own wording.
+      await this.addToRoster(scope, sessionId, userId, { user_id: userId });
+      return { state: 'enrolled' as const, position: null };
+    });
+
+    if (outcome.state === 'waitlisted') {
+      void this.notifySelfWaitlisted(scope, session, user, outcome.position);
+      return { state: 'waitlisted' as const, already: false, position: outcome.position, batch_id: batchId ?? null };
+    }
     void this.notifySelfEnrolledSession(scope, session, user);
-    return { state: 'enrolled' as const, already: false, position: null };
+    return { state: 'enrolled' as const, already: false, position: null, batch_id: batchId ?? null };
   }
 
   /** Receipt to a learner who booked themselves, plus the admin bell. §8.4. */
@@ -887,8 +1144,10 @@ export class SessionsService {
       scope,
       trainerUserId,
     )) as Record<string, unknown>[];
+    const sittings = await this.sittingsFor(scope, rows);
     return {
       sessions: rows.map((row) => ({
+        sittings: sittings.get(Number(row.id)) ?? [],
         ...row,
         course_id: row.course_id ? Number(row.course_id) : null,
         training_course_id: row.training_course_id
@@ -1025,10 +1284,16 @@ export class SessionsService {
       scope,
       userId,
     )) as Record<string, unknown>[];
+    const sittings = await this.sittingsFor(scope, rows);
 
     return {
       sessions: rows.map((row) => ({
         ...row,
+        my_batch_id: row.my_batch_id ? Number(row.my_batch_id) : null,
+        // All sittings, so the calendar can show the others' availability; the
+        // learner's own is `my_batch_id` (null when the session has none, or
+        // they are not yet placed in one).
+        sittings: sittings.get(Number(row.id)) ?? [],
         training_course_id: row.training_course_id
           ? Number(row.training_course_id)
           : null,
@@ -1076,10 +1341,12 @@ export class SessionsService {
       isActive: session.status === 'cancelled' ? 0 : 1,
       lessonTitle: String(session.title ?? 'Live session'),
       contentUrl: String(session.venue_url ?? ''),
-      durationMinutes: SessionsService.durationMinutes(
-        String(session.start_time ?? ''),
-        String(session.end_time ?? ''),
-      ),
+      // Per day times the days it runs (a multi-day sitting, 0074).
+      durationMinutes:
+        SessionsService.durationMinutes(
+          String(session.start_time ?? ''),
+          String(session.end_time ?? ''),
+        ) * Math.max(1, datesBetween(String(session.date ?? ''), (session.end_date as string | null) ?? null).length),
     });
   }
 
@@ -1125,10 +1392,10 @@ export class SessionsService {
       isActive: (dto.status ?? 'upcoming') === 'cancelled' ? 0 : 1,
       lessonTitle: dto.title,
       contentUrl: dto.venue_url,
-      durationMinutes: SessionsService.durationMinutes(
-        dto.start_time,
-        dto.end_time,
-      ),
+      // Per day times the days it runs (a multi-day sitting, 0074).
+      durationMinutes:
+        SessionsService.durationMinutes(dto.start_time, dto.end_time) *
+        Math.max(1, datesBetween(dto.date, dto.end_date ?? null).length),
     };
   }
 
@@ -1538,6 +1805,7 @@ export class SessionsService {
       trainerUserId: dto.trainer_user_id ? Number(dto.trainer_user_id) : null,
       venueUrl: dto.venue_url,
       date: dto.date,
+      endDate: endDateFor(dto.date, dto.end_date),
       startTime: dto.start_time,
       endTime: dto.end_time,
       description: dto.description ?? null,
@@ -1553,4 +1821,53 @@ function cancelDate(value: string): string {
   return Number.isNaN(d.getTime())
     ? value
     : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
+/**
+ * A stored end date: null for a one-day sitting (end equal to the start, or
+ * none given), the date itself for a real span. An end before the start is a
+ * 400, said in words, rather than silently becoming a one-day sitting.
+ */
+function endDateFor(start: string | null | undefined, end: string | null | undefined): string | null {
+  if (!end || !start || end === start) return null;
+  if (end < start) {
+    throw new BadRequestException('The end date cannot be before the start date.');
+  }
+  if (datesBetween(start, end).length >= MAX_SITTING_DAYS) {
+    throw new BadRequestException(`A sitting can span at most ${MAX_SITTING_DAYS - 1} days.`);
+  }
+  return end;
+}
+
+/** The session fields buildSittings reads, as a row carries them. */
+type SittingSessionRow = {
+  title: string;
+  date: string;
+  end_date?: string | null;
+  start_time: string;
+  end_time: string;
+  capacity: number;
+  status: string;
+  roster_count: number;
+  waitlist_count?: number;
+  trainer?: string | null;
+};
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+/** Averages per question and overall, from feedback rows. Null when none. */
+function feedbackSummary(
+  rows: { content?: number | null; trainer?: number | null; delivery?: number | null; average?: number; ratings?: { content: number; trainer: number; delivery: number } }[],
+) {
+  if (rows.length === 0) return { count: 0, content: null, trainer: null, delivery: null, overall: null };
+  const get = (r: (typeof rows)[number], k: 'content' | 'trainer' | 'delivery') =>
+    Number(r.ratings ? r.ratings[k] : r[k] ?? 0);
+  const avg = (k: 'content' | 'trainer' | 'delivery') =>
+    round1(rows.reduce((n, r) => n + get(r, k), 0) / rows.length);
+  const content = avg('content');
+  const trainer = avg('trainer');
+  const delivery = avg('delivery');
+  return { count: rows.length, content, trainer, delivery, overall: round1((content + trainer + delivery) / 3) };
 }

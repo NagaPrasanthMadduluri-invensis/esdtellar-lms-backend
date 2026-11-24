@@ -36,6 +36,8 @@ export const sessions = pgTable(
     /** ILT: room/venue name. Virtual: meeting URL. */
     venueUrl: text('venue_url').notNull(),
     date: text('date').notNull(),
+    // Last day of a multi-day single sitting (0074), inclusive. NULL = one day.
+    endDate: text('end_date'),
     startTime: text('start_time').notNull(),
     endTime: text('end_time').notNull(),
     description: text('description'),
@@ -140,6 +142,8 @@ export const sessionBatches = pgTable(
     label: text('label'),
     /** NULL means the date is not fixed yet — the derived `pending` state. */
     date: text('date'),
+    // Last day of a multi-day batch (0074), inclusive. NULL = one day.
+    endDate: text('end_date'),
     startTime: text('start_time'),
     endTime: text('end_time'),
     /** NULL falls back to the session's own capacity. */
@@ -177,6 +181,10 @@ export const sessionWaitlist = pgTable(
     organizationId: integer('organization_id').notNull(),
     sessionId: integer('session_id').notNull(),
     userId: integer('user_id').notNull(),
+    // The batch they are waiting for (0074); NULL = the session as a whole.
+    // ON DELETE SET NULL in the migration: a deleted batch's queue falls back
+    // to the session queue.
+    batchId: integer('batch_id'),
     /** Position is by arrival, so the queue needs no rank column. */
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
       .notNull()

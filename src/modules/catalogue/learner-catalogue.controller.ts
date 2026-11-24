@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -12,6 +13,7 @@ import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { type OrgScope } from '@/database/org-scope';
 
+import { SelfEnrolDto } from '@/modules/sessions/dto/session.dto';
 import { CatalogueService } from './catalogue.service';
 
 /**
@@ -67,8 +69,10 @@ export class LearnerCatalogueController {
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
     @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Body() dto: SelfEnrolDto,
   ) {
-    return this.catalogue.enrolSession(scope, sessionId, user);
+    // A session with batches is booked into one: `batch_id` (0074).
+    return this.catalogue.enrolSession(scope, sessionId, user, dto?.batch_id);
   }
 
   /**

@@ -105,7 +105,7 @@ describe('catalogue', () => {
     const me = await signIn(app, p);
 
     const booked = await me.post(`/api/learner/catalogue/sessions/${s.id}/enrol`).expect(200);
-    expect(booked.body).toEqual({ state: 'enrolled', already: false, position: null });
+    expect(booked.body).toEqual({ state: 'enrolled', already: false, position: null, batch_id: null });
     expect(await dbQuery('SELECT assigned_by FROM user_course_assignments WHERE user_id = $1 AND course_id = $2', [p.id, s.trainingCourseId])).toEqual([{ assigned_by: p.id }]);
     await settle();
     expect(await notificationsOf(p.id, 'session_enrolled')).toHaveLength(1);
@@ -135,7 +135,7 @@ describe('catalogue', () => {
     await (await signIn(app, first)).post(`/api/learner/catalogue/sessions/${s.id}/enrol`).expect(200);
     const me = await signIn(app, second);
     const r = await me.post(`/api/learner/catalogue/sessions/${s.id}/enrol`).expect(200);
-    expect(r.body).toEqual({ state: 'waitlisted', already: false, position: 1 });
+    expect(r.body).toEqual({ state: 'waitlisted', already: false, position: 1, batch_id: null });
     await settle();
     expect(await notificationsOf(second.id, 'session_waitlisted')).toHaveLength(1);
 

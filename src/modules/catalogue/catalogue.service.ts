@@ -32,6 +32,13 @@ export class CatalogueService {
       this.repository.openSessions(scope, userId),
     ]);
 
+    // Sittings derived by the one rule the admin list uses (0074), so a batch
+    // shows the same seats here as everywhere else.
+    const sittings = await this.sessions.sittingsFor(
+      scope,
+      sessions as unknown as Record<string, unknown>[],
+    );
+
     return {
       courses: courses.map((row) => ({
         id: row.id,
@@ -49,7 +56,15 @@ export class CatalogueService {
         is_enrolled: row.is_enrolled > 0,
       })),
       sessions: sessions.map((row) => {
-        const seatsLeft = Math.max(0, row.capacity - row.roster_count);
+        const rowSittings = sittings.get(Number(row.id)) ?? [];
+        // With batches, the session's seats are the sum of its OPEN batches'
+        // (bookable and dated): that is what a learner can actually take.
+        const hasBatches = rowSittings.some((x) => x.batch_id !== null);
+        const bookable = rowSittings.filter((x) => x.status === 'scheduled' && x.start_date);
+        const capacity = hasBatches ? bookable.reduce((n, x) => n + x.capacity, 0) : row.capacity;
+        const seatsLeft = hasBatches
+          ? bookable.reduce((n, x) => n + x.available, 0)
+          : Math.max(0, row.capacity - row.roster_count);
         return {
           id: row.id,
           title: row.title,
@@ -57,11 +72,12 @@ export class CatalogueService {
           thumbnail_url: row.thumbnail_url,
           session_type: row.session_type,
           date: row.date,
+          end_date: row.end_date ?? null,
           start_time: row.start_time,
           end_time: row.end_time,
           venue_url: row.venue_url,
           trainer: row.trainer,
-          capacity: row.capacity,
+          capacity,
           roster_count: row.roster_count,
           waitlist_count: row.waitlist_count,
           /**
@@ -71,7 +87,10 @@ export class CatalogueService {
            * full, and the API is the one that enforces it.
            */
           seats_left: seatsLeft,
-          is_full: row.capacity > 0 && seatsLeft === 0,
+          is_full: capacity > 0 && seatsLeft === 0,
+          sittings: rowSittings,
+          my_batch_id: row.my_batch_id ?? null,
+          waitlist_batch_id: row.waitlist_batch_id ?? null,
           is_enrolled: row.is_enrolled > 0,
           is_waitlisted: row.is_waitlisted > 0,
           waitlist_position:
@@ -85,8 +104,8 @@ export class CatalogueService {
     return this.courses.selfEnrol(scope, courseId, user);
   }
 
-  enrolSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {
-    return this.sessions.selfEnrol(scope, sessionId, user);
+  enrolSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser, batchId?: number) {
+    return this.sessions.selfEnrol(scope, sessionId, user, batchId);
   }
 
   leaveSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {

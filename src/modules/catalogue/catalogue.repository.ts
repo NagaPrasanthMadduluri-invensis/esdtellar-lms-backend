@@ -48,6 +48,7 @@ export interface CatalogueSessionRow {
   thumbnail_url: string | null;
   session_type: string;
   date: string;
+  end_date: string | null;
   start_time: string;
   end_time: string;
   venue_url: string;
@@ -59,6 +60,8 @@ export interface CatalogueSessionRow {
   /** This learner's own state: on the roster, in the queue, or neither. */
   is_enrolled: number;
   is_waitlisted: number;
+  my_batch_id: number | null;
+  waitlist_batch_id: number | null;
   /** Null when this learner is not queuing. */
   waitlist_position: number | null;
 }
@@ -139,6 +142,7 @@ export class CatalogueRepository {
              tc.thumbnail_url,
              s.session_type,
              s.date,
+             s.end_date,
              s.start_time,
              s.end_time,
              s.venue_url,
@@ -155,15 +159,22 @@ export class CatalogueRepository {
              (SELECT COUNT(*)::int FROM session_waitlist mq
                WHERE mq.session_id = s.id AND mq.user_id = ${userId}
              ) AS is_waitlisted,
+             (SELECT mine.batch_id FROM session_roster mine
+               WHERE mine.session_id = s.id AND mine.user_id = ${userId}
+             ) AS my_batch_id,
+             (SELECT mq.batch_id FROM session_waitlist mq
+               WHERE mq.session_id = s.id AND mq.user_id = ${userId}
+             ) AS waitlist_batch_id,
              -- Where they stand in the queue, by arrival. Sent with the list
              -- rather than only in the enrol response, or a refresh would
              -- lose it and the page could only say "you are waiting".
              (SELECT COUNT(*)::int + 1 FROM session_waitlist earlier
+                JOIN session_waitlist me
+                  ON me.session_id = s.id AND me.user_id = ${userId}
                WHERE earlier.session_id = s.id
-                 AND earlier.created_at < (
-                   SELECT me.created_at FROM session_waitlist me
-                    WHERE me.session_id = s.id AND me.user_id = ${userId}
-                 )
+                 -- Position within the same queue (0074): the batch, or the session.
+                 AND earlier.batch_id IS NOT DISTINCT FROM me.batch_id
+                 AND earlier.created_at < me.created_at
              ) AS waitlist_position
         FROM sessions s
         -- The companion training carries the picture (§10.10): a session has

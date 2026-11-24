@@ -237,6 +237,127 @@ describe('sessions', () => {
     });
   });
 
+  describe('batch scheduling, capacity and reports (0074)', () => {
+    it('a multi-day session credits every day, and an end before the start is refused', async () => {
+      const s = await makeSession(adminA, fx.A, { date: '2030-03-02', end_date: '2030-03-04', start_time: '09:00', end_time: '11:00' });
+      const [lesson] = await dbQuery('SELECT duration_minutes FROM lessons WHERE course_id = $1', [s.trainingCourseId]);
+      expect(Number(lesson.duration_minutes)).toBe(360);
+      const list = await adminA.get('/api/admin/sessions').expect(200);
+      const card = list.body.sessions.find((x: { id: number }) => Number(x.id) === s.id);
+      expect(card.sittings).toEqual([expect.objectContaining({ batch_id: null, start_date: '2030-03-02', end_date: '2030-03-04', dates: ['2030-03-02', '2030-03-03', '2030-03-04'], total_minutes: 360 })]);
+      const bad = await adminA.post('/api/admin/sessions').send(sessionBody(fx.A, { date: '2030-03-05', end_date: '2030-03-01' }));
+      expect(bad.status).toBe(400);
+      expect(bad.body.message).toMatch(/end date/i);
+    });
+
+    it('batches run on the same day or across days, each with its own seats; booking needs a batch; no overbooking', async () => {
+      const [l1, l2, l3, l4] = [await person(), await person(), await person(), await person()];
+      const s = await makeSession(adminA, fx.A, { enroll_mode: 'self', capacity: 10 });
+      const am = (await adminA.post(`/api/admin/sessions/${s.id}/batches`).send({ label: 'Morning', date: '2030-04-01', start_time: '09:00', end_time: '12:00', capacity: 1 }).expect(201)).body.batch;
+      const pm = (await adminA.post(`/api/admin/sessions/${s.id}/batches`).send({ label: 'Afternoon', date: '2030-04-01', start_time: '14:00', end_time: '17:00', capacity: 1 }).expect(201)).body.batch;
+      const span = (await adminA.post(`/api/admin/sessions/${s.id}/batches`).send({ label: 'Bootcamp', date: '2030-04-06', end_date: '2030-04-08', start_time: '10:00', end_time: '13:00', capacity: 5 }).expect(201)).body.batch;
+      await adminA.post(`/api/admin/sessions/${s.id}/batches`).send({ date: '2030-04-09', end_date: '2030-04-02' }).expect(400);
+
+      const a1 = await signIn(app, l1);
+      const r0 = await a1.post(`/api/learner/catalogue/sessions/${s.id}/enrol`).send({});
+      expect(r0.status).toBe(422);
+      expect(r0.body.message).toMatch(/batch/i);
+      expect((await a1.post(`/api/learner/catalogue/sessions/${s.id}/enrol`).send({ batch_id: am.id }).expect(200)).body).toMatchObject({ state: 'enrolled', batch_id: am.id });
+      // The morning is full: the next booking queues for THAT batch, the afternoon still has a seat.
+      const w = await (await signIn(app, l2)).post(`/api/learner/catalogue/sessions/${s.id}/enrol`).send({ batch_id: am.id }).expect(200);
+      expect(w.body).toMatchObject({ state: 'waitlisted', position: 1, batch_id: am.id });
+      await (await signIn(app, l3)).post(`/api/learner/catalogue/sessions/${s.id}/enrol`).send({ batch_id: pm.id }).expect(200);
+
+      // Every view reads the same sittings.
+      const cat = await a1.get('/api/learner/catalogue').expect(200);
+      const entry = cat.body.sessions.find((x: { id: number }) => Number(x.id) === s.id);
+      const bySitting = Object.fromEntries(entry.sittings.map((x: { batch_id: number }) => [x.batch_id, x]));
+      expect(bySitting[am.id]).toMatchObject({ capacity: 1, registered: 1, available: 0, is_full: true, waitlist: 1, start_time: '09:00' });
+      expect(bySitting[pm.id]).toMatchObject({ registered: 1, available: 0 });
+      expect(bySitting[span.id]).toMatchObject({ dates: ['2030-04-06', '2030-04-07', '2030-04-08'], available: 5, total_minutes: 540 });
+      expect(entry).toMatchObject({ my_batch_id: am.id, seats_left: 5, capacity: 7 });
+      const mine = await a1.get('/api/learner/sessions').expect(200);
+      const ms = mine.body.sessions.find((x: { id: number }) => Number(x.id) === s.id);
+      expect(ms.my_batch_id).toBe(am.id);
+      expect(ms.sittings).toHaveLength(3);
+      const admin = (await adminA.get('/api/admin/sessions').expect(200)).body.sessions.find((x: { id: number }) => Number(x.id) === s.id);
+      expect(admin.sittings.find((x: { batch_id: number }) => x.batch_id === am.id)).toMatchObject({ registered: 1, available: 0, waitlist: 1 });
+
+      // Admin moves and adds respect each batch's capacity.
+      const moved = await adminA.put(`/api/admin/sessions/${s.id}/roster/batch`).send({ user_id: l3.id, batch_id: am.id });
+      expect(moved.status).toBe(409);
+      expect(moved.body.message).toMatch(/full \(1 of 1\)/);
+      await adminA.post(`/api/admin/sessions/${s.id}/roster`).send({ user_id: l4.id, batch_id: pm.id }).expect(409);
+      await adminA.post(`/api/admin/sessions/${s.id}/roster`).send({ user_id: l4.id, batch_id: span.id }).expect(200);
+      expect((await dbQuery('SELECT batch_id FROM session_roster WHERE session_id = $1 AND user_id = $2', [s.id, l4.id]))[0].batch_id).toBe(span.id);
+      // Capacity cannot drop below the people already placed.
+      await adminA.put(`/api/admin/sessions/batches/${span.id}`).send({ label: 'Bootcamp', date: '2030-04-06', end_date: '2030-04-08', capacity: 2 }).expect(200);
+      await adminA.post(`/api/admin/sessions/${s.id}/roster`).send({ user_id: l2.id, batch_id: span.id }).expect(200);
+      const low = await adminA.put(`/api/admin/sessions/batches/${span.id}`).send({ label: 'Bootcamp', date: '2030-04-06', capacity: 1 });
+      expect(low.status).toBe(409);
+
+      // Promotion goes into the queued batch, and only when it has room.
+      const l5 = await person();
+      await (await signIn(app, l5)).post(`/api/learner/catalogue/sessions/${s.id}/enrol`).send({ batch_id: pm.id }).expect(200);
+      await adminA.post(`/api/admin/sessions/${s.id}/waitlist/${l5.id}/promote`).expect(409);
+      await adminA.put(`/api/admin/sessions/batches/${pm.id}`).send({ label: 'Afternoon', date: '2030-04-01', start_time: '14:00', end_time: '17:00', capacity: 2 }).expect(200);
+      await adminA.post(`/api/admin/sessions/${s.id}/waitlist/${l5.id}/promote`).expect(200);
+      expect((await dbQuery('SELECT batch_id FROM session_roster WHERE session_id = $1 AND user_id = $2', [s.id, l5.id]))[0].batch_id).toBe(pm.id);
+
+      // Cancelling frees the seat straight away.
+      await a1.delete(`/api/learner/catalogue/sessions/${s.id}/enrol`).expect(200);
+      const after = (await a1.get('/api/learner/catalogue').expect(200)).body.sessions.find((x: { id: number }) => Number(x.id) === s.id);
+      expect(after.sittings.find((x: { batch_id: number }) => x.batch_id === am.id)).toMatchObject({ registered: 0, available: 1 });
+
+      // Another org cannot book or see it.
+      const learnerB = await signIn(app, fx.B.learner);
+      await learnerB.post(`/api/learner/catalogue/sessions/${s.id}/enrol`).send({ batch_id: am.id }).expect(404);
+    });
+
+    it('admin sees every learner\'s feedback and downloads the session report; another org gets 404', async () => {
+      const [p1, p2] = [await person(), await person()];
+      const s = await makeSession(adminA, fx.A, { date: '2030-05-01', end_date: '2030-05-02', start_time: '09:00', end_time: '12:00' });
+      const b = (await adminA.post(`/api/admin/sessions/${s.id}/batches`).send({ label: 'Main', date: '2030-05-01', end_date: '2030-05-02', capacity: 5 }).expect(201)).body.batch;
+      await adminA.post(`/api/admin/sessions/${s.id}/roster`).send({ user_id: p1.id, batch_id: b.id }).expect(200);
+      await adminA.post(`/api/admin/sessions/${s.id}/roster`).send({ user_id: p2.id }).expect(200);
+      await adminA.put(`/api/admin/sessions/${s.id}/attendance`).send({ records: [{ user_id: p1.id, status: 'present' }, { user_id: p2.id, status: 'absent' }] }).expect((r) => expect(r.status).toBeLessThan(300));
+      // Setup (not the subject): p1's feedback row, as the learner route writes it.
+      await dbQuery(
+        'INSERT INTO session_feedback (organization_id, session_id, user_id, rating_content, rating_trainer, rating_delivery, comment) VALUES ($1, $2, $3, 4, 5, 3, $4)',
+        [fx.A.id, s.id, p1.id, 'Clear and practical'],
+      );
+
+      const fb = await adminA.get(`/api/admin/sessions/${s.id}/feedback`).expect(200);
+      expect(fb.body.summary).toEqual({ count: 1, content: 4, trainer: 5, delivery: 3, overall: 4 });
+      expect(fb.body.feedback).toEqual([expect.objectContaining({ userId: p1.id, email: p1.email, batch: 'Batch 1 · Main', average: 4, comment: 'Clear and practical' })]);
+      expect(fb.body.feedback[0].submittedAt).toBeTruthy();
+
+      const rep = await adminA.get(`/api/admin/sessions/${s.id}/report`).expect(200);
+      expect(rep.body.session).toMatchObject({ title: s.body.title, firstDate: '2030-05-01', lastDate: '2030-05-02' });
+      expect(rep.body.totals).toMatchObject({ learners: 2, batches: 1, capacity: 5, registered: 2, available: 4, feedbackCount: 1, scheduledMinutes: 360, attendanceRatePct: 50 });
+      expect(rep.body.totals.attendance).toMatchObject({ present: 1, absent: 1 });
+      expect(rep.body.learners.find((l: { email: string }) => l.email === p2.email).batch).toBe('Not placed in a batch');
+
+      const x = await adminA.get(`/api/admin/sessions/${s.id}/report.xlsx`).buffer(true).parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      }).expect(200);
+      expect(x.headers['content-type']).toMatch(/spreadsheetml/);
+      expect(x.headers['content-disposition']).toMatch(/session-report-.*-2030-05-01\.xlsx/);
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(x.body as Buffer, { type: 'buffer' });
+      expect(wb.SheetNames).toEqual(['Summary', 'Batches and schedule', 'Learners', 'Feedback']);
+      const learners = XLSX.utils.sheet_to_json<Record<string, string>>(wb.Sheets.Learners);
+      expect(learners.find((l) => l.Email === p1.email)).toMatchObject({ Batch: 'Batch 1 · Main', Attendance: 'Present', Comment: 'Clear and practical' });
+
+      for (const path of ['feedback', 'report', 'report.xlsx']) {
+        await adminB.get(`/api/admin/sessions/${s.id}/${path}`).expect(404);
+        await learnerA.get(`/api/admin/sessions/${s.id}/${path}`).expect(403);
+      }
+    });
+  });
+
   describe('attendance and completion', () => {
     it('the trainer sees and marks only their own sessions and cannot complete one', async () => {
       const other = await person('trainer');

@@ -55,7 +55,7 @@ export async function completeCourse(learner: Agent, course: CourseFx) {
 
 export type SessionInput = Partial<{
   title: string; session_type: 'ILT' | 'Virtual' | 'Webinar'; capacity: number; enroll_mode: 'assigned' | 'self';
-  venue_url: string; date: string; start_time: string; end_time: string; status: string; trainer_user_id: number;
+  venue_url: string; date: string; end_date: string; start_time: string; end_time: string; status: string; trainer_user_id: number;
 }>;
 
 /** The session body the form sends; a trainer account is required on create. */

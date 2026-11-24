@@ -7,6 +7,7 @@ import {
   IsIn,
   IsInt,
   IsOptional,
+  Matches,
   IsString,
   MaxLength,
   Min,
@@ -100,6 +101,15 @@ export class SessionDto {
   @Transform(trim)
   date!: string;
 
+  /**
+   * Last day of a multi-day sitting, inclusive (0074). Omitted or null is a
+   * one-day session. Must not be before `date` (checked in the service).
+   */
+  @IsOptional()
+  @Transform(nullable)
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'end_date must be YYYY-MM-DD' })
+  end_date?: string | null;
+
   @IsString()
   @MinLength(1, { message: 'start_time is required' })
   @Transform(trim)
@@ -122,6 +132,8 @@ export class SessionDto {
 /** Either a single `user_id`, or `enroll_all` + `department` for a bulk add. */
 export class RosterAddDto {
   @IsOptional() @IsInt() user_id?: number;
+  /** Place a single learner straight into this batch; refused when it is full. */
+  @IsOptional() @IsInt() batch_id?: number | null;
   @IsOptional() @IsBoolean() enroll_all?: boolean;
   @IsOptional() @IsString() department?: string;
 }
@@ -175,6 +187,11 @@ export class BulkSessionsDto {
 export class SessionBatchDto {
   @IsOptional() @MaxLength(80) @Transform(nullable) label?: string | null;
   @IsOptional() @Transform(nullable) date?: string | null;
+  /** Last day of a multi-day batch, inclusive (0074). Null = one day. */
+  @IsOptional()
+  @Transform(nullable)
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'end_date must be YYYY-MM-DD' })
+  end_date?: string | null;
   @IsOptional() @Transform(nullable) start_time?: string | null;
   @IsOptional() @Transform(nullable) end_time?: string | null;
 
@@ -195,4 +212,9 @@ export class MoveToBatchDto {
   user_id!: number;
 
   @IsOptional() @IsInt() batch_id?: number | null;
+}
+
+/** A learner booking a place: which batch, when the session has batches. */
+export class SelfEnrolDto {
+  @IsOptional() @IsInt({ message: 'batch_id must be an integer' }) batch_id?: number;
 }

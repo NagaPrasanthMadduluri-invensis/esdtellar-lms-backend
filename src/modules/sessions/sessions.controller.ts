@@ -10,7 +10,9 @@ import {
   Post,
   Put,
   Query,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 
 import {
   CurrentScope,
@@ -30,6 +32,7 @@ import {
   SaveAttendanceDto,
   SessionDto,
 } from './dto/session.dto';
+import { buildSessionReportXlsx, reportFilename } from './session-report.xlsx';
 import { SessionsService } from './sessions.service';
 
 @Controller('admin/sessions')
@@ -235,6 +238,46 @@ export class AdminSessionsController {
     @CurrentScope() scope: OrgScope,
   ) {
     return this.sessions.removeFromRoster(scope, sessionId, dto.user_id);
+  }
+
+  /**
+   * Every learner's feedback on this session (0074): who, which batch, the
+   * three ratings, the comment and when. A session read, open to the admin
+   * audience like the roster and attendance reads beside it.
+   */
+  @Get(':sessionId/feedback')
+  async feedback(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.sessionFeedback(scope, sessionId);
+  }
+
+  /** The session report as data: the printable PDF view renders this. */
+  @Get(':sessionId/report')
+  async report(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.sessionReport(scope, sessionId);
+  }
+
+  /** The same report as an Excel workbook download. */
+  @Get(':sessionId/report.xlsx')
+  async reportXlsx(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+    @Res() response: Response,
+  ): Promise<void> {
+    const report = await this.sessions.sessionReport(scope, sessionId);
+    const buffer = buildSessionReportXlsx(report);
+    response
+      .status(200)
+      .setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .setHeader('Content-Disposition', `attachment; filename="${reportFilename(report.session.title, report.session.firstDate)}"`)
+      .setHeader('Access-Control-Expose-Headers', 'Content-Disposition')
+      .setHeader('Cache-Control', 'no-store')
+      .send(buffer);
   }
 
   @Get(':sessionId/attendance')
