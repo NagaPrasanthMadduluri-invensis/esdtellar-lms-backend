@@ -295,7 +295,10 @@ The rule for which routes carry one:
 
 Content reads (courses, modules, lessons, sessions, the SCORM library) stay
 open to any admin-portal role on purpose — an `assign_learning` role has to
-list courses in order to assign one. The four `view_*` permissions cover the
+list courses in order to assign one. A caller from ANOTHER portal (a
+Learner/Manager/Trainer Role given admin Permissions as extras) gets those
+reads only through `@CrossPortal()`, holding one of the listed Permissions
+(§10.65). The four `view_*` permissions cover the
 reads that carry something worth withholding: the dashboard, the employee
 list, reports, and certificates.
 
@@ -5565,6 +5568,28 @@ effectiveness and the (empty, honest) skill section all returned.
 the Analytics page; the AI page links there), per-learner risk prediction as a
 dedicated learner-facing view, and the nightly pre-generation cron.
 
+### 10.58 AI requests go only to zero-retention hosts (2026-11-23)
+
+`AI_PROVIDER_POLICY` in `modules/ai/ai-client.service.ts` is sent as OpenRouter's
+`provider` object on EVERY request: `zdr: true` (Zero Data Retention endpoints
+only), `data_collection: "deny"` (never a host that stores or trains on
+prompts) and `require_parameters: true` (never a host that would silently drop
+`response_format`). It is a frozen constant, not configuration, because the
+contract pack's AI Terms (08) and DPA (05) promise customers exactly this, and
+an environment variable that could switch it off would make the contract false.
+
+**Consequence for `AI_MODEL`:** only models with an eligible ZDR endpoint that
+supports structured output can serve requests. On 2026-11-23 OpenRouter's ZDR
+list (`GET /api/v1/endpoints/zdr`) showed `deepseek/deepseek-v4-pro` on DeepInfra
+only, listed WITHOUT `response_format`, while `deepseek/deepseek-v4-pro-0813`
+had DeepInfra and Parasail with it. If no eligible host exists, OpenRouter
+errors and the client returns null: AI degrades, data never reaches an
+ineligible host. Verify live before deploying; the OpenRouter account was out
+of credit (402) when this was written, so the live check is pending.
+
+Pinned by `ai-client.service.spec.ts` and `test/ai-insights.e2e-spec.ts` (every
+request the fake model receives carries the policy).
+
 ### 10.59 Community reactions, responses, and admins taking part (0073, 2026-11-23)
 
 **A reaction is a KIND on the existing row, not a second table.**
@@ -5744,6 +5769,58 @@ audit and test it before or after publishing. Three decisions:
 Pinned by the preview blocks of `learner.service.spec.ts` and
 `assessments.service.spec.ts`, `test/course-preview.e2e-spec.ts`, and
 `client/e2e/admin-course-preview.spec.mjs`.
+
+### 10.65 Extra admin permissions cross portals (0075, 2026-11-25)
+
+**The defect.** The Permission Matrix offered every Permission for every Role,
+but a Permission is only checked on routes of one audience. Ticking "View
+reports" or "Manage courses" for the Learner or Manager Role changed nothing:
+their portal's routes never check it and `@Roles('admin')` refused them before
+any Permission was read. A matrix that lets you tick a box that does nothing is
+the screen-that-lies failure (§5.2.1) one dimension over.
+
+**The owner's decision:** an admin Permission ticked for a learner- or
+trainer-portal Role is an EXTRA. Existing behaviour must not change; only what
+an admin deliberately ticks applies.
+
+- `RolesGuard`: a non-admin caller passes an `@Roles('admin')` route only when
+  the route names a Permission (`@Permissions()` or `@CrossPortal()`) and the
+  caller holds at least one Permission; `PermissionsGuard` then decides. An
+  admin route naming nothing (MFA, own settings) stays closed. Learner and
+  trainer routes are never opened to admins (one-directional).
+- `@CrossPortal(...)` marks the shared admin reads that carry no Permission
+  (course list, sessions, paths, SCORM, roles, organization). It binds ONLY
+  callers outside the route's audience, so content reads stay open to every
+  admin-portal Role exactly as before (owner's choice). The lists live in
+  `common/cross-portal.ts`, one per read, each "every Permission whose screen
+  needs it".
+- `PERMISSION_PORTALS` names each Permission's portal(s) and the catalogue
+  endpoint returns it; the matrix renders a dash (not a checkbox) where a
+  Permission cannot apply (learner/trainer Permissions on other portals).
+  Stored grants in those cells are kept untouched; the server rejects nothing
+  new.
+- **No admin minting.** `RolesService.assertActorMayGrant`: a non-admin caller
+  with an extra `manage_users` may not create or move anybody onto an
+  admin-portal Role, and may not change their own Role (403).
+- In-service `role === 'admin'` checks that an extra must satisfy were widened
+  to "or holds the Permission": the external-certification file
+  (`manage_certificates`) and SCORM preview (`SCORM_READERS`).
+- **0075** removes `view_dashboard` and `view_reports` from the SEEDED system
+  Manager Role and bumps those users' `perm_version` (signs out managers only,
+  once). They were seeded when such grants did nothing; left in place they
+  would have handed every manager the admin Dashboard and Reports, which is
+  the opposite of "existing must not change". `SYSTEM_ROLES` no longer seeds
+  them. Custom Roles are untouched.
+- Client: `lib/permissions.js` (`itemAllowed`, `hasAdminAccess`,
+  `adminToolsFor`), `hooks/use-permissions.js` for buttons, the `(admin)`
+  layout admits `hasAdminAccess`, and `AdminPageGate` shows "You don't have
+  access" on a typed URL whose sidebar item the person lacks. Nav items may
+  carry `anyPermission` (additive only).
+
+**Known limits, deliberately left:** two-step sign-in stays mandatory only for
+admin-portal accounts, so a Manager given admin extras is not forced into MFA;
+and Role `scope` still narrows nothing (CONTEXT §3 Scope), so an extra
+`view_reports` shows organization-wide figures.
 
 ## 11. Adding a new module — checklist
 

@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
@@ -298,11 +299,17 @@ export class RolesService {
    * makes assigning a trainer role actually change which portal that person
    * lands in.
    */
-  async assign(scope: OrgScope, userId: number, roleId: number) {
+  async assign(
+    scope: OrgScope,
+    userId: number,
+    roleId: number,
+    actor?: { userId: number; role: string },
+  ) {
     const role = await this.repository.findById(scope, roleId);
     // 404 rather than 422: a role id from another organization must not be
     // distinguishable from one that does not exist.
     if (!role) throw new NotFoundException('Role not found');
+    this.assertActorMayGrant(actor, role.portal, userId);
 
     const current = await this.repository.findUserRole(scope, userId);
     if (!current) throw new NotFoundException('User not found');
@@ -364,6 +371,32 @@ export class RolesService {
       ok: true,
       role: { id: Number(role.id), key: role.key, portal: role.portal },
     };
+  }
+
+  /**
+   * EXTRA PERMISSIONS DO NOT MINT ADMINS (§10.65).
+   *
+   * A Learner, Manager or Trainer role can be given `manage_users` as an
+   * extra. That lets them add and move people, but if it also let them put
+   * somebody (or themselves) on an admin-portal role, one ticked box on a
+   * Manager role would be a route to full administration. So a caller from
+   * outside the admin portal may not grant an admin-portal role, and may not
+   * change their own role at all. An admin-portal caller is unaffected.
+   */
+  assertActorMayGrant(
+    actor: { userId: number; role: string } | undefined,
+    targetPortal: string,
+    targetUserId?: number,
+  ): void {
+    if (!actor || actor.role === 'admin') return;
+    if (targetPortal === 'admin') {
+      throw new ForbiddenException(
+        'Only an admin can give somebody an admin role.',
+      );
+    }
+    if (targetUserId !== undefined && targetUserId === actor.userId) {
+      throw new ForbiddenException('You cannot change your own role.');
+    }
   }
 
   private assertKnown(permissions: readonly string[]): Permission[] {

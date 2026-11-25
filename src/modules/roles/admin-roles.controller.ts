@@ -11,7 +11,8 @@ import {
   Post,
 } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { ROLE_READERS } from '@/common/cross-portal';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -38,11 +39,13 @@ export class AdminRolesController {
 
   /** The permissions this build enforces. Code, not data (§3.2). */
   @Get('permissions')
+  @CrossPortal('manage_roles')
   catalogue() {
     return this.roles.catalogue();
   }
 
   @Get('roles')
+  @CrossPortal(...ROLE_READERS)
   async list(@CurrentScope() scope: OrgScope) {
     return this.roles.list(scope);
   }
@@ -97,7 +100,8 @@ export class AdminRolesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() body: { roleId?: number },
     @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
   ) {
-    return this.roles.assign(scope, id, Number(body?.roleId));
+    return this.roles.assign(scope, id, Number(body?.roleId), actor);
   }
 }

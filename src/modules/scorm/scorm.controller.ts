@@ -14,12 +14,8 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
-import {
-  CurrentScope,
-  CurrentUser,
-  Permissions,
-  Roles,
-} from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { SCORM_READERS } from '@/common/cross-portal';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 
 import {
@@ -46,6 +42,7 @@ export class AdminScormController {
   ) {}
 
   @Get()
+  @CrossPortal(...SCORM_READERS)
   async list(@CurrentScope() scope: OrgScope) {
     return this.scorm.listPackages(scope);
   }
@@ -77,6 +74,7 @@ export class AdminScormController {
   }
 
   @Get(':packageId')
+  @CrossPortal(...SCORM_READERS)
   async detail(
     @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
@@ -86,6 +84,7 @@ export class AdminScormController {
 
   /** Attempt history + per-question breakdown for one learner. */
   @Get(':packageId/attempts/:userId')
+  @CrossPortal(...SCORM_READERS)
   async learnerAttempts(
     @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,
@@ -96,6 +95,7 @@ export class AdminScormController {
 
   /** One learner's full runtime timeline on a package, for the admin view. */
   @Get(':packageId/datamodel/:userId')
+  @CrossPortal(...SCORM_READERS)
   async learnerDatamodel(
     @CurrentScope() scope: OrgScope,
     @Param('packageId', ParseIntPipe) packageId: number,

@@ -11,12 +11,8 @@ import {
   Put,
 } from '@nestjs/common';
 
-import {
-  CurrentScope,
-  CurrentUser,
-  Permissions,
-  Roles,
-} from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { CONTENT_READERS } from '@/common/cross-portal';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
@@ -35,6 +31,7 @@ export class AllAssessmentsController {
   constructor(private readonly assessments: AssessmentsService) {}
 
   @Get()
+  @CrossPortal(...CONTENT_READERS)
   async list(@CurrentScope() scope: OrgScope) {
     return this.assessments.listAll(scope);
   }
@@ -52,6 +49,7 @@ export class CourseAssessmentsController {
   ) {}
 
   @Get()
+  @CrossPortal(...CONTENT_READERS)
   async list(
     @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
@@ -84,6 +82,7 @@ export class AdminAssessmentsController {
 
   /** Course preview (§10.64): the learner's view, no answer key. */
   @Get(':assessmentId/preview')
+  @CrossPortal(...CONTENT_READERS)
   async preview(
     @Param('assessmentId') assessmentIdParam: string,
     @CurrentScope() scope: OrgScope,
@@ -94,6 +93,7 @@ export class AdminAssessmentsController {
 
   /** Course preview (§10.64): graded like a real attempt, recorded nowhere. */
   @Post(':assessmentId/preview-attempt')
+  @CrossPortal(...CONTENT_READERS)
   @HttpCode(HttpStatus.OK)
   async previewAttempt(
     @Param('assessmentId') assessmentIdParam: string,
@@ -105,6 +105,7 @@ export class AdminAssessmentsController {
   }
 
   @Get(':assessmentId')
+  @CrossPortal(...CONTENT_READERS)
   async get(
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @CurrentScope() scope: OrgScope,

@@ -17,6 +17,7 @@ export const IS_PUBLIC_KEY = 'isPublic';
 export const ROLES_KEY = 'roles';
 export const PLATFORM_ADMIN_KEY = 'platformAdmin';
 export const PERMISSIONS_KEY = 'permissions';
+export const ANY_PERMISSIONS_KEY = 'anyPermissions';
 export const ALLOW_BEFORE_MFA_KEY = 'allowBeforeMfa';
 
 /**
@@ -32,7 +33,10 @@ export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
 
 /**
  * Requires every listed permission (`specs/rbac.md` §4.1), enforced by
- * `PermissionsGuard`. ANDs with `@Roles()` when both are present.
+ * `PermissionsGuard`. ANDs with `@Roles()` when both are present, with one
+ * exception: on an `@Roles('admin')` route, a learner- or trainer-portal caller
+ * whose role was GIVEN these permissions passes `RolesGuard` too, so an extra
+ * permission ticked for a Manager actually works (§10.65).
  *
  * Throws 403, not 404 — and that differs from the tenancy rule on purpose. A
  * cross-tenant id must 404 because its existence is a secret; "you may not
@@ -40,6 +44,24 @@ export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
  */
 export const Permissions = (...permissions: Permission[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);
+
+/**
+ * Opens an admin route that carries no `@Permissions()` (a shared content
+ * read: the course list, a session, a learning path) to a caller from ANOTHER
+ * portal who holds at least one of the listed permissions. Enforced by
+ * `RolesGuard` + `PermissionsGuard` (BACKEND_STRUCTURE §10.65).
+ *
+ * An admin-portal caller is unaffected: content reads stay open to every
+ * admin-portal role, exactly as before. The decorator exists for the
+ * cross-portal grant: a Manager whose role is given `assign_learning` lands
+ * in the learner portal but must be able to list courses in order to assign
+ * one, while a plain learner, holding none of them, still gets 403.
+ *
+ * A route WITH `@Permissions()` needs nothing extra: holding that permission
+ * already opens it to every portal.
+ */
+export const CrossPortal = (...permissions: Permission[]) =>
+  SetMetadata(ANY_PERMISSIONS_KEY, permissions);
 
 /**
  * Restricts a route to admins of the platform organization

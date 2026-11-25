@@ -97,7 +97,7 @@ const SYSTEM_ROLES = [
     label: 'Manager',
     portal: 'learner',
     scope: 'department',
-    permissions: ['view_dashboard', 'view_reports', 'view_team_learning'],
+    permissions: ['view_team_learning'],
   },
   { key: 'learner', label: 'Learner', portal: 'learner', scope: 'self', permissions: [] },
 ];

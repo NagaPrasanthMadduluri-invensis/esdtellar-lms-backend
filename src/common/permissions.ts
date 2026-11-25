@@ -126,14 +126,66 @@ export type Permission = keyof typeof PERMISSIONS;
 /** Ordered ids — the order the roles UI renders its rows in. */
 export const PERMISSION_IDS = Object.keys(PERMISSIONS) as Permission[];
 
+/**
+ * Which portal's routes check each permission, and so which roles a grant can
+ * mean something for (§10.65).
+ *
+ * - An ADMIN permission works for a role on ANY portal. On an admin-portal
+ *   role it is what it always was; ticked for a Learner, Manager or Trainer
+ *   role it is an EXTRA: that person keeps their own portal and also gets the
+ *   admin module (sidebar, buttons, and the API via `RolesGuard`).
+ * - A learner permission (`view_team_learning`) or trainer permission works
+ *   only on its own portal. Learner and trainer routes stay their portal's,
+ *   so ticking My Team for an admin-portal role would do nothing, and the
+ *   matrix shows that cell as not applicable.
+ *
+ * `mark_attendance` guards an admin route and a trainer route, so it lists both.
+ * Typed as a total `Record`, so adding a permission without naming its portal
+ * fails the type check.
+ */
+export const PERMISSION_PORTALS: Record<Permission, readonly RolePortal[]> = {
+  view_dashboard: ['admin'],
+  view_employees: ['admin'],
+  edit_employees: ['admin'],
+  upload_content: ['admin'],
+  build_assessments: ['admin'],
+  assign_learning: ['admin'],
+  manage_users: ['admin'],
+  view_reports: ['admin'],
+  manage_courses: ['admin'],
+  manage_assessments: ['admin'],
+  view_certificates: ['admin'],
+  manage_certificates: ['admin'],
+  manage_sessions: ['admin'],
+  manage_journeys: ['admin'],
+  manage_roles: ['admin'],
+  view_team_learning: ['learner'],
+  view_own_sessions: ['trainer'],
+  view_session_participants: ['trainer'],
+  mark_attendance: ['admin', 'trainer'],
+  complete_session: ['admin'],
+  manage_session_roster: ['admin'],
+  request_services: ['admin'],
+  manage_organization: ['admin'],
+  moderate_community: ['admin'],
+  manage_referrals: ['admin'],
+};
+
+/** True when granting `permission` to a role on `portal` has any effect. */
+export function permissionAppliesTo(permission: Permission, portal: string): boolean {
+  const portals = PERMISSION_PORTALS[permission] as readonly string[];
+  return portals.includes('admin') || portals.includes(portal);
+}
+
 /** Shape the roles UI receives from `GET /api/admin/permissions`. */
 export interface PermissionDescriptor {
   id: Permission;
   label: string;
+  portals: readonly RolePortal[];
 }
 
 export const PERMISSION_CATALOGUE: PermissionDescriptor[] = PERMISSION_IDS.map(
-  (id) => ({ id, label: PERMISSIONS[id] }),
+  (id) => ({ id, label: PERMISSIONS[id], portals: PERMISSION_PORTALS[id] }),
 );
 
 /** Narrowing guard for anything arriving from a request body or the database. */
@@ -214,7 +266,11 @@ export const SYSTEM_ROLES: readonly SystemRoleSeed[] = [
     label: 'Manager',
     portal: 'learner',
     scope: 'department',
-    permissions: ['view_dashboard', 'view_reports', 'view_team_learning'],
+    // Only My Team. `view_dashboard` and `view_reports` were seeded here once,
+    // when admin permissions on a learner-portal role did nothing; now that
+    // they are extras that take effect (§10.65) they would hand every manager
+    // the admin Dashboard and Reports. Removed from existing orgs by 0075.
+    permissions: ['view_team_learning'],
   },
   {
     key: 'learner',

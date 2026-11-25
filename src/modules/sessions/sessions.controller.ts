@@ -14,12 +14,8 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-import {
-  CurrentScope,
-  CurrentUser,
-  Permissions,
-  Roles,
-} from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { SESSION_READERS } from '@/common/cross-portal';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -41,6 +37,7 @@ export class AdminSessionsController {
   constructor(private readonly sessions: SessionsService) {}
 
   @Get()
+  @CrossPortal(...SESSION_READERS)
   async list(
     @CurrentScope() scope: OrgScope,
     @Query('archived') archived?: string,
@@ -74,6 +71,7 @@ export class AdminSessionsController {
    * so the other way round `trainers` is parsed as an id and ParseIntPipe 400s.
    */
   @Get('trainers')
+  @CrossPortal('manage_sessions')
   async trainers(@CurrentScope() scope: OrgScope) {
     return this.sessions.listTrainers(scope);
   }
@@ -90,6 +88,7 @@ export class AdminSessionsController {
   }
 
   @Get(':sessionId')
+  @CrossPortal(...SESSION_READERS)
   async get(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -117,6 +116,7 @@ export class AdminSessionsController {
   }
 
   @Get(':sessionId/roster')
+  @CrossPortal(...SESSION_READERS)
   async roster(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -199,6 +199,7 @@ export class AdminSessionsController {
   /* ── Waitlist ──────────────────────────────────────────────────────── */
 
   @Get(':sessionId/waitlist')
+  @CrossPortal(...SESSION_READERS)
   async waitlist(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -246,6 +247,7 @@ export class AdminSessionsController {
    * audience like the roster and attendance reads beside it.
    */
   @Get(':sessionId/feedback')
+  @CrossPortal(...SESSION_READERS)
   async feedback(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -255,6 +257,7 @@ export class AdminSessionsController {
 
   /** The session report as data: the printable PDF view renders this. */
   @Get(':sessionId/report')
+  @CrossPortal(...SESSION_READERS)
   async report(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -264,6 +267,7 @@ export class AdminSessionsController {
 
   /** The same report as an Excel workbook download. */
   @Get(':sessionId/report.xlsx')
+  @CrossPortal(...SESSION_READERS)
   async reportXlsx(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
@@ -281,6 +285,7 @@ export class AdminSessionsController {
   }
 
   @Get(':sessionId/attendance')
+  @CrossPortal(...SESSION_READERS)
   async attendance(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,

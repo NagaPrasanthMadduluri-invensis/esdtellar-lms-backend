@@ -5,6 +5,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { TokenService } from '@/modules/auth/token.service';
 
 import { createOrgScope } from '@/database/org-scope';
+import { SCORM_READERS } from '@/common/cross-portal';
 import { OrganizationsService } from '@/modules/organizations/organizations.service';
 
 import { EntitlementCache } from './entitlement-cache';
@@ -110,7 +111,13 @@ export class ScormContentMiddleware {
     const packageDir = resolvedSegment;
 
     // 4. Cache lookup; one query on a miss (§7.1 — 50-200 assets per launch).
-    const isAdmin = payload.role === 'admin';
+    // Admin preview of any package: the admin portal, or a learner/trainer
+    // role given a SCORM-reading permission as an extra (§10.65). The claim is
+    // from the same verified token as the role.
+    const isAdmin =
+      payload.role === 'admin' ||
+      (Array.isArray(payload.permissions) &&
+        SCORM_READERS.some((p) => payload.permissions.includes(p)));
     let entitled = this.entitlementCache.get(payload.userId, packageDir);
     if (entitled === null) {
       try {

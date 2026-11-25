@@ -15,12 +15,8 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-import {
-  CurrentScope,
-  CurrentUser,
-  Permissions,
-  Roles,
-} from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { ASSIGNMENT_READERS, CONTENT_READERS, COURSE_READERS } from '@/common/cross-portal';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
@@ -55,6 +51,7 @@ export class CoursesController {
   ) {}
 
   @Get()
+  @CrossPortal(...COURSE_READERS)
   async list(
     @CurrentScope() scope: OrgScope,
     @Query() query: CourseListQueryDto,
@@ -78,6 +75,7 @@ export class CoursesController {
    * `bulk` above.
    */
   @Get(':courseId/lessons')
+  @CrossPortal(...CONTENT_READERS)
   async courseLessons(
     @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
@@ -125,6 +123,7 @@ export class CoursesController {
   }
 
   @Get(':courseId')
+  @CrossPortal(...COURSE_READERS)
   async get(
     @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
@@ -155,6 +154,7 @@ export class CoursesController {
   }
 
   @Get(':courseId/modules')
+  @CrossPortal(...CONTENT_READERS)
   async listModules(
     @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
@@ -176,6 +176,7 @@ export class CoursesController {
   }
 
   @Get(':courseId/assignments')
+  @CrossPortal(...ASSIGNMENT_READERS)
   async listAssignments(
     @Param('courseId') courseIdParam: string,
     @CurrentScope() scope: OrgScope,
@@ -241,6 +242,7 @@ export class ModulesController {
   }
 
   @Get(':moduleId/lessons')
+  @CrossPortal(...CONTENT_READERS)
   async listLessons(
     @Param('moduleId', ParseIntPipe) moduleId: number,
     @CurrentScope() scope: OrgScope,
@@ -297,6 +299,7 @@ export class LessonsController {
      they carry no duration and never reach learning hours. */
 
   @Get(':lessonId/resources')
+  @CrossPortal(...CONTENT_READERS)
   async listResources(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentScope() scope: OrgScope,

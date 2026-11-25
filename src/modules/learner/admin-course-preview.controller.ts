@@ -1,6 +1,7 @@
 import { Controller, Get, Param } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Roles } from '@/common/decorators';
+import { CONTENT_READERS } from '@/common/cross-portal';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
@@ -23,6 +24,7 @@ export class AdminCoursePreviewController {
   ) {}
 
   @Get('courses/:courseId/preview')
+  @CrossPortal(...CONTENT_READERS)
   async course(
     @Param('courseId') courseIdParam: string,
     @CurrentUser() user: AuthenticatedUser,
@@ -33,6 +35,7 @@ export class AdminCoursePreviewController {
   }
 
   @Get('lessons/:lessonId/preview')
+  @CrossPortal(...CONTENT_READERS)
   async lesson(
     @Param('lessonId') lessonIdParam: string,
     @CurrentUser() user: AuthenticatedUser,

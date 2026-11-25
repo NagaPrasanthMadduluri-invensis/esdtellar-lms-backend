@@ -174,6 +174,69 @@ describe('roles and permissions', () => {
     });
   });
 
+  describe('extra admin permissions on a learner-portal role (§10.65)', () => {
+    let coordinatorRoleId: number;
+    let coordinator: Person;
+    let co: Agent;
+    let plain: Agent;
+
+    it('the catalogue says which portal each permission works on', async () => {
+      const res = await admin.get('/api/admin/permissions').expect(200);
+      const byId = Object.fromEntries(res.body.permissions.map((p: { id: string; portals: string[] }) => [p.id, p.portals]));
+      expect(byId.manage_courses).toEqual(['admin']);
+      expect(byId.view_team_learning).toEqual(['learner']);
+      expect(byId.mark_attendance).toEqual(['admin', 'trainer']);
+    });
+
+    it('a learner-portal role given admin permissions keeps its portal and gains exactly those admin routes', async () => {
+      await sa.put(`/api/platform/seats/organizations/${R.id}`).send({ seat_limit: 1000 }).expect(200);
+      const res = await admin.post('/api/admin/roles').send({ key: 'coordinator', label: 'Coordinator', portal: 'learner', scope: 'self', permissions: ['assign_learning', 'manage_users'] }).expect(201);
+      coordinatorRoleId = res.body.roles.find((r: { key: string }) => r.key === 'coordinator').id;
+      await resign();
+      await refreshRoles();
+      coordinator = await newPerson(admin, R, 'coordinator');
+      co = await enrolSignIn(app, coordinator);
+      plain = await enrolSignIn(app, await newPerson(admin, R, 'learner'));
+
+      // Still a learner: their own portal works.
+      await co.get('/api/learner/dashboard').expect(200);
+      // An admin route naming a permission they hold: open.
+      await co.get('/api/admin/courses').expect(200);
+      await co.get('/api/admin/journeys').expect(200);
+      // An admin read open to every admin role, but none of their permissions needs it.
+      await co.get('/api/admin/sessions').expect(403);
+      // A permission they were not given.
+      await co.get('/api/admin/users').expect(403);
+      await co.get('/api/admin/dashboard').expect(403);
+      // An admin route that names no permission stays the admin portal's.
+      await co.get('/api/admin/roles').expect(200); // ROLE_READERS includes manage_users
+      await co.get('/api/admin/permissions').expect(403);
+
+      // A plain learner, holding nothing extra, is refused all of it.
+      await plain.get('/api/admin/courses').expect(403);
+      await plain.get('/api/admin/organization').expect(403);
+      // An admin-portal role keeps open content reads it had before.
+      await admin.get('/api/admin/sessions').expect(200);
+    });
+
+    it('an extra manage_users cannot mint an admin or change its own role', async () => {
+      const toAdmin = await co.post('/api/admin/users').send({ first_name: 'N', last_name: 'O', email: `${uniq('n')}@${R.slug}.e2e.test`, role_id: R.roles.admin });
+      expect(toAdmin.status).toBe(403);
+      expect(toAdmin.body.message).toMatch(/Only an admin/);
+      await co.post('/api/admin/users').send({ first_name: 'N', last_name: 'O', email: `${uniq('n')}@${R.slug}.e2e.test` }).expect(201);
+
+      const self = await co.patch(`/api/admin/users/${coordinator.id}/role`).send({ roleId: R.roles.learner });
+      expect(self.status).toBe(403);
+      const promote = await co.patch(`/api/admin/users/${coordinator.id}/role`).send({ roleId: R.roles.admin });
+      expect(promote.status).toBe(403);
+      expect((await dbQuery('SELECT role_id FROM users WHERE id = $1', [coordinator.id]))[0].role_id).toBe(coordinatorRoleId);
+    });
+
+    it('learner-portal routes do not open to an admin role in the other direction', async () => {
+      await admin.get('/api/learner/dashboard').expect(403);
+    });
+  });
+
   describe('delegated administration (platform)', () => {
     let customId: number;
 

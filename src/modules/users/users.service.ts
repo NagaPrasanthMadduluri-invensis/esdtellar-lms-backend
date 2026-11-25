@@ -308,6 +308,7 @@ export class UsersService {
     const role = dto.role_id
       ? await this.roles.roleForAssignment(scope, dto.role_id)
       : await this.roles.roleByKey(scope, 'learner');
+    this.roles.assertActorMayGrant(actor, role.portal);
 
     if (role.portal === 'learner') {
       await this.seats.assertSeatAvailable(scope);

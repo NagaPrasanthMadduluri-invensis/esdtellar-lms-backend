@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
-import { ROLES_KEY } from '../decorators';
+import { ANY_PERMISSIONS_KEY, PERMISSIONS_KEY, ROLES_KEY } from '../decorators';
 import type {
   AuthenticatedRequest,
   UserRole,
@@ -35,9 +35,26 @@ export class RolesGuard implements CanActivate {
       .switchToHttp()
       .getRequest<AuthenticatedRequest>();
 
-    if (!user || !required.includes(user.role)) {
-      throw new ForbiddenException('Forbidden');
+    if (!user) throw new ForbiddenException('Forbidden');
+    if (required.includes(user.role)) return true;
+
+    /*
+     * EXTRA PERMISSIONS CROSS PORTALS (§10.65). A Learner, Manager or Trainer
+     * role can be given admin permissions in the matrix, and the grant has to
+     * mean something: such a caller may use an admin route, but ONLY one that
+     * names a permission (`@Permissions()` or `@CrossPortal()`).
+     * `PermissionsGuard` runs next and decides whether they hold it. An admin
+     * route naming no permission (MFA, the admin's own settings) stays closed
+     * to every other portal, exactly as before. Never the reverse direction:
+     * learner and trainer routes stay their own portal's.
+     */
+    if (required.includes('admin') && user.role !== 'admin') {
+      const targets = [context.getHandler(), context.getClass()];
+      const named =
+        (this.reflector.getAllAndOverride<string[]>(PERMISSIONS_KEY, targets)?.length ?? 0) > 0 ||
+        (this.reflector.getAllAndOverride<string[]>(ANY_PERMISSIONS_KEY, targets)?.length ?? 0) > 0;
+      if (named && (user.permissions?.length ?? 0) > 0) return true;
     }
-    return true;
+    throw new ForbiddenException('Forbidden');
   }
 }

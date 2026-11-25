@@ -325,7 +325,11 @@ export class ExternalCertificationsService {
 
     const isOwner = row.user_id === user.userId;
     const isTheirManager = row.manager_user_id === user.userId;
-    const isAdmin = user.role === 'admin';
+    // The admin approvals queue is `manage_certificates`; a learner-portal
+    // role given it as an extra reviews the same rows, so it opens the scan
+    // too (§10.65). An admin-portal account keeps its old access.
+    const isAdmin =
+      user.role === 'admin' || (user.permissions ?? []).includes('manage_certificates');
     if (!isOwner && !isTheirManager && !isAdmin) {
       throw new ForbiddenException('This certificate is not yours to view');
     }

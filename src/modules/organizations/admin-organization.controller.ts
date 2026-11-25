@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 
-import { CurrentScope, Permissions, Roles } from '@/common/decorators';
+import { CrossPortal, CurrentScope, Permissions, Roles } from '@/common/decorators';
+import { ADMIN_PORTAL_PERMISSIONS } from '@/common/cross-portal';
 import type { OrgScope } from '@/database/org-scope';
 
 import { UpdateOrgSettingsDto } from './dto/org-settings.dto';
@@ -27,6 +28,7 @@ export class AdminOrganizationController {
   constructor(private readonly organizations: OrganizationsService) {}
 
   @Get()
+  @CrossPortal(...ADMIN_PORTAL_PERMISSIONS)
   async get(@CurrentScope() scope: OrgScope) {
     return this.organizations.getOwnOrganization(scope);
   }

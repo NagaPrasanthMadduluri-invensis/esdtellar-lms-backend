@@ -1,6 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 
-import { CurrentScope, Roles } from '@/common/decorators';
+import { CrossPortal, CurrentScope, Roles } from '@/common/decorators';
+import { ADMIN_PORTAL_PERMISSIONS } from '@/common/cross-portal';
 import type { OrgScope } from '@/database/org-scope';
 
 import { OrgOptionsService } from './org-options.service';
@@ -27,6 +28,7 @@ export class AdminOrgOptionsController {
   constructor(private readonly options: OrgOptionsService) {}
 
   @Get()
+  @CrossPortal(...ADMIN_PORTAL_PERMISSIONS)
   async get(@CurrentScope() scope: OrgScope) {
     return this.options.forScope(scope);
   }

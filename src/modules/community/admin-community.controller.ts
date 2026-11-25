@@ -12,12 +12,7 @@ import {
   Query,
 } from '@nestjs/common';
 
-import {
-  CurrentScope,
-  CurrentUser,
-  Permissions,
-  Roles,
-} from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import { type OrgScope } from '@/database/org-scope';
 import { PublicIdService } from '@/database/public-id.service';
@@ -48,6 +43,7 @@ export class AdminCommunityController {
   ) {}
 
   @Get()
+  @CrossPortal('moderate_community')
   async feed(
     @CurrentScope() scope: OrgScope,
     @CurrentUser() admin: AuthenticatedUser,
@@ -68,6 +64,7 @@ export class AdminCommunityController {
 
   /** Manage the org's groups (including archived), with counts. */
   @Get('groups')
+  @CrossPortal('moderate_community')
   async groups(@CurrentScope() scope: OrgScope) {
     return this.community.adminListGroups(scope);
   }
@@ -106,6 +103,7 @@ export class AdminCommunityController {
   }
 
   @Get(':postId')
+  @CrossPortal('moderate_community')
   async detail(
     @CurrentScope() scope: OrgScope,
     @CurrentUser() user: AuthenticatedUser,
@@ -120,6 +118,7 @@ export class AdminCommunityController {
 
   /** Who reacted, with what and when: the full participant record. */
   @Get(':postId/reactions')
+  @CrossPortal('moderate_community')
   async reactions(
     @CurrentScope() scope: OrgScope,
     @Param('postId') postIdParam: string,
@@ -130,6 +129,7 @@ export class AdminCommunityController {
 
   /** Take part: reply to a post, or respond to a reply on it. */
   @Post(':postId/replies')
+  @CrossPortal('moderate_community')
   @HttpCode(201)
   async reply(
     @CurrentScope() scope: OrgScope,
@@ -143,6 +143,7 @@ export class AdminCommunityController {
 
   /** Take part: set or change the admin's own quick reaction. */
   @Put(':postId/reaction')
+  @CrossPortal('moderate_community')
   async react(
     @CurrentScope() scope: OrgScope,
     @CurrentUser() admin: AuthenticatedUser,
@@ -154,6 +155,7 @@ export class AdminCommunityController {
   }
 
   @Delete(':postId/reaction')
+  @CrossPortal('moderate_community')
   async unreact(
     @CurrentScope() scope: OrgScope,
     @CurrentUser() admin: AuthenticatedUser,

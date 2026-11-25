@@ -12,7 +12,8 @@ import {
   Query,
 } from '@nestjs/common';
 
-import { CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { CrossPortal, CurrentScope, CurrentUser, Permissions, Roles } from '@/common/decorators';
+import { JOURNEY_READERS } from '@/common/cross-portal';
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
 import type { OrgScope } from '@/database/org-scope';
 
@@ -39,6 +40,7 @@ export class AdminJourneysController {
   constructor(private readonly journeys: JourneysService) {}
 
   @Get()
+  @CrossPortal(...JOURNEY_READERS)
   async list(@Query() query: ListJourneysQueryDto, @CurrentScope() scope: OrgScope) {
     return this.journeys.listForAdmin(scope, query);
   }
@@ -67,6 +69,7 @@ export class AdminJourneysController {
   }
 
   @Get(':id')
+  @CrossPortal(...JOURNEY_READERS)
   async get(@Param('id', ParseIntPipe) id: number, @CurrentScope() scope: OrgScope) {
     return this.journeys.get(scope, id);
   }
@@ -98,6 +101,7 @@ export class AdminJourneysController {
   }
 
   @Get(':id/learners')
+  @CrossPortal(...JOURNEY_READERS)
   async listLearners(
     @Param('id', ParseIntPipe) id: number,
     @Query() query: ListJourneyLearnersQueryDto,

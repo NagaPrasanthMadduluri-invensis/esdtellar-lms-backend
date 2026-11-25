@@ -16,7 +16,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 
-import { CurrentScope, Permissions, Roles } from '@/common/decorators';
+import { CrossPortal, CurrentScope, Permissions, Roles } from '@/common/decorators';
+import { CONTENT_READERS } from '@/common/cross-portal';
 import type { OrgScope } from '@/database/org-scope';
 
 import {
@@ -146,6 +147,7 @@ export class AdminMediaController {
   constructor(private readonly media: MediaService) {}
 
   @Get(':lessonId/media')
+  @CrossPortal(...CONTENT_READERS)
   async media_(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentScope() scope: OrgScope,
@@ -158,6 +160,7 @@ export class AdminMediaController {
    * headers as the learner's stream: inline, no-store, a sanitised filename.
    */
   @Get(':lessonId/document')
+  @CrossPortal(...CONTENT_READERS)
   async document(
     @Param('lessonId', ParseIntPipe) lessonId: number,
     @CurrentScope() scope: OrgScope,
@@ -237,6 +240,7 @@ export class AdminResourcesPreviewController {
   constructor(private readonly media: MediaService) {}
 
   @Get(':resourceId/url')
+  @CrossPortal(...CONTENT_READERS)
   async url(
     @Param('resourceId', ParseIntPipe) resourceId: number,
     @CurrentScope() scope: OrgScope,
