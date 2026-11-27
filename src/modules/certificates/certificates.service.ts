@@ -1,3 +1,4 @@
+import { formatSessionDates } from '@/common/session-schedule';
 
 import {
   ConflictException,
@@ -331,6 +332,152 @@ export class CertificatesService {
   }
 
   /**
+   * Issues the session certificate (a Certificate of Attendance) to every
+   * learner a COMPLETED session credited, the moment it is completed
+   * (BACKEND_STRUCTURE §10.66, reversing the "only by hand" rule of §10.7 at
+   * the owner's request).
+   *
+   * - Eligible: present, late or partial, the same people `syncCompletions`
+   *   credits with the training and its learning hours, so the certificate and
+   *   the hours always agree.
+   * - Once per learner: anyone already holding a certificate row for the
+   *   training (revoked included) is skipped, and the insert itself is
+   *   `ON CONFLICT DO NOTHING`, so a second completion, a re-sync after an
+   *   attendance correction, or two admins at once never duplicate.
+   * - Each new holder gets one notification ("session completed, certificate
+   *   ready"), which also sends the transactional email with the certificate
+   *   ID and a link to their Certificates page.
+   * - One activity-log entry per run that issued anything.
+   *
+   * Best-effort (§8.4): never throws into the completion that called it.
+   * Returns how many were issued.
+   */
+  async issueForSession(
+    scope: OrgScope,
+    sessionId: number,
+    actor?: AuthenticatedUser | null,
+  ): Promise<{ issued: number }> {
+    try {
+      const plan = await this.repository.sessionCertificateCandidates(scope, sessionId);
+      if (!plan || plan.userIds.length === 0) return { issued: 0 };
+
+      const codes = await this.generateUniqueCodes(scope, plan.userIds.length);
+      const issuedAt = new Date().toISOString();
+      const created = await this.repository.insertMany(
+        scope,
+        plan.userIds.map((userId, i) => ({
+          userId,
+          courseId: plan.courseId,
+          certificateCode: codes[i],
+          issuedAt,
+        })),
+      );
+      if (created.length === 0) return { issued: 0 };
+
+      const title = plan.title?.trim() || 'your session';
+      const when = formatSessionDate(plan.date);
+      for (const cert of created) {
+        // One notification per learner: the certificate ID differs per person,
+        // and it is the one thing they may need to quote.
+        void this.notifications.notify({
+          userIds: [cert.userId],
+          organizationId: scope.organizationId,
+          type: 'certificate_issued',
+          title: `Session completed: ${title}`,
+          subjectName: title,
+          body:
+            `"${title}" is complete. Your attendance is recorded, the training and its `
+            + 'learning hours are on your record, and your certificate is ready to download.',
+          facts: [
+            { label: 'Session', value: title },
+            ...(when ? [{ label: 'Date', value: when }] : []),
+            { label: 'Certificate ID', value: cert.certificateCode },
+          ],
+          link: '/certifications',
+          subjectType: 'certificate',
+          subjectId: cert.id,
+          actorName: 'Your L&D team',
+        });
+      }
+
+      await this.activity.record(scope, {
+        type: 'certificate_issued',
+        detail:
+          created.length === 1
+            ? `Issued 1 session certificate for "${title}"`
+            : `Issued ${created.length} session certificates for "${title}"`,
+        actor: actor ?? null,
+        subjectType: 'session',
+        subjectId: sessionId,
+      });
+
+      this.logger.log(
+        `Session ${sessionId}: issued ${created.length} certificate(s) on completion`,
+      );
+      return { issued: created.length };
+    } catch (error) {
+      this.logger.warn(
+        `Session certificate issuance skipped for session=${sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { issued: 0 };
+    }
+  }
+
+  /** The admin's certificate log for a session (§10.66), shaped for the panel. */
+  async sessionLog(scope: OrgScope, sessionId: number) {
+    const rows = await this.repository.sessionCertificateLog(scope, sessionId);
+    if (rows === null) throw new NotFoundException('Session not found');
+    const credited = new Set(['present', 'late', 'partial']);
+    return {
+      learners: rows.map((r) => ({
+        userId: Number(r.user_id),
+        name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.email || 'Learner',
+        email: r.email,
+        attendance: r.attendance,
+        eligible: credited.has(String(r.attendance)),
+        certificate: r.certificate_id
+          ? {
+              id: Number(r.certificate_id),
+              publicId: r.certificate_public_id,
+              code: r.certificate_code,
+              issuedAt: r.issued_at,
+              revoked: Number(r.is_revoked ?? 0) === 1,
+            }
+          : null,
+        notifiedAt: r.notified_at,
+        emailStatus: r.email_status,
+        emailSentAt: r.email_sent_at,
+        emailError: r.email_error,
+      })),
+    };
+  }
+
+  /**
+   * `count` distinct unused codes in one uniqueness query per round (normally
+   * one round), instead of one query per code.
+   */
+  private async generateUniqueCodes(scope: OrgScope, count: number): Promise<string[]> {
+    const prefix = await this.repository.findCertificatePrefix(scope);
+    const chosen = new Set<string>();
+    for (let round = 0; round < 10 && chosen.size < count; round++) {
+      const batch = new Set<string>();
+      while (batch.size < (count - chosen.size) * 2) {
+        const code = buildCertificateCode(prefix);
+        if (!chosen.has(code)) batch.add(code);
+      }
+      const taken = await this.repository.existingCodes([...batch]);
+      for (const code of batch) {
+        if (chosen.size >= count) break;
+        if (!taken.has(code)) chosen.add(code);
+      }
+    }
+    if (chosen.size < count) throw new Error('Could not allocate unique certificate codes');
+    return [...chosen];
+  }
+
+  /**
    * Admin-issued certificate.
    *
    * Deliberately does NOT require completion. Auto-issue already covers the
@@ -519,6 +666,9 @@ export class CertificatesService {
                   ? 'Online'
                   : row.sessionVenue?.trim() || null,
               date: row.sessionDate ?? null,
+              // "5th, 6th November and 2nd December 2026" (0076).
+              dates: sessionDateList(row.sessionDates, row.sessionDate),
+              dates_text: formatSessionDates(sessionDateList(row.sessionDates, row.sessionDate)),
               trainer: row.sessionTrainer ?? null,
             }
           : null,
@@ -635,9 +785,27 @@ export class CertificatesService {
           ? {
               format: isVirtualSessionType(row.sessionType) ? 'Virtual' : 'In person',
               date: row.sessionDate ?? null,
+              // "5th, 6th November and 2nd December 2026" (0076).
+              dates: sessionDateList(row.sessionDates, row.sessionDate),
+              dates_text: formatSessionDates(sessionDateList(row.sessionDates, row.sessionDate)),
               trainer: row.sessionTrainer ?? null,
             }
           : null,
     };
   }
+}
+
+/** "25 Nov 2026" from a session's bare `YYYY-MM-DD` date, or null. */
+function formatSessionDate(date: string | null): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(date ?? '');
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
+
+/** The session's dates from the aggregated column, or its one date (0076). */
+function sessionDateList(joined: string | null | undefined, single: string | null | undefined): string[] {
+  if (joined) return joined.split(',').filter(Boolean);
+  return single ? [single] : [];
 }

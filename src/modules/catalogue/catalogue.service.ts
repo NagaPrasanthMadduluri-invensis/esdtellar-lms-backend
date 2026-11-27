@@ -1,3 +1,4 @@
+import { seatsAcrossDates } from '@/common/session-schedule';
 import { Injectable } from '@nestjs/common';
 
 import type { AuthenticatedUser } from '@/common/types/authenticated-request';
@@ -38,6 +39,7 @@ export class CatalogueService {
       scope,
       sessions as unknown as Record<string, unknown>[],
     );
+    const schedules = await this.sessions.scheduleFor(scope, sessions.map((x) => Number(x.id)));
 
     return {
       courses: courses.map((row) => ({
@@ -59,11 +61,15 @@ export class CatalogueService {
         const rowSittings = sittings.get(Number(row.id)) ?? [];
         // With batches, the session's seats are the sum of its OPEN batches'
         // (bookable and dated): that is what a learner can actually take.
+        // A learner attends every date (0076), so the places they can take
+        // are those of the TIGHTEST date: per date, the sum over its open
+        // batches, then the smallest of those.
         const hasBatches = rowSittings.some((x) => x.batch_id !== null);
         const bookable = rowSittings.filter((x) => x.status === 'scheduled' && x.start_date);
-        const capacity = hasBatches ? bookable.reduce((n, x) => n + x.capacity, 0) : row.capacity;
+        const across = seatsAcrossDates(bookable);
+        const capacity = hasBatches ? across.capacity : row.capacity;
         const seatsLeft = hasBatches
-          ? bookable.reduce((n, x) => n + x.available, 0)
+          ? across.available
           : Math.max(0, row.capacity - row.roster_count);
         return {
           id: row.id,
@@ -89,6 +95,7 @@ export class CatalogueService {
           seats_left: seatsLeft,
           is_full: capacity > 0 && seatsLeft === 0,
           sittings: rowSittings,
+          ...(schedules.get(Number(row.id)) ?? { schedule: [], dates_text: '', rescheduled: false }),
           my_batch_id: row.my_batch_id ?? null,
           waitlist_batch_id: row.waitlist_batch_id ?? null,
           is_enrolled: row.is_enrolled > 0,
@@ -104,8 +111,8 @@ export class CatalogueService {
     return this.courses.selfEnrol(scope, courseId, user);
   }
 
-  enrolSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser, batchId?: number) {
-    return this.sessions.selfEnrol(scope, sessionId, user, batchId);
+  enrolSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser, batchId?: number, batchIds?: number[]) {
+    return this.sessions.selfEnrol(scope, sessionId, user, batchId, batchIds);
   }
 
   leaveSession(scope: OrgScope, sessionId: number, user: AuthenticatedUser) {

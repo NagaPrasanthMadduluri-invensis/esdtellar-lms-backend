@@ -244,6 +244,16 @@ export const NOTIFICATION_TYPES = {
     email: 'transactional',
     cta: 'See my sessions',
   },
+  // A date moved, was added or was removed (0076). Facts list each change
+  // ("Postponed: 5 Nov 2026 moved to 12 Nov 2026") and the dates now.
+  session_rescheduled: {
+    label: 'Session dates changed',
+    group: 'sessions',
+    icon: 'CalendarClock',
+    audience: ['learner', 'trainer'],
+    email: 'transactional',
+    cta: 'See the new dates',
+  },
   session_waitlisted: {
     label: 'You are on the waitlist',
     group: 'sessions',

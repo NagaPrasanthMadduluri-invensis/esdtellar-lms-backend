@@ -22,8 +22,15 @@ import {
   batchName,
   buildSittings,
   datesBetween,
+  formatSessionDates,
+  MAX_SESSION_DATES,
   MAX_SITTING_DAYS,
+  normaliseDates,
+  planSchedule,
+  seatsAcrossDates,
+  shortDate,
   sittingIsBookable,
+  type DateChange,
   type Sitting,
 } from '@/common/session-schedule';
 import { batchDisplayStatus } from '@/common/session-enrolment';
@@ -31,8 +38,10 @@ import { displayStatus } from './session-status.util';
 import {
   SessionsRepository,
   type AttendanceRow,
+  type SessionDateRow,
   type SessionWithCourseRow,
 } from './sessions.repository';
+import { CertificatesService } from '@/modules/certificates/certificates.service';
 import { NotificationsService } from '@/modules/notifications/notifications.service';
 import { actorLabel } from '@/common/notifications';
 
@@ -69,7 +78,33 @@ export class SessionsService {
     private readonly activity: ActivityService,
     /** Best-effort (§8.4) — `notify` cannot throw. */
     private readonly notifications: NotificationsService,
+    /** Session certificates on completion (§10.66). Best-effort, never throws. */
+    private readonly certificates: CertificatesService,
   ) {}
+
+  /**
+   * Credits a COMPLETED session and issues what that earns, in one place, so
+   * every path that credits (completing it, saving it as completed, adding to
+   * its roster, correcting its attendance by admin or trainer) also issues.
+   *
+   * `syncCompletions` moves the training credit and its learning hours in both
+   * directions; `issueForSession` only ever ADDS certificates, once per
+   * learner. Taking credit back (reopened, or marked absent later) leaves an
+   * issued certificate in place by the owner's decision; an admin revokes it.
+   */
+  private async creditCompleted(
+    scope: OrgScope,
+    sessionId: number,
+    actor?: AuthenticatedUser | null,
+  ): Promise<{ issued: number }> {
+    await this.repository.syncCompletions(scope, sessionId);
+    return this.certificates.issueForSession(scope, sessionId, actor);
+  }
+
+  /** The admin's certificate log for a session (§10.66). */
+  certificateLog(scope: OrgScope, sessionId: number) {
+    return this.certificates.sessionLog(scope, sessionId);
+  }
 
   /**
    * Puts the session's picture on its companion training course.
@@ -110,10 +145,12 @@ export class SessionsService {
     // Two more queries for the whole page, not two per card (§7.1). A list of
     // 40 sessions costs 4 round trips, not 81.
     const ids = rows.map((r) => Number(r.id));
-    const [batches, waiting] = await Promise.all([
+    const [batches, waiting, dateRows] = await Promise.all([
       this.repository.listBatchesForSessions(scope, ids),
       this.repository.waitlistCounts(scope, ids),
+      this.repository.listDatesForSessions(scope, ids),
     ]);
+    const datesBySession = groupDates(dateRows);
 
     const batchesBySession = new Map<number, typeof batches>();
     for (const b of batches) {
@@ -149,6 +186,8 @@ export class SessionsService {
           // Derived, never stored — a batch with no date yet is pending.
           display_status: batchDisplayStatus(b),
         })),
+        // Every scheduled date, in order, with postponed/preponed (0076).
+        ...scheduleFields(datesBySession.get(Number(row.id)) ?? []),
         // Every sitting with its dates and seats (common/session-schedule.ts),
         // the same shape the learner, trainer and catalogue reads carry.
         sittings: buildSittings(
@@ -196,6 +235,12 @@ export class SessionsService {
     return out;
   }
 
+  /** Schedule fields (dates, dates in words, rescheduled) for a set of sessions (0076). */
+  async scheduleFor(scope: OrgScope, sessionIds: number[]) {
+    const grouped = groupDates(await this.repository.listDatesForSessions(scope, sessionIds));
+    return new Map(sessionIds.map((id) => [id, scheduleFields(grouped.get(id) ?? [])]));
+  }
+
   /* ── Feedback and report (0074) ──────────────────────────────────────── */
 
   /** Every learner's feedback on one session, with averages. Admin read. */
@@ -210,7 +255,7 @@ export class SessionsService {
       email: r.email,
       department: r.department,
       jobRole: r.job_role,
-      batch: r.batch_no ? batchName(r.batch_no, r.batch_label) : null,
+      batch: r.batches ?? null,
       ratings: { content: r.rating_content, trainer: r.rating_trainer, delivery: r.rating_delivery },
       average: round1((r.rating_content + r.rating_trainer + r.rating_delivery) / 3),
       comment: r.comment,
@@ -228,10 +273,11 @@ export class SessionsService {
   async sessionReport(scope: OrgScope, sessionId: number) {
     const row = (await this.repository.findWithCourse(scope, sessionId)) as Record<string, unknown> | null;
     if (!row) throw new NotFoundException('Session not found');
-    const [learnerRows, rosterCount, waiting] = await Promise.all([
+    const [learnerRows, rosterCount, waiting, dateRows] = await Promise.all([
       this.repository.reportLearners(scope, sessionId),
       this.repository.rosterCount(scope, sessionId),
       this.repository.waitlistCounts(scope, [sessionId]),
+      this.repository.listDatesForSessions(scope, [sessionId]),
     ]);
     const sittings = (
       await this.sittingsFor(scope, [{ ...row, roster_count: rosterCount }])
@@ -242,7 +288,7 @@ export class SessionsService {
       email: r.email,
       department: r.department,
       jobRole: r.job_role,
-      batch: r.batch_no ? batchName(r.batch_no, r.batch_label) : (sittings[0]?.batch_id === null ? 'Single sitting' : 'Not placed in a batch'),
+      batch: r.batches ?? 'Not placed in a batch',
       enrolledAt: r.enrolled_at,
       attendance: r.attendance,
       joinTime: r.join_time,
@@ -266,7 +312,9 @@ export class SessionsService {
     }
     const attended = tally.present + tally.late + tally.partial;
     const marked = learners.length - tally.unmarked;
-    const scheduledMinutes = sittings.reduce((n, x) => n + (x.total_minutes ?? 0), 0);
+    // Per date: the longest batch, summed; seats: the tightest date (0076).
+    const across = seatsAcrossDates(sittings);
+    const scheduledMinutes = across.minutes;
     const feedback = learners
       .filter((l) => l.feedback)
       .map((l) => ({ ...l.feedback!, average: l.feedback!.average }));
@@ -287,13 +335,14 @@ export class SessionsService {
         description: (row.description as string | null) ?? null,
         firstDate: startDates.sort()[0] ?? null,
         lastDate: endDates.sort().at(-1) ?? null,
+        ...scheduleFields(dateRows),
       },
       totals: {
         learners: learners.length,
         batches: sittings.filter((x) => x.batch_id !== null).length,
-        capacity: sittings.filter((x) => x.status !== 'cancelled').reduce((n, x) => n + x.capacity, 0),
+        capacity: across.capacity,
         registered: rosterCount,
-        available: sittings.filter((x) => x.status !== 'cancelled').reduce((n, x) => n + x.available, 0),
+        available: across.available,
         waitlist: Number(waiting[0]?.n ?? 0),
         attendance: tally,
         attendanceRatePct: marked > 0 ? Math.round((attended / marked) * 100) : null,
@@ -306,31 +355,316 @@ export class SessionsService {
     };
   }
 
-  /* ── Batches ─────────────────────────────────────────────────────────── */
+  /* ── Schedule: dates and day batches (0076, BACKEND_STRUCTURE 10.67) ──── */
 
-  async createBatch(scope: OrgScope, sessionId: number, dto: SessionBatchDto) {
+  /** Every date with its batches and seats, in order. Admin read. */
+  async schedule(scope: OrgScope, sessionId: number) {
+    const row = (await this.repository.findWithCourse(scope, sessionId)) as Record<string, unknown> | null;
+    if (!row) throw new NotFoundException('Session not found');
+    const [dateRows, batches, rosterCount] = await Promise.all([
+      this.repository.listDatesForSessions(scope, [sessionId]),
+      this.repository.listBatchesForSessions(scope, [sessionId]),
+      this.repository.rosterCount(scope, sessionId),
+    ]);
+    const sittings = buildSittings(
+      { ...(row as never as SittingSessionRow), roster_count: rosterCount },
+      batches,
+    );
+    return {
+      ...scheduleFields(dateRows),
+      dates: dateRows.map((d) => ({
+        ...shapeDate(d),
+        batches: sittings.filter((x) => x.session_date_id === Number(d.id)),
+      })),
+    };
+  }
+
+  /**
+   * Replace the session's dates with the set the admin picked. A date taken
+   * away and a date put in are paired in order as a MOVE: the row keeps its
+   * batches, placements and attendance and is labelled postponed or
+   * preponed. What is left over is added (with the batches of the nearest
+   * existing date) or removed (refused when attendance is marked on it).
+   */
+  async setSchedule(scope: OrgScope, sessionId: number, wanted: string[], actor?: AuthenticatedUser | null) {
+    const result = await this.applySchedule(scope, sessionId, wanted);
+    await this.afterScheduleChange(scope, sessionId, result, actor);
+    return { ...(await this.schedule(scope, sessionId)), changes: result };
+  }
+
+  async addDate(scope: OrgScope, sessionId: number, date: string, actor?: AuthenticatedUser | null) {
+    const current = await this.repository.listDatesForSessions(scope, [sessionId]);
+    if (!(await this.repository.findStatus(scope, sessionId))) throw new NotFoundException('Session not found');
+    if (current.some((d) => d.date === date)) {
+      throw new ConflictException(`This session already runs on ${shortDate(date)}.`);
+    }
+    return this.setSchedule(scope, sessionId, [...current.map((d) => d.date), date], actor);
+  }
+
+  async moveDate(scope: OrgScope, dateId: number, to: string, actor?: AuthenticatedUser | null) {
+    const target = await this.repository.findDate(scope, dateId);
+    if (!target) throw new NotFoundException('Date not found');
+    const sessionId = Number(target.session_id);
+    const current = await this.repository.listDatesForSessions(scope, [sessionId]);
+    if (target.date === to) {
+      return { ...(await this.schedule(scope, sessionId)), changes: { moves: [], added: [], removed: [] } };
+    }
+    if (current.some((d) => d.date === to)) {
+      throw new ConflictException(`This session already runs on ${shortDate(to)}. Choose another day.`);
+    }
+    await this.assertSchedulable(scope, sessionId);
+    const change = to > target.date ? 'postponed' : 'preponed';
+    await this.repository.moveDate(scope, dateId, to, change);
+    await this.repository.syncSessionSummary(scope, sessionId);
+    const result = { moves: [{ from: target.date, to, change: change as DateChange }], added: [], removed: [] };
+    await this.afterScheduleChange(scope, sessionId, result, actor);
+    return { ...(await this.schedule(scope, sessionId)), changes: result };
+  }
+
+  async removeDate(scope: OrgScope, dateId: number, actor?: AuthenticatedUser | null) {
+    const target = await this.repository.findDate(scope, dateId);
+    if (!target) throw new NotFoundException('Date not found');
+    const sessionId = Number(target.session_id);
+    const current = await this.repository.listDatesForSessions(scope, [sessionId]);
+    return this.setSchedule(scope, sessionId, current.filter((d) => d.id !== target.id).map((d) => d.date), actor);
+  }
+
+  /** A finished or cancelled session's dates are history; they do not move. */
+  private async assertSchedulable(scope: OrgScope, sessionId: number) {
+    const session = await this.repository.findStatus(scope, sessionId);
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.status === 'completed' || session.status === 'cancelled') {
+      throw new UnprocessableEntityException(
+        `This session is ${session.status}, so its dates can no longer change. Reopen it first.`,
+      );
+    }
+    return session;
+  }
+
+  /**
+   * The schedule diff, applied. Returns what changed. Shared by the schedule
+   * endpoints and by a session edit that sends `dates` (or a new range).
+   */
+  private async applySchedule(scope: OrgScope, sessionId: number, wanted: string[]) {
+    const desired = normaliseDates(wanted);
+    if (desired.length === 0) throw new BadRequestException('A session needs at least one date.');
+    if (desired.length > MAX_SESSION_DATES) {
+      throw new BadRequestException(`A session can have at most ${MAX_SESSION_DATES} dates.`);
+    }
+    const current = await this.repository.listDatesForSessions(scope, [sessionId]);
+    const plan = planSchedule(current.map((d) => d.date), desired);
+    if (plan.moves.length + plan.added.length + plan.removed.length === 0) return plan;
+    await this.assertSchedulable(scope, sessionId);
+
+    const byDate = new Map(current.map((d) => [d.date, d]));
+    for (const date of plan.removed) {
+      const row = byDate.get(date)!;
+      const marked = await this.repository.markedOnDate(scope, row.id);
+      if (marked > 0) {
+        throw new ConflictException(
+          `Attendance is already marked for ${marked} learner${marked === 1 ? '' : 's'} on ${shortDate(date)}, so that date cannot be removed. Move it to another day instead.`,
+        );
+      }
+    }
+
+    // Moves first, latest-first when postponing and earliest-first when
+    // preponing, so one move never lands on a date another is about to leave.
+    const ordered = [...plan.moves].sort((a, b) =>
+      a.change === 'postponed' && b.change === 'postponed' ? b.from.localeCompare(a.from) : a.from.localeCompare(b.from));
+    for (const m of ordered) {
+      await this.repository.moveDate(scope, byDate.get(m.from)!.id, m.to, m.change);
+    }
+    for (const date of plan.removed) await this.repository.deleteDate(scope, byDate.get(date)!.id);
+
+    if (plan.added.length > 0) {
+      // A new date copies the batches of the nearest remaining date, so a
+      // session run in Morning and Afternoon batches keeps both. A session
+      // with nothing to copy gets one batch following its own times.
+      const remaining = current.filter((d) => !plan.removed.includes(d.date));
+      const template = remaining.length
+        ? remaining.reduce((best, d) => (Math.abs(Date.parse(d.date) - Date.parse(plan.added[0])) < Math.abs(Date.parse(best.date) - Date.parse(plan.added[0])) ? d : best))
+        : null;
+      const slots = template ? await this.repository.slotsOfDate(scope, template.id) : [];
+      const created = await this.repository.insertDates(scope, sessionId, plan.added);
+      await this.repository.createBatchesForDates(
+        scope,
+        sessionId,
+        created,
+        slots.length ? slots : [{ label: null, start_time: null, end_time: null, capacity: null }],
+      );
+    }
+
+    await this.repository.syncSessionSummary(scope, sessionId);
+    await this.repository.autoPlace(scope, sessionId);
+    if (plan.removed.length > 0) await this.repository.rollUpAttendance(scope, sessionId);
+    await this.syncTrainingDuration(scope, sessionId);
+    return plan;
+  }
+
+  /** The training lesson's length is the daily length times the number of dates. */
+  private async syncTrainingDuration(scope: OrgScope, sessionId: number) {
+    const row = await this.repository.findWithCourse(scope, sessionId);
+    if (!row) return;
+    const dates = await this.repository.listDatesForSessions(scope, [sessionId]);
+    await this.repository.setTrainingDuration(
+      scope,
+      sessionId,
+      SessionsService.durationMinutes(String(row.start_time ?? ''), String(row.end_time ?? '')) * Math.max(1, dates.length),
+    );
+  }
+
+  /**
+   * Tell the roster and every trainer on the session what moved, in one
+   * notification each (bell and email, `session_rescheduled`), and record it
+   * in the activity log. Best-effort (§8.4).
+   */
+  private async afterScheduleChange(
+    scope: OrgScope,
+    sessionId: number,
+    plan: { moves: { from: string; to: string; change: DateChange }[]; added: string[]; removed: string[] },
+    actor?: AuthenticatedUser | null,
+  ): Promise<void> {
+    if (plan.moves.length + plan.added.length + plan.removed.length === 0) return;
+    try {
+      const session = await this.repository.findWithCourse(scope, sessionId);
+      if (!session) return;
+      const title = String(session.title ?? 'A session');
+      const dates = (await this.repository.listDatesForSessions(scope, [sessionId])).map((d) => d.date);
+      const allPostponed = plan.added.length + plan.removed.length === 0 && plan.moves.every((m) => m.change === 'postponed');
+      const allPreponed = plan.added.length + plan.removed.length === 0 && plan.moves.every((m) => m.change === 'preponed');
+      const headline = allPostponed ? 'Postponed' : allPreponed ? 'Preponed' : 'Schedule changed';
+
+      const facts: Array<{ label: string; value: string }> = [];
+      for (const m of plan.moves) {
+        facts.push({
+          label: m.change === 'postponed' ? 'Postponed' : 'Preponed',
+          value: `${shortDate(m.from)} moved to ${shortDate(m.to)}`,
+        });
+      }
+      for (const d of plan.added) facts.push({ label: 'Added', value: shortDate(d) });
+      for (const d of plan.removed) facts.push({ label: 'Removed', value: shortDate(d) });
+      facts.push({ label: 'Dates now', value: formatSessionDates(dates) });
+      const start = typeof session.start_time === 'string' ? session.start_time : null;
+      const end = typeof session.end_time === 'string' ? session.end_time : null;
+      if (start) facts.push({ label: 'Time', value: end ? `${start} – ${end}` : start });
+
+      const body =
+        `The dates for "${title}" have changed. Your batch and times stay the same `
+        + 'unless your L&D team tells you otherwise. The new schedule is below.';
+      const { learners, trainers } = await this.repository.scheduleAudience(scope, sessionId);
+      const learnerIds = learners.filter((id) => !trainers.includes(id));
+      if (learnerIds.length > 0) {
+        void this.notifications.notify({
+          userIds: learnerIds,
+          organizationId: scope.organizationId,
+          type: 'session_rescheduled',
+          title: `${headline}: ${title}`,
+          subjectName: title,
+          body,
+          facts,
+          link: '/my-sessions',
+          subjectType: 'session',
+          subjectId: sessionId,
+          actorName: 'Your L&D team',
+          exceptUserId: actor?.userId ?? null,
+        });
+      }
+      if (trainers.length > 0) {
+        void this.notifications.notify({
+          userIds: trainers,
+          organizationId: scope.organizationId,
+          type: 'session_rescheduled',
+          title: `${headline}: ${title}`,
+          subjectName: title,
+          body: `The dates for "${title}", which you are running, have changed. The new schedule is below.`,
+          facts,
+          link: '/trainer/sessions',
+          subjectType: 'session',
+          subjectId: sessionId,
+          actorName: actorLabel(actor ?? undefined),
+          exceptUserId: actor?.userId ?? null,
+        });
+      }
+      await this.activity.record(scope, {
+        type: 'session_rescheduled',
+        detail: `${headline} "${title}": ${facts.slice(0, -1).filter((f) => f.label !== 'Dates now' && f.label !== 'Time').map((f) => `${f.label} ${f.value}`).join('; ')}`,
+        actor: actor ?? null,
+        subjectType: 'session',
+        subjectId: sessionId,
+      });
+    } catch {
+      /* best-effort (§8.4): the dates have changed either way */
+    }
+  }
+
+  /* ── Day batches ─────────────────────────────────────────────────────── */
+
+  /**
+   * Add a batch on one date. The date is `session_date_id`, or `date` (added
+   * to the session when it does not run that day yet). A legacy `date` to
+   * `end_date` range adds the batch on every day of it.
+   */
+  async createBatch(scope: OrgScope, sessionId: number, dto: SessionBatchDto, actor?: AuthenticatedUser | null) {
     const session = await this.repository.findWithCourse(scope, sessionId);
     if (!session) throw new NotFoundException('Session not found');
 
-    const batchNo = await this.repository.nextBatchNo(scope, sessionId);
-    const batch = await this.repository.createBatch({
-      organizationId: scope.organizationId,
-      sessionId,
-      batchNo,
-      label: dto.label ?? null,
-      date: dto.date ?? null,
-      endDate: endDateFor(dto.date, dto.end_date),
-      startTime: dto.start_time ?? null,
-      endTime: dto.end_time ?? null,
-      capacity: dto.capacity ?? null,
-      trainerUserId: dto.trainer_user_id ?? null,
-    });
-    return { batch };
+    let dateIds: number[];
+    if (dto.session_date_id) {
+      const d = await this.repository.findDate(scope, dto.session_date_id);
+      if (!d || Number(d.session_id) !== sessionId) throw new NotFoundException('Date not found on this session');
+      dateIds = [Number(d.id)];
+    } else {
+      const wantedDays = dto.date ? datesBetween(dto.date, endDateFor(dto.date, dto.end_date)) : [];
+      if (wantedDays.length === 0) {
+        throw new UnprocessableEntityException('Choose the date this batch runs on.');
+      }
+      let current = await this.repository.listDatesForSessions(scope, [sessionId]);
+      const missing = wantedDays.filter((d) => !current.some((c) => c.date === d));
+      if (missing.length > 0) {
+        await this.assertSchedulable(scope, sessionId);
+        // New days arrive with this batch only, not a copy of another day's.
+        await this.repository.insertDates(scope, sessionId, missing);
+        await this.repository.syncSessionSummary(scope, sessionId);
+        current = await this.repository.listDatesForSessions(scope, [sessionId]);
+        void this.afterScheduleChange(scope, sessionId, { moves: [], added: missing, removed: [] }, actor);
+      }
+      dateIds = current.filter((c) => wantedDays.includes(c.date)).map((c) => Number(c.id));
+    }
+
+    const created = [];
+    for (const dateId of dateIds) {
+      const d = (await this.repository.findDate(scope, dateId))!;
+      const batchNo = await this.repository.nextBatchNo(scope, dateId);
+      created.push(await this.repository.createBatch({
+        organizationId: scope.organizationId,
+        sessionId,
+        sessionDateId: dateId,
+        batchNo,
+        label: dto.label ?? null,
+        date: d.date,
+        endDate: null,
+        startTime: dto.start_time ?? null,
+        endTime: dto.end_time ?? null,
+        capacity: dto.capacity ?? null,
+        trainerUserId: dto.trainer_user_id ?? null,
+      }));
+    }
+    await this.repository.autoPlace(scope, sessionId);
+    await this.syncTrainingDuration(scope, sessionId);
+    return { batch: created[0], batches: created };
   }
 
   async updateBatch(scope: OrgScope, batchId: number, dto: SessionBatchDto) {
     const existing = await this.repository.findBatch(scope, batchId);
     if (!existing) throw new NotFoundException('Batch not found');
+
+    // A batch runs on its date. Moving the day is a schedule change, made on
+    // the date, so every batch that day moves together and people are told.
+    if (dto.date && existing.date && dto.date !== existing.date) {
+      throw new UnprocessableEntityException(
+        'A batch runs on its date. To change the day, move the date in the session schedule.',
+      );
+    }
 
     // Capacity can be raised freely; lowering it below the people already
     // placed would overbook the batch on paper, so it is refused in words.
@@ -345,8 +679,8 @@ export class SessionsService {
 
     const batch = await this.repository.updateBatch(scope, batchId, {
       label: dto.label ?? null,
-      date: dto.date ?? null,
-      endDate: endDateFor(dto.date, dto.end_date),
+      date: existing.date,
+      endDate: null,
       startTime: dto.start_time ?? null,
       endTime: dto.end_time ?? null,
       capacity: dto.capacity ?? null,
@@ -360,24 +694,42 @@ export class SessionsService {
   async removeBatch(scope: OrgScope, batchId: number) {
     const existing = await this.repository.findBatch(scope, batchId);
     if (!existing) throw new NotFoundException('Batch not found');
+    if (existing.session_date_id && (await this.repository.batchCountOnDate(scope, existing.session_date_id)) <= 1) {
+      throw new UnprocessableEntityException(
+        'This is the only batch on its date. Remove the date from the schedule instead.',
+      );
+    }
     await this.repository.deleteBatch(scope, batchId);
-    // Said back to the caller because it is the non-obvious half: the people
-    // in that batch are still on the session, just unassigned to a sitting.
-    return { message: 'Batch deleted. Its learners stay on the session, unassigned to a sitting.' };
+    // With one batch left that day, its people are placed in it.
+    await this.repository.autoPlace(scope, Number(existing.session_id));
+    return { message: 'Batch deleted. Its learners stay on the session; place them in another batch on that date.' };
   }
 
-  /** Move a rostered learner between sittings. `batch_id: null` unassigns. */
+  /**
+   * Place a rostered learner in a batch on that batch's date (0076). With
+   * `batch_id: null`, take them off one date (`session_date_id`) or, with no
+   * date, off every date that offers a choice.
+   */
   async setRosterBatch(
     scope: OrgScope,
     sessionId: number,
     dto: MoveToBatchDto,
   ) {
     const batchId = dto.batch_id ?? null;
-    const moved = await this.repository.withSeatLock(sessionId, async () => {
-      if (batchId !== null) await this.assertBatchHasRoom(scope, sessionId, batchId, dto.user_id);
-      return this.repository.setRosterBatch(scope, sessionId, dto.user_id, batchId);
+    if (!(await this.repository.isOnRoster(scope, sessionId, dto.user_id))) {
+      throw new NotFoundException('That learner is not on this session');
+    }
+    if (batchId === null) {
+      if (dto.session_date_id) await this.repository.unplaceMember(scope, sessionId, dto.session_date_id, dto.user_id);
+      else await this.repository.removeMembers(scope, sessionId, dto.user_id);
+      // A date with only one batch is never left without them.
+      await this.repository.autoPlace(scope, sessionId);
+      return { ok: true };
+    }
+    await this.repository.withSeatLock(sessionId, async () => {
+      await this.assertBatchHasRoom(scope, sessionId, batchId, dto.user_id);
+      await this.repository.placeMember(scope, sessionId, batchId, dto.user_id);
     });
-    if (moved === 0) throw new NotFoundException('That learner is not on this session');
     return { ok: true };
   }
 
@@ -531,16 +883,38 @@ export class SessionsService {
     // Derived, not trusted: when a trainer account is linked, the display name
     // is that account's name, so the column and the link cannot drift apart.
     if (trainer) dto.trainer = trainer.name;
+    // Every date it runs on (0076): the picked dates, or the start-to-end range.
+    const dates = this.resolveDates(dto);
+    for (const slot of dto.slots ?? []) {
+      if (slot.trainer_user_id) await this.resolveTrainer(scope, slot.trainer_user_id);
+    }
     const id = await this.repository.createSession(scope, this.toRow(dto));
+    // Each date gets one batch per time slot. With no slots, one batch that
+    // follows the session's own times and capacity.
+    const createdDates = await this.repository.insertDates(scope, id, dates);
+    await this.repository.createBatchesForDates(
+      scope,
+      id,
+      createdDates,
+      dto.slots?.length
+        ? dto.slots.map((x) => ({
+            label: x.label ?? null,
+            start_time: x.start_time ?? null,
+            end_time: x.end_time ?? null,
+            capacity: x.capacity ?? null,
+            trainer_user_id: x.trainer_user_id ?? null,
+          }))
+        : [{ label: null, start_time: null, end_time: null, capacity: null }],
+    );
     // The training course is part of creating a session, not a follow-up step:
     // a session with no training would show in the calendar and nowhere else,
     // which is the behaviour this replaces.
-    await this.repository.createTraining(scope, id, this.trainingValues(dto));
+    await this.repository.createTraining(scope, id, this.trainingValues(dto, dates.length));
     await this.syncTrainingThumbnail(scope, id, dto.thumbnail_url);
 
     await this.activity.record(scope, {
       type: 'session_created',
-      detail: `Scheduled "${dto.title}"${dto.date ? ` for ${dto.date}` : ''}`,
+      detail: `Scheduled "${dto.title}" for ${formatSessionDates(dates)}`,
       actor: actor ?? null,
       subjectType: 'session',
       subjectId: id,
@@ -574,7 +948,12 @@ export class SessionsService {
     };
   }
 
-  async update(scope: OrgScope, sessionId: number, dto: SessionDto) {
+  async update(
+    scope: OrgScope,
+    sessionId: number,
+    dto: SessionDto,
+    actor?: AuthenticatedUser,
+  ) {
     await this.assertCourseInScope(scope, dto.course_id);
     const trainer = await this.resolveTrainer(scope, dto.trainer_user_id);
     if (trainer) dto.trainer = trainer.name;
@@ -592,6 +971,17 @@ export class SessionsService {
     const trainerChanged =
       (previous?.trainer ?? null) !== (dto.trainer ?? null);
 
+    // The dates (0076): an explicit list, or a changed start/end range from an
+    // older form. Applied before the status, so a schedule change on a session
+    // being completed in the same save is still allowed.
+    const prevEnd = typeof previous?.end_date === 'string' ? previous.end_date : null;
+    const wantedDates = dto.dates?.length
+      ? dto.dates
+      : dto.date !== previous?.date || (dto.end_date ?? null) !== prevEnd
+        ? datesBetween(dto.date, endDateFor(dto.date, dto.end_date))
+        : null;
+    const plan = wantedDates ? await this.applySchedule(scope, sessionId, wantedDates) : null;
+
     const requested = dto.status ?? 'upcoming';
     if (requested === 'completed' && before.status !== 'completed') {
       // Completing through the edit form has the same preconditions and the
@@ -601,7 +991,10 @@ export class SessionsService {
       );
     }
 
-    await this.repository.updateSession(scope, sessionId, this.toRow(dto));
+    // The date columns are a summary of session_dates, kept by applySchedule.
+    const { date: _date, endDate: _endDate, ...row } = this.toRow(dto);
+    await this.repository.updateSession(scope, sessionId, row);
+    const dayCount = (await this.repository.listDatesForSessions(scope, [sessionId])).length;
     // ensureTraining before updateTraining: updating a training that was never
     // built is a silent no-op, and a session created before this feature that
     // the backfill somehow missed would then stay invisible everywhere but the
@@ -610,9 +1003,10 @@ export class SessionsService {
     await this.repository.updateTraining(
       scope,
       sessionId,
-      this.trainingValues(dto),
+      this.trainingValues(dto, dayCount),
     );
     await this.syncTrainingThumbnail(scope, sessionId, dto.thumbnail_url);
+    if (plan) await this.afterScheduleChange(scope, sessionId, plan, actor);
 
     if (trainerChanged) {
       void this.announceTrainer(scope, {
@@ -662,7 +1056,7 @@ export class SessionsService {
     }
 
     if (requested === 'completed') {
-      await this.repository.syncCompletions(scope, sessionId);
+      await this.creditCompleted(scope, sessionId, actor);
     } else if (before.status === 'completed') {
       // Reopened or cancelled after the fact: the training is no longer
       // finished, so the credit and its learning hours go back too. Leaving
@@ -708,7 +1102,7 @@ export class SessionsService {
    * Absent and excused get nothing, and an unmarked attendance record credits
    * nobody, so the action refuses rather than silently doing nothing.
    */
-  async complete(scope: OrgScope, sessionId: number) {
+  async complete(scope: OrgScope, sessionId: number, actor?: AuthenticatedUser) {
     const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
@@ -722,16 +1116,21 @@ export class SessionsService {
     this.assertAttendanceMarked(tally);
 
     await this.repository.updateSession(scope, sessionId, { status: 'completed' });
-    await this.repository.syncCompletions(scope, sessionId);
+    const { issued } = await this.creditCompleted(scope, sessionId, actor);
 
     const session = await this.repository.findWithCourse(scope, sessionId);
+    const credited =
+      tally.credited === 1
+        ? '1 learner credited with this training'
+        : `${tally.credited} learners credited with this training`;
     return {
       session: this.withDisplayStatus(session),
       credited: tally.credited,
+      certificatesIssued: issued,
       message:
-        tally.credited === 1
-          ? '1 learner credited with this training.'
-          : `${tally.credited} learners credited with this training.`,
+        issued === 0
+          ? `${credited}.`
+          : `${credited}; ${issued === 1 ? '1 certificate' : `${issued} certificates`} issued and emailed.`,
     };
   }
 
@@ -762,7 +1161,7 @@ export class SessionsService {
       added = await this.repository.withSeatLock(sessionId, async () => {
         await this.assertBatchHasRoom(scope, sessionId, batchId, userId);
         const ids = await this.repository.addToRoster(scope, sessionId, userId);
-        await this.repository.setRosterBatch(scope, sessionId, userId, batchId);
+        await this.repository.placeMember(scope, sessionId, batchId, userId);
         return ids;
       });
     } else if (dto.user_id) {
@@ -775,13 +1174,15 @@ export class SessionsService {
     // of the feature, so the two are never written apart.
     await this.ensureTraining(scope, sessionId);
     await this.repository.assignRosterToTraining(scope, sessionId, adminId);
+    // Placed on every date that has only one batch (0076).
+    await this.repository.autoPlace(scope, sessionId);
 
     // An admin who adds a learner after the session was completed and attended
     // is adding someone who did not attend: the assignment appears, the credit
     // does not. syncCompletions keeps that consistent either way.
     const session = await this.repository.findStatus(scope, sessionId);
     if (session?.status === 'completed') {
-      await this.repository.syncCompletions(scope, sessionId);
+      await this.creditCompleted(scope, sessionId);
     }
 
     /*
@@ -850,6 +1251,7 @@ export class SessionsService {
     sessionId: number,
     user: AuthenticatedUser,
     batchId?: number,
+    batchIds?: number[],
   ) {
     const userId = user.userId;
     const session = await this.repository.findWithCourse(scope, sessionId);
@@ -874,36 +1276,65 @@ export class SessionsService {
       return { state: 'enrolled' as const, already: true, position: null };
     }
 
-    // A session with batches is booked into ONE batch, chosen by the learner;
-    // each batch has its own seats and its own queue (0074).
-    const [batchRows] = await Promise.all([
+    // A learner attends every date and is placed in one batch on each (0076).
+    // A date with one open batch needs no choice; a date with several needs
+    // one chosen batch. Each batch has its own seats and its own queue.
+    const [batchRows, dateRows] = await Promise.all([
       this.repository.listBatchesForSessions(scope, [sessionId]),
+      this.repository.listDatesForSessions(scope, [sessionId]),
     ]);
-    const open = batchRows.filter((b) => sittingIsBookable({ status: batchDisplayStatus(b) }) && b.date);
-    if (batchRows.length > 0) {
-      if (batchId === undefined) {
-        throw new UnprocessableEntityException('Choose a batch to book. This session runs in more than one sitting.');
+    const open = batchRows.filter(
+      (b) => b.date && b.status !== 'cancelled' && sittingIsBookable({ status: batchDisplayStatus(b) }),
+    );
+    const chosenIds = new Set<number>([...(batchIds ?? []), ...(batchId !== undefined ? [batchId] : [])].map(Number));
+    if ([...chosenIds].some((id) => !open.some((b) => Number(b.id) === id))) {
+      throw new UnprocessableEntityException('That batch is not open for booking. Choose another batch.');
+    }
+    const picks: typeof open = [];
+    const missing: string[] = [];
+    for (const d of dateRows) {
+      const onDate = open.filter((b) => Number(b.session_date_id) === Number(d.id));
+      if (onDate.length === 0) continue;
+      const chosen = onDate.filter((b) => chosenIds.has(Number(b.id)));
+      if (chosen.length > 1) {
+        throw new UnprocessableEntityException(`Choose one batch on ${shortDate(d.date)}, not ${chosen.length}.`);
       }
-      const chosen = open.find((b) => Number(b.id) === batchId);
-      if (!chosen) {
-        throw new UnprocessableEntityException('That batch is not open for booking. Choose another batch.');
-      }
+      if (chosen.length === 1) picks.push(chosen[0]);
+      else if (onDate.length === 1) picks.push(onDate[0]);
+      else missing.push(shortDate(d.date));
+    }
+    if (missing.length > 0) {
+      throw new UnprocessableEntityException(
+        `Choose a batch to book for ${missing.join(', ')}. This session runs in more than one batch on ${missing.length === 1 ? 'that date' : 'those dates'}.`,
+      );
     }
 
+    // Only a session that offers a choice of batch talks about batches: one
+    // with a single batch per date books, queues and answers exactly like a
+    // single sitting (its queue is the session's).
+    const hadChoice = dateRows.some(
+      (d) => open.filter((b) => Number(b.session_date_id) === Number(d.id)).length > 1,
+    );
+
     const outcome = await this.repository.withSeatLock(sessionId, async () => {
-      if (batchId !== undefined && batchRows.length > 0) {
-        const b = open.find((x) => Number(x.id) === batchId)!;
-        const capacity = b.capacity ?? Number(session.capacity ?? 0);
-        const placed = await this.repository.batchRosterCount(scope, batchId);
-        if (capacity > 0 && placed >= capacity) {
-          const position =
-            (await this.repository.addToWaitlist(scope, sessionId, userId, batchId)) ??
-            (await this.repository.waitlistPosition(scope, sessionId, userId));
-          return { state: 'waitlisted' as const, position };
+      if (picks.length > 0) {
+        for (const b of picks) {
+          const capacity = b.capacity ?? Number(session.capacity ?? 0);
+          const placed = await this.repository.batchRosterCount(scope, Number(b.id));
+          if (capacity > 0 && placed >= capacity) {
+            const queueFor = hadChoice ? Number(b.id) : null;
+            const position =
+              (await this.repository.addToWaitlist(scope, sessionId, userId, queueFor)) ??
+              (await this.repository.waitlistPosition(scope, sessionId, userId));
+            return { state: 'waitlisted' as const, position, batchId: queueFor };
+          }
         }
+        // addToRoster's own notify EXCLUDES the person it was told is the
+        // "admin", which here is the learner themselves, so it sends them
+        // nothing; the self-enrol receipt is sent below with its own wording.
         await this.addToRoster(scope, sessionId, userId, { user_id: userId });
-        await this.repository.setRosterBatch(scope, sessionId, userId, batchId);
-        return { state: 'enrolled' as const, position: null };
+        for (const b of picks) await this.repository.placeMember(scope, sessionId, Number(b.id), userId);
+        return { state: 'enrolled' as const, position: null, batchId: hadChoice ? Number(picks[0].id) : null };
       }
 
       const capacity = Number(session.capacity ?? 0);
@@ -912,21 +1343,24 @@ export class SessionsService {
         const position =
           (await this.repository.addToWaitlist(scope, sessionId, userId)) ??
           (await this.repository.waitlistPosition(scope, sessionId, userId));
-        return { state: 'waitlisted' as const, position };
+        return { state: 'waitlisted' as const, position, batchId: null };
       }
-      // addToRoster's own notify EXCLUDES the person it was told is the "admin",
-      // which here is the learner themselves — so it sends them nothing, and the
-      // self-enrol receipt is sent explicitly below with its own wording.
       await this.addToRoster(scope, sessionId, userId, { user_id: userId });
-      return { state: 'enrolled' as const, position: null };
+      return { state: 'enrolled' as const, position: null, batchId: null };
     });
 
     if (outcome.state === 'waitlisted') {
       void this.notifySelfWaitlisted(scope, session, user, outcome.position);
-      return { state: 'waitlisted' as const, already: false, position: outcome.position, batch_id: batchId ?? null };
+      return { state: 'waitlisted' as const, already: false, position: outcome.position, batch_id: outcome.batchId };
     }
     void this.notifySelfEnrolledSession(scope, session, user);
-    return { state: 'enrolled' as const, already: false, position: null, batch_id: batchId ?? null };
+    return {
+      state: 'enrolled' as const,
+      already: false,
+      position: null,
+      batch_id: outcome.batchId,
+      ...(hadChoice ? { batch_ids: picks.map((b) => Number(b.id)) } : {}),
+    };
   }
 
   /** Receipt to a learner who booked themselves, plus the admin bell. §8.4. */
@@ -1083,6 +1517,7 @@ export class SessionsService {
     if (!before) throw new NotFoundException('Session not found');
 
     await this.repository.removeFromRoster(scope, sessionId, userId);
+    await this.repository.removeMembers(scope, sessionId, userId);
     await this.repository.unassignFromTraining(scope, sessionId, userId);
     return this.roster(scope, sessionId);
   }
@@ -1093,7 +1528,69 @@ export class SessionsService {
     const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
-    return this.shapeAttendance(await this.repository.attendance(scope, sessionId));
+    return this.withDays(scope, sessionId, this.shapeAttendance(await this.repository.attendance(scope, sessionId)));
+  }
+
+  /**
+   * Adds the per-date view (0076) to an attendance shape: the session's
+   * dates, and on each learner their batch and mark on every date.
+   */
+  private async withDays<T extends { user_id: number }>(
+    scope: OrgScope,
+    sessionId: number,
+    shaped: Record<string, unknown> & { records?: T[]; participants?: T[] },
+  ) {
+    const [dates, days, members, batches] = await Promise.all([
+      this.repository.listDatesForSessions(scope, [sessionId]),
+      this.repository.dayAttendance(scope, sessionId),
+      this.repository.membersFor(scope, [sessionId]),
+      this.repository.listBatchesForSessions(scope, [sessionId]),
+    ]);
+    const batchById = new Map(batches.map((b) => [Number(b.id), b]));
+    const addDays = (r: T) => ({
+      ...r,
+      days: dates.map((d) => {
+        const mark = days.find((x) => Number(x.user_id) === r.user_id && Number(x.session_date_id) === Number(d.id));
+        const member = members.find((m) => Number(m.user_id) === r.user_id && Number(m.session_date_id) === Number(d.id));
+        const b = member ? batchById.get(Number(member.batch_id)) : undefined;
+        return {
+          session_date_id: Number(d.id),
+          date: d.date,
+          batch_id: b ? Number(b.id) : null,
+          batch_name: b ? batchName(b.batch_no, b.label) : null,
+          status: mark?.status ?? null,
+          join_time: mark?.join_time ?? '',
+          notes: mark?.notes ?? '',
+        };
+      }),
+    });
+    return {
+      ...shaped,
+      dates: dates.map(shapeDate),
+      ...(shaped.records ? { records: shaped.records.map(addDays) } : {}),
+      ...(shaped.participants ? { participants: shaped.participants.map(addDays) } : {}),
+    };
+  }
+
+  /**
+   * Marks attendance on one date, or on every date when none is named (which
+   * is what a one-day session, and an older client, sends). Then rolls the
+   * days up into the overall record that crediting reads (0076).
+   */
+  private async writeAttendance(scope: OrgScope, sessionId: number, markedBy: number, dto: SaveAttendanceDto) {
+    const dates = await this.repository.listDatesForSessions(scope, [sessionId]);
+    if (dates.length === 0) {
+      // A session with no valid date (pre-0076 bad data): the overall record only.
+      await this.repository.upsertAttendance(scope, sessionId, markedBy, dto.lock ? 1 : 0, dto.records ?? []);
+      return;
+    }
+    let dateIds = dates.map((d) => Number(d.id));
+    if (dto.session_date_id !== undefined) {
+      if (!dateIds.includes(dto.session_date_id)) throw new NotFoundException('Date not found on this session');
+      dateIds = [dto.session_date_id];
+    }
+    await this.repository.upsertDayAttendance(scope, sessionId, dateIds, markedBy, dto.lock ? 1 : 0, dto.records ?? []);
+    await this.repository.rollUpAttendance(scope, sessionId);
   }
 
   async saveAttendance(
@@ -1105,26 +1602,20 @@ export class SessionsService {
     const before = await this.repository.findStatus(scope, sessionId);
     if (!before) throw new NotFoundException('Session not found');
 
-    await this.repository.upsertAttendance(
-      scope,
-      sessionId,
-      // The legacy handler passed `payload.id`, which does not exist on the JWT
-      // (the claim is `userId`), so marked_by was always stored as null and the
-      // "marked by" name never rendered. Fixed here.
-      adminId,
-      dto.lock ? 1 : 0,
-      dto.records ?? [],
-    );
+    // The legacy handler passed `payload.id`, which does not exist on the JWT
+    // (the claim is `userId`), so marked_by was always stored as null and the
+    // "marked by" name never rendered. Fixed here.
+    await this.writeAttendance(scope, sessionId, adminId, dto);
 
     // Correcting attendance on an already-completed session must move the
     // credit with it, in both directions — otherwise a learner marked absent by
     // mistake keeps the training, the hours and the completion for good.
     const session = await this.repository.findStatus(scope, sessionId);
     if (session?.status === 'completed') {
-      await this.repository.syncCompletions(scope, sessionId);
+      await this.creditCompleted(scope, sessionId);
     }
 
-    return this.shapeAttendance(await this.repository.attendance(scope, sessionId));
+    return this.withDays(scope, sessionId, this.shapeAttendance(await this.repository.attendance(scope, sessionId)));
   }
 
   /* ── Trainer portal (specs/rbac.md §3.6.1) ─────────────────────────────
@@ -1144,11 +1635,16 @@ export class SessionsService {
       scope,
       trainerUserId,
     )) as Record<string, unknown>[];
-    const sittings = await this.sittingsFor(scope, rows);
+    const [sittings, dateRows] = await Promise.all([
+      this.sittingsFor(scope, rows),
+      this.repository.listDatesForSessions(scope, rows.map((r) => Number(r.id))),
+    ]);
+    const datesBySession = groupDates(dateRows);
     return {
       sessions: rows.map((row) => ({
         sittings: sittings.get(Number(row.id)) ?? [],
         ...row,
+        ...scheduleFields(datesBySession.get(Number(row.id)) ?? []),
         course_id: row.course_id ? Number(row.course_id) : null,
         training_course_id: row.training_course_id
           ? Number(row.training_course_id)
@@ -1174,9 +1670,15 @@ export class SessionsService {
     );
     if (!row) throw new NotFoundException('Session not found');
     const session = row as Record<string, unknown>;
+    const [dateRows, sittings] = await Promise.all([
+      this.repository.listDatesForSessions(scope, [sessionId]),
+      this.sittingsFor(scope, [session]),
+    ]);
     return {
       session: {
         ...session,
+        ...scheduleFields(dateRows),
+        sittings: sittings.get(sessionId) ?? [],
         course_id: session.course_id ? Number(session.course_id) : null,
         training_course_id: session.training_course_id
           ? Number(session.training_course_id)
@@ -1200,9 +1702,9 @@ export class SessionsService {
       trainerUserId,
     );
     if (!owned) throw new NotFoundException('Session not found');
-    return this.shapeTrainerParticipants(
+    return this.withDays(scope, sessionId, this.shapeTrainerParticipants(
       await this.repository.attendance(scope, sessionId),
-    );
+    ));
   }
 
   async trainerSaveAttendance(
@@ -1218,27 +1720,21 @@ export class SessionsService {
     );
     if (!owned) throw new NotFoundException('Session not found');
 
-    await this.repository.upsertAttendance(
-      scope,
-      sessionId,
-      // `marked_by` is whoever marked it — the trainer here, an admin from the
-      // admin controller. The column records a user, not a role.
-      trainerUserId,
-      dto.lock ? 1 : 0,
-      dto.records ?? [],
-    );
+    // `marked_by` is whoever marked it — the trainer here, an admin from the
+    // admin controller. The column records a user, not a role.
+    await this.writeAttendance(scope, sessionId, trainerUserId, dto);
 
     // A trainer cannot complete a session, but an admin may already have, and
     // a correction afterwards still has to move the credit in both directions
     // or a learner marked absent by mistake keeps the training for good.
     const session = await this.repository.findStatus(scope, sessionId);
     if (session?.status === 'completed') {
-      await this.repository.syncCompletions(scope, sessionId);
+      await this.creditCompleted(scope, sessionId);
     }
 
-    return this.shapeTrainerParticipants(
+    return this.withDays(scope, sessionId, this.shapeTrainerParticipants(
       await this.repository.attendance(scope, sessionId),
-    );
+    ));
   }
 
   /**
@@ -1284,12 +1780,23 @@ export class SessionsService {
       scope,
       userId,
     )) as Record<string, unknown>[];
-    const sittings = await this.sittingsFor(scope, rows);
+    const ids = rows.map((r) => Number(r.id));
+    const [sittings, dateRows, mine] = await Promise.all([
+      this.sittingsFor(scope, rows),
+      this.repository.listDatesForSessions(scope, ids),
+      this.repository.membersFor(scope, ids, userId),
+    ]);
+    const datesBySession = groupDates(dateRows);
 
     return {
       sessions: rows.map((row) => ({
         ...row,
+        ...scheduleFields(datesBySession.get(Number(row.id)) ?? []),
         my_batch_id: row.my_batch_id ? Number(row.my_batch_id) : null,
+        // The learner's batch on each date (0076).
+        my_batch_ids: mine
+          .filter((m) => Number(m.session_id) === Number(row.id))
+          .map((m) => Number(m.batch_id)),
         // All sittings, so the calendar can show the others' availability; the
         // learner's own is `my_batch_id` (null when the session has none, or
         // they are not yet placed in one).
@@ -1326,6 +1833,7 @@ export class SessionsService {
   }
 
   /** Builds the training for a session that predates it, or lost it somehow. */
+  // Its length is the daily length times the session's dates (0076).
   private async ensureTraining(scope: OrgScope, sessionId: number): Promise<void> {
     if (await this.repository.findTraining(scope, sessionId)) return;
 
@@ -1346,7 +1854,7 @@ export class SessionsService {
         SessionsService.durationMinutes(
           String(session.start_time ?? ''),
           String(session.end_time ?? ''),
-        ) * Math.max(1, datesBetween(String(session.date ?? ''), (session.end_date as string | null) ?? null).length),
+        ) * Math.max(1, (await this.repository.listDatesForSessions(scope, [sessionId])).length),
     });
   }
 
@@ -1377,7 +1885,7 @@ export class SessionsService {
   }
 
   /** The training course/lesson fields derived from a session's own fields. */
-  private trainingValues(dto: SessionDto) {
+  private trainingValues(dto: SessionDto, dayCount: number) {
     return {
       name: dto.title,
       description: this.trainingDescription({
@@ -1394,8 +1902,7 @@ export class SessionsService {
       contentUrl: dto.venue_url,
       // Per day times the days it runs (a multi-day sitting, 0074).
       durationMinutes:
-        SessionsService.durationMinutes(dto.start_time, dto.end_time) *
-        Math.max(1, datesBetween(dto.date, dto.end_date ?? null).length),
+        SessionsService.durationMinutes(dto.start_time, dto.end_time) * Math.max(1, dayCount),
     };
   }
 
@@ -1537,29 +2044,26 @@ export class SessionsService {
     const facts: Array<{ label: string; value: string }> = [];
     if (type) facts.push({ label: 'Format', value: isVirtual ? 'Virtual' : 'In person' });
 
-    const batches = await this.repository.listBatchesForSessions(scope, [
-      Number(session.id),
+    // Every date in words, then the batches when a date offers a choice (0076).
+    const [dateRows, batches] = await Promise.all([
+      this.repository.listDatesForSessions(scope, [Number(session.id)]),
+      this.repository.listBatchesForSessions(scope, [Number(session.id)]),
     ]);
-    if (batches.length > 0) {
-      // Run in sittings — list each, because self-enrolment does not pick one
-      // and the learner needs to know which dates are available.
-      for (const b of batches) {
-        const label = b.label || `Sitting ${b.batch_no}`;
-        const when = [
-          b.date ? cancelDate(b.date) : 'date to be confirmed',
-          b.start_time
-            ? b.end_time
-              ? `${b.start_time} – ${b.end_time}`
-              : b.start_time
-            : null,
-        ]
-          .filter(Boolean)
-          .join(', ');
-        facts.push({ label, value: when || 'date to be confirmed' });
-      }
-    } else {
-      if (date) facts.push({ label: 'Date', value: cancelDate(date) });
+    if (dateRows.length > 0) {
+      facts.push({ label: dateRows.length === 1 ? 'Date' : 'Dates', value: formatSessionDates(dateRows.map((d) => d.date)) });
+    } else if (date) {
+      facts.push({ label: 'Date', value: cancelDate(date) });
+    }
+    const withChoice = dateRows.filter((d) => batches.filter((b) => Number(b.session_date_id) === Number(d.id)).length > 1);
+    if (withChoice.length === 0) {
       if (timeText) facts.push({ label: 'Time', value: timeText });
+    } else {
+      const slots = [...new Set(batches.map((b) => {
+        const st = b.start_time ?? start;
+        const et = b.end_time ?? end;
+        return `${batchName(b.batch_no, b.label)}${st ? `: ${st}${et ? ` – ${et}` : ''}` : ''}`;
+      }))];
+      facts.push({ label: 'Batches', value: slots.join('; ') });
     }
 
     if (isVirtual && venueUrl) {
@@ -1665,7 +2169,9 @@ export class SessionsService {
         const when = date ? ` on ${cancelDate(date)}` : '';
 
         const facts: Array<{ label: string; value: string }> = [];
-        if (date) facts.push({ label: 'Was scheduled for', value: cancelDate(date) });
+        const allDates = (await this.repository.listDatesForSessions(scope, [sessionId])).map((d) => d.date);
+        if (allDates.length > 0) facts.push({ label: 'Was scheduled for', value: formatSessionDates(allDates) });
+        else if (date) facts.push({ label: 'Was scheduled for', value: cancelDate(date) });
         if (start) facts.push({ label: 'Time', value: end ? `${start} – ${end}` : start });
         if (s.trainer) facts.push({ label: 'Trainer', value: String(s.trainer) });
 
@@ -1794,6 +2300,21 @@ export class SessionsService {
     };
   }
 
+  /**
+   * The dates a new session runs on: the picked `dates`, or every day from
+   * `date` to `end_date`. Sets `date` and `end_date` on the DTO to the first
+   * and last, which the session row keeps as a summary.
+   */
+  private resolveDates(dto: SessionDto): string[] {
+    const dates = dto.dates?.length
+      ? normaliseDates(dto.dates)
+      : datesBetween(dto.date, endDateFor(dto.date, dto.end_date));
+    if (dates.length === 0) throw new BadRequestException('date must be YYYY-MM-DD');
+    dto.date = dates[0];
+    dto.end_date = dates.length > 1 ? dates.at(-1)! : null;
+    return dates;
+  }
+
   private toRow(dto: SessionDto) {
     return {
       title: dto.title,
@@ -1805,7 +2326,7 @@ export class SessionsService {
       trainerUserId: dto.trainer_user_id ? Number(dto.trainer_user_id) : null,
       venueUrl: dto.venue_url,
       date: dto.date,
-      endDate: endDateFor(dto.date, dto.end_date),
+      endDate: dto.end_date && dto.end_date !== dto.date ? dto.end_date : null,
       startTime: dto.start_time,
       endTime: dto.end_time,
       description: dto.description ?? null,
@@ -1870,4 +2391,42 @@ function feedbackSummary(
   const trainer = avg('trainer');
   const delivery = avg('delivery');
   return { count: rows.length, content, trainer, delivery, overall: round1((content + trainer + delivery) / 3) };
+}
+
+/* ── Session dates (0076) ─────────────────────────────────────────────── */
+
+function groupDates(rows: SessionDateRow[]): Map<number, SessionDateRow[]> {
+  const out = new Map<number, SessionDateRow[]>();
+  for (const r of rows) {
+    const list = out.get(Number(r.session_id));
+    if (list) list.push(r);
+    else out.set(Number(r.session_id), [r]);
+  }
+  return out;
+}
+
+function shapeDate(d: SessionDateRow) {
+  return {
+    id: Number(d.id),
+    date: d.date,
+    original_date: d.original_date,
+    previous_date: d.previous_date,
+    // 'postponed' | 'preponed' | null: what the last move did.
+    change: (d.change as DateChange | null) ?? null,
+    changed_at: d.changed_at,
+  };
+}
+
+/**
+ * The schedule fields every session read carries (admin, learner, trainer,
+ * report): each date in order with its change label, the dates in words
+ * ("5th, 6th November and 2nd December 2026"), and whether any moved.
+ */
+function scheduleFields(rows: SessionDateRow[]) {
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  return {
+    schedule: sorted.map(shapeDate),
+    dates_text: formatSessionDates(sorted.map((d) => d.date)),
+    rescheduled: sorted.some((d) => d.change !== null),
+  };
 }

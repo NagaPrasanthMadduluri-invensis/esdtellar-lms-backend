@@ -26,6 +26,8 @@ import {
   SessionBatchDto,
   RosterRemoveDto,
   SaveAttendanceDto,
+  ScheduleDto,
+  SessionDateDto,
   SessionDto,
 } from './dto/session.dto';
 import { buildSessionReportXlsx, reportFilename } from './session-report.xlsx';
@@ -102,8 +104,9 @@ export class AdminSessionsController {
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: SessionDto,
     @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
   ) {
-    return this.sessions.update(scope, sessionId, dto);
+    return this.sessions.update(scope, sessionId, dto, actor);
   }
 
   @Delete(':sessionId')
@@ -136,8 +139,23 @@ export class AdminSessionsController {
   async complete(
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
   ) {
-    return this.sessions.complete(scope, sessionId);
+    return this.sessions.complete(scope, sessionId, actor);
+  }
+
+  /**
+   * The certificate log for one session (§10.66): every learner with an
+   * attendance mark, their session certificate, and whether its notification
+   * and email went out. A read like the roster and attendance beside it.
+   */
+  @Get(':sessionId/certificates')
+  @CrossPortal(...SESSION_READERS, 'view_certificates', 'manage_certificates')
+  async certificates(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.certificateLog(scope, sessionId);
   }
 
   @Post(':sessionId/roster')
@@ -152,7 +170,62 @@ export class AdminSessionsController {
     return this.sessions.addToRoster(scope, sessionId, admin.userId, dto);
   }
 
-  /* ── Batches ───────────────────────────────────────────────────────── */
+  /* ── Schedule: dates (0076, BACKEND_STRUCTURE 10.67) ───────────────── */
+
+  @Get(':sessionId/schedule')
+  @CrossPortal(...SESSION_READERS)
+  async schedule(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @CurrentScope() scope: OrgScope,
+  ) {
+    return this.sessions.schedule(scope, sessionId);
+  }
+
+  @Put(':sessionId/schedule')
+  @Permissions('manage_sessions')
+  async setSchedule(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Body() dto: ScheduleDto,
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.sessions.setSchedule(scope, sessionId, dto.dates, actor);
+  }
+
+  @Post(':sessionId/dates')
+  @HttpCode(HttpStatus.CREATED)
+  @Permissions('manage_sessions')
+  async addDate(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Body() dto: SessionDateDto,
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.sessions.addDate(scope, sessionId, dto.date, actor);
+  }
+
+  @Put('dates/:dateId')
+  @Permissions('manage_sessions')
+  async moveDate(
+    @Param('dateId', ParseIntPipe) dateId: number,
+    @Body() dto: SessionDateDto,
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.sessions.moveDate(scope, dateId, dto.date, actor);
+  }
+
+  @Delete('dates/:dateId')
+  @Permissions('manage_sessions')
+  async removeDate(
+    @Param('dateId', ParseIntPipe) dateId: number,
+    @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.sessions.removeDate(scope, dateId, actor);
+  }
+
+  /* ── Day batches ───────────────────────────────────────────────────── */
 
   @Post(':sessionId/batches')
   @HttpCode(HttpStatus.CREATED)
@@ -161,8 +234,9 @@ export class AdminSessionsController {
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: SessionBatchDto,
     @CurrentScope() scope: OrgScope,
+    @CurrentUser() actor: AuthenticatedUser,
   ) {
-    return this.sessions.createBatch(scope, sessionId, dto);
+    return this.sessions.createBatch(scope, sessionId, dto, actor);
   }
 
   @Put('batches/:batchId')

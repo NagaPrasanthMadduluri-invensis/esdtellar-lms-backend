@@ -43,6 +43,7 @@ export const ACTIVITY_TYPES = {
 
   session_created: { label: 'Session created', group: 'sessions' },
   session_completed: { label: 'Session completed', group: 'sessions' },
+  session_rescheduled: { label: 'Session rescheduled', group: 'sessions' },
   attendance_marked: { label: 'Attendance marked', group: 'sessions' },
 
   certificate_issued: { label: 'Certificate issued', group: 'recognition' },

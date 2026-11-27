@@ -448,6 +448,11 @@ export class CertificatesRepository {
         sessionTitle: sessions.title,
         sessionType: sessions.sessionType,
         sessionDate: sessions.date,
+        // Every date it ran on, in order, after any reschedule (0076).
+        sessionDates: sql<string | null>`(
+          SELECT string_agg(sd.date, ',' ORDER BY sd.date)
+            FROM session_dates sd WHERE sd.session_id = ${courses.sessionId}
+        )`,
         sessionTrainer: sessions.trainer,
         // A ROOM for ILT, a MEETING URL for Virtual — the service decides
         // what of it is fit to print.
@@ -543,6 +548,145 @@ export class CertificatesRepository {
   /** Whether a candidate certificate code is already taken (the retry backstop
    *  behind the short 10-char codes — see `buildCertificateCode`). Unscoped,
    *  because `certificate_code` is globally unique. */
+  /**
+   * Who a completed session owes a certificate to (BACKEND_STRUCTURE §10.66).
+   *
+   * Eligible = attended (present, late or partial: the same set
+   * `syncCompletions` credits with the training and its hours), still a member
+   * of this organization, and holding NO certificate row for the session's
+   * training course yet. A revoked row counts as holding one, so an admin's
+   * revocation is never overturned by a re-completion. One query.
+   *
+   * Returns null when the session or its training course does not exist here.
+   */
+  async sessionCertificateCandidates(scope: OrgScope, sessionId: number) {
+    const sessions = await this.db.all<{
+      course_id: number | null;
+      title: string | null;
+      date: string | null;
+    }>(sql`
+      SELECT c.id AS course_id, s.title, s.date::text AS date
+      FROM sessions s
+      LEFT JOIN courses c ON c.session_id = s.id AND ${orgScope('c', scope)}
+      WHERE s.id = ${sessionId} AND ${orgScope('s', scope)}
+      LIMIT 1
+    `);
+    const session = sessions[0];
+    if (!session || session.course_id === null) return null;
+
+    const learners = await this.db.all<{ user_id: number }>(sql`
+      SELECT sa.user_id
+      FROM session_attendance sa
+      JOIN users u ON u.id = sa.user_id AND ${orgScope('u', scope)}
+      WHERE sa.session_id = ${sessionId}
+        AND ${orgScope('sa', scope)}
+        AND sa.status IN ('present', 'late', 'partial')
+        AND NOT EXISTS (
+          SELECT 1 FROM certificates ce
+          WHERE ce.user_id = sa.user_id AND ce.course_id = ${session.course_id}
+        )
+      ORDER BY sa.user_id
+    `);
+    return {
+      courseId: Number(session.course_id),
+      title: session.title,
+      date: session.date,
+      userIds: learners.map((r) => Number(r.user_id)),
+    };
+  }
+
+  /**
+   * Inserts several course certificates in one statement. `ON CONFLICT DO
+   * NOTHING` on (user_id, course_id) is the duplicate guard of last resort: two
+   * admins completing the same session at once each insert, and the second
+   * insert simply returns nothing for a learner the first already covered.
+   */
+  async insertMany(
+    scope: OrgScope,
+    rows: { userId: number; courseId: number; certificateCode: string; issuedAt: string }[],
+  ): Promise<{ id: number; userId: number; certificateCode: string }[]> {
+    if (rows.length === 0) return [];
+    return this.db
+      .insert(certificates)
+      .values(
+        rows.map((r) => ({ ...r, finalScore: null, organizationId: scope.organizationId })),
+      )
+      .onConflictDoNothing({ target: [certificates.userId, certificates.courseId] })
+      .returning({
+        id: certificates.id,
+        userId: certificates.userId,
+        certificateCode: certificates.certificateCode,
+      });
+  }
+
+  /** Which of these codes are already taken (any organization: codes are global). */
+  async existingCodes(codes: string[]): Promise<Set<string>> {
+    if (codes.length === 0) return new Set();
+    const rows = await this.db
+      .select({ code: certificates.certificateCode })
+      .from(certificates)
+      .where(inArray(certificates.certificateCode, codes));
+    return new Set(rows.map((r) => r.code));
+  }
+
+  /**
+   * The admin's certificate log for one session: every learner with an
+   * attendance mark, their certificate for the session's training (if any),
+   * and whether the "certificate ready" notification and its email went out.
+   * One query; the notification and email are each the latest for that
+   * certificate. Null when the session is not this organization's.
+   */
+  async sessionCertificateLog(scope: OrgScope, sessionId: number) {
+    const exists = await this.db.all<{ id: number }>(sql`
+      SELECT s.id FROM sessions s WHERE s.id = ${sessionId} AND ${orgScope('s', scope)}
+    `);
+    if (exists.length === 0) return null;
+
+    return this.db.all<{
+      user_id: number;
+      first_name: string | null;
+      last_name: string | null;
+      email: string | null;
+      attendance: string | null;
+      certificate_id: number | null;
+      certificate_public_id: string | null;
+      certificate_code: string | null;
+      issued_at: string | null;
+      is_revoked: number | null;
+      notified_at: string | null;
+      email_status: string | null;
+      email_sent_at: string | null;
+      email_error: string | null;
+    }>(sql`
+      SELECT
+        u.id AS user_id, u.first_name, u.last_name, u.email,
+        sa.status AS attendance,
+        ce.id AS certificate_id, ce.public_id::text AS certificate_public_id,
+        ce.certificate_code, ce.issued_at::text AS issued_at, ce.is_revoked,
+        n.created_at::text AS notified_at,
+        eo.status AS email_status, eo.sent_at::text AS email_sent_at,
+        eo.last_error AS email_error
+      FROM session_attendance sa
+      JOIN users u ON u.id = sa.user_id AND ${orgScope('u', scope)}
+      LEFT JOIN courses c ON c.session_id = sa.session_id AND ${orgScope('c', scope)}
+      LEFT JOIN certificates ce ON ce.course_id = c.id AND ce.user_id = sa.user_id
+      LEFT JOIN LATERAL (
+        SELECT nn.id, nn.created_at FROM notifications nn
+        WHERE ce.id IS NOT NULL
+          AND nn.user_id = sa.user_id
+          AND nn.subject_type = 'certificate' AND nn.subject_id = ce.id
+        ORDER BY nn.created_at DESC LIMIT 1
+      ) n ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT e.status, e.sent_at, e.last_error FROM email_outbox e
+        WHERE n.id IS NOT NULL AND e.user_id = sa.user_id AND e.notification_id = n.id
+        ORDER BY e.id DESC LIMIT 1
+      ) eo ON TRUE
+      WHERE sa.session_id = ${sessionId} AND ${orgScope('sa', scope)}
+      ORDER BY u.first_name, u.last_name, u.id
+    `);
+  }
+
   async codeExists(code: string): Promise<boolean> {
     const rows = await this.db
       .select({ n: count() })
@@ -591,6 +735,11 @@ export class CertificatesRepository {
         sessionId: courses.sessionId,
         sessionType: sessions.sessionType,
         sessionDate: sessions.date,
+        // Every date it ran on, in order, after any reschedule (0076).
+        sessionDates: sql<string | null>`(
+          SELECT string_agg(sd.date, ',' ORDER BY sd.date)
+            FROM session_dates sd WHERE sd.session_id = ${courses.sessionId}
+        )`,
         sessionTrainer: sessions.trainer,
       })
       .from(certificates)

@@ -159,8 +159,11 @@ export class CatalogueRepository {
              (SELECT COUNT(*)::int FROM session_waitlist mq
                WHERE mq.session_id = s.id AND mq.user_id = ${userId}
              ) AS is_waitlisted,
-             (SELECT mine.batch_id FROM session_roster mine
-               WHERE mine.session_id = s.id AND mine.user_id = ${userId}
+             -- The learner's batch on their first placed date (0076).
+             (SELECT m.batch_id FROM session_batch_members m
+                JOIN session_dates sd ON sd.id = m.session_date_id
+               WHERE m.session_id = s.id AND m.user_id = ${userId}
+               ORDER BY sd.date LIMIT 1
              ) AS my_batch_id,
              (SELECT mq.batch_id FROM session_waitlist mq
                WHERE mq.session_id = s.id AND mq.user_id = ${userId}

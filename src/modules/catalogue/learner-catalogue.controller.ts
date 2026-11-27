@@ -71,8 +71,9 @@ export class LearnerCatalogueController {
     @Param('sessionId', ParseIntPipe) sessionId: number,
     @Body() dto: SelfEnrolDto,
   ) {
-    // A session with batches is booked into one: `batch_id` (0074).
-    return this.catalogue.enrolSession(scope, sessionId, user, dto?.batch_id);
+    // One batch per date that offers a choice: `batch_ids` (0076), or the
+    // older single `batch_id`.
+    return this.catalogue.enrolSession(scope, sessionId, user, dto?.batch_id, dto?.batch_ids);
   }
 
   /**

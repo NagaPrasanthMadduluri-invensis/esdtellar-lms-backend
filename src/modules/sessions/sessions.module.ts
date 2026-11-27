@@ -6,6 +6,8 @@ import { ActivityModule } from '@/modules/activity/activity.module';
 
 import { MediaModule } from '@/modules/media/media.module';
 
+import { CertificatesModule } from '@/modules/certificates/certificates.module';
+
 import {
   AdminSessionsController,
   LearnerSessionsController,
@@ -17,7 +19,7 @@ import { SessionsService } from './sessions.service';
 @Module({
   // MediaService validates a thumbnail before it is stored on the training
   // course, and deletes the file when it is replaced or the session goes.
-  imports: [ActivityModule, MediaModule, NotificationsModule],
+  imports: [ActivityModule, CertificatesModule, MediaModule, NotificationsModule],
   controllers: [
     AdminSessionsController,
     LearnerSessionsController,
@@ -32,3 +34,4 @@ import { SessionsService } from './sessions.service';
   exports: [SessionsService],
 })
 export class SessionsModule {}
+// Session dates and day batches: 0076 (BACKEND_STRUCTURE 10.67).

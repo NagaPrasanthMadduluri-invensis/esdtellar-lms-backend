@@ -170,21 +170,23 @@ export class SessionsRepository {
       trainer_user_id: number | null;
       trainer_name: string | null;
       status: string;
+      session_date_id: number | null;
       roster_count: number;
       waitlist_count: number;
     }>(sql`
       SELECT b.id, b.session_id, b.batch_no, b.label, b.date, b.end_date, b.start_time,
-             b.end_time, b.capacity, b.trainer_user_id, b.status,
+             b.end_time, b.capacity, b.trainer_user_id, b.status, b.session_date_id,
              CASE WHEN u.id IS NULL THEN NULL
                   ELSE u.first_name || ' ' || u.last_name END AS trainer_name,
-             (SELECT COUNT(*)::int FROM session_roster sr
-               WHERE sr.batch_id = b.id) AS roster_count,
+             -- People placed in this batch on its date (0076).
+             (SELECT COUNT(*)::int FROM session_batch_members m
+               WHERE m.batch_id = b.id) AS roster_count,
              (SELECT COUNT(*)::int FROM session_waitlist w
                WHERE w.batch_id = b.id) AS waitlist_count
         FROM session_batches b
         LEFT JOIN users u ON u.id = b.trainer_user_id
        WHERE b.session_id IN ${idList(sessionIds)} AND ${orgScope('b', scope)}
-       ORDER BY b.session_id, b.batch_no
+       ORDER BY b.session_id, b.date NULLS LAST, b.batch_no
     `);
   }
 
@@ -198,9 +200,10 @@ export class SessionsRepository {
       end_date: string | null;
       capacity: number | null;
       status: string;
+      session_date_id: number | null;
     }>(sql`
       SELECT b.id, b.session_id, b.batch_no, b.label, b.date, b.end_date,
-             b.capacity, b.status
+             b.capacity, b.status, b.session_date_id
         FROM session_batches b
        WHERE b.id = ${batchId} AND ${orgScope('b', scope)}
        LIMIT 1
@@ -208,11 +211,11 @@ export class SessionsRepository {
     return rows[0] ?? null;
   }
 
-  /** The next batch number for a session. Stored, never derived from a count. */
-  async nextBatchNo(scope: OrgScope, sessionId: number): Promise<number> {
+  /** The next batch number on one date (0076). Stored, never derived from a count. */
+  async nextBatchNo(scope: OrgScope, sessionDateId: number): Promise<number> {
     const rows = await this.db.all<{ n: number | null }>(sql`
       SELECT MAX(b.batch_no) AS n FROM session_batches b
-       WHERE b.session_id = ${sessionId} AND ${orgScope('b', scope)}
+       WHERE b.session_date_id = ${sessionDateId} AND ${orgScope('b', scope)}
     `);
     return Number(rows[0]?.n ?? 0) + 1;
   }
@@ -228,12 +231,14 @@ export class SessionsRepository {
     endTime: string | null;
     capacity: number | null;
     trainerUserId: number | null;
+    sessionDateId: number;
   }) {
     const [created] = await this.db
       .insert(sessionBatches)
       .values({
         organizationId: input.organizationId,
         sessionId: input.sessionId,
+        sessionDateId: input.sessionDateId,
         batchNo: input.batchNo,
         label: input.label,
         date: input.date,
@@ -1048,7 +1053,7 @@ export class SessionsRepository {
     await this.db.run(sql`
       INSERT INTO user_lesson_completions (organization_id, user_id, lesson_id, completed_at)
       SELECT sa.organization_id, sa.user_id, l.id,
-             LEAST(now(), (s.date::date + s.end_time::time)::timestamptz)
+             LEAST(now(), (COALESCE(s.end_date, s.date)::date + s.end_time::time)::timestamptz)
       FROM session_attendance sa
       JOIN sessions s ON s.id = sa.session_id
       JOIN courses c ON c.session_id = s.id
@@ -1106,9 +1111,7 @@ export class SessionsRepository {
       email: string;
       department: string | null;
       job_role: string | null;
-      batch_id: number | null;
-      batch_no: number | null;
-      batch_label: string | null;
+      batches: string | null;
       rating_content: number;
       rating_trainer: number;
       rating_delivery: number;
@@ -1118,13 +1121,17 @@ export class SessionsRepository {
       SELECT f.id, u.id AS user_id,
              TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS name,
              u.email, u.department, u.job_role,
-             sr.batch_id, b.batch_no, b.label AS batch_label,
+             (SELECT string_agg(
+                'Batch ' || bb.batch_no || COALESCE(' · ' || bb.label, '') || ' (' || to_char(sd.date::date, 'FMDD Mon') || ')',
+                ', ' ORDER BY sd.date)
+                FROM session_batch_members m
+                JOIN session_batches bb ON bb.id = m.batch_id
+                JOIN session_dates sd ON sd.id = m.session_date_id
+               WHERE m.session_id = f.session_id AND m.user_id = f.user_id) AS batches,
              f.rating_content, f.rating_trainer, f.rating_delivery,
              f.comment, f.created_at
         FROM session_feedback f
         JOIN users u ON u.id = f.user_id
-   LEFT JOIN session_roster sr ON sr.session_id = f.session_id AND sr.user_id = f.user_id
-   LEFT JOIN session_batches b ON b.id = sr.batch_id
        WHERE f.session_id = ${sessionId} AND ${orgScope('f', scope)}
        ORDER BY f.created_at DESC
     `);
@@ -1141,9 +1148,7 @@ export class SessionsRepository {
       email: string;
       department: string | null;
       job_role: string | null;
-      batch_id: number | null;
-      batch_no: number | null;
-      batch_label: string | null;
+      batches: string | null;
       enrolled_at: string | null;
       attendance: string | null;
       join_time: string | null;
@@ -1157,27 +1162,32 @@ export class SessionsRepository {
       SELECT u.id AS user_id,
              TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS name,
              u.email, u.department, u.job_role,
-             sr.batch_id, b.batch_no, b.label AS batch_label, sr.enrolled_at,
+             (SELECT string_agg(
+                'Batch ' || bb.batch_no || COALESCE(' · ' || bb.label, '') || ' (' || to_char(sd.date::date, 'FMDD Mon') || ')',
+                ', ' ORDER BY sd.date)
+                FROM session_batch_members m
+                JOIN session_batches bb ON bb.id = m.batch_id
+                JOIN session_dates sd ON sd.id = m.session_date_id
+               WHERE m.session_id = sr.session_id AND m.user_id = sr.user_id) AS batches, sr.enrolled_at,
              sa.status AS attendance, sa.join_time, sa.notes,
              f.rating_content, f.rating_trainer, f.rating_delivery, f.comment,
              f.created_at AS feedback_at
         FROM session_roster sr
         JOIN users u ON u.id = sr.user_id
-   LEFT JOIN session_batches b ON b.id = sr.batch_id
    LEFT JOIN session_attendance sa ON sa.session_id = sr.session_id AND sa.user_id = sr.user_id
    LEFT JOIN session_feedback f ON f.session_id = sr.session_id AND f.user_id = sr.user_id
        WHERE sr.session_id = ${sessionId} AND ${orgScope('sr', scope)}
-       ORDER BY b.batch_no NULLS LAST, u.first_name, u.last_name
+       ORDER BY u.first_name, u.last_name
     `);
   }
 
   /* ── Seats (0074) ────────────────────────────────────────────────────── */
 
-  /** People currently placed in one batch. */
+  /** People currently placed in one batch (on its date, 0076). */
   async batchRosterCount(scope: OrgScope, batchId: number): Promise<number> {
     const rows = await this.db.all<{ n: number }>(sql`
-      SELECT COUNT(*)::int AS n FROM session_roster sr
-       WHERE sr.batch_id = ${batchId} AND ${orgScope('sr', scope)}
+      SELECT COUNT(*)::int AS n FROM session_batch_members m
+       WHERE m.batch_id = ${batchId} AND ${orgScope('m', scope)}
     `);
     return Number(rows[0]?.n ?? 0);
   }
@@ -1185,8 +1195,8 @@ export class SessionsRepository {
   /** Whether this person is already placed in this batch. */
   async isInBatch(scope: OrgScope, batchId: number, userId: number): Promise<boolean> {
     const rows = await this.db.all<{ n: number }>(sql`
-      SELECT COUNT(*)::int AS n FROM session_roster sr
-       WHERE sr.batch_id = ${batchId} AND sr.user_id = ${userId} AND ${orgScope('sr', scope)}
+      SELECT COUNT(*)::int AS n FROM session_batch_members m
+       WHERE m.batch_id = ${batchId} AND m.user_id = ${userId} AND ${orgScope('m', scope)}
     `);
     return Number(rows[0]?.n ?? 0) > 0;
   }
@@ -1222,7 +1232,12 @@ export class SessionsRepository {
       SELECT s.id, s.title, s.session_type, s.department, s.date, s.end_date,
              s.start_time, s.end_time, s.trainer, s.venue_url,
              s.description, s.status, s.capacity,
-             sr.batch_id AS my_batch_id,
+             -- The learner's batch on the first date they are placed (0076)
+             -- the full per-date list is attached by the service.
+             (SELECT m.batch_id FROM session_batch_members m
+                JOIN session_dates sd ON sd.id = m.session_date_id
+               WHERE m.session_id = s.id AND m.user_id = sr.user_id
+               ORDER BY sd.date LIMIT 1) AS my_batch_id,
              (SELECT COUNT(*)::int FROM session_roster r2
                WHERE r2.session_id = s.id) AS roster_count,
              c.name AS course_name,
@@ -1247,4 +1262,323 @@ export class SessionsRepository {
       ORDER BY s.date ASC, s.start_time ASC
     `);
   }
+
+  /* ── Session dates, day batches, placements, day attendance (0076) ─────
+     BACKEND_STRUCTURE 10.67. A session runs on a set of dates; each date has
+     one or more batches; a rostered learner is placed in one batch on each
+     date; attendance is marked per date and rolled up into
+     session_attendance, which crediting, certificates and reports read. */
+
+  async listDatesForSessions(scope: OrgScope, sessionIds: number[]) {
+    if (sessionIds.length === 0) return [];
+    return this.db.all<SessionDateRow>(sql`
+      SELECT sd.id, sd.session_id, sd.date, sd.original_date, sd.previous_date,
+             sd.change, sd.changed_at
+        FROM session_dates sd
+       WHERE sd.session_id IN ${idList(sessionIds)} AND ${orgScope('sd', scope)}
+       ORDER BY sd.session_id, sd.date
+    `);
+  }
+
+  async findDate(scope: OrgScope, dateId: number) {
+    const rows = await this.db.all<SessionDateRow>(sql`
+      SELECT sd.id, sd.session_id, sd.date, sd.original_date, sd.previous_date,
+             sd.change, sd.changed_at
+        FROM session_dates sd
+       WHERE sd.id = ${dateId} AND ${orgScope('sd', scope)}
+       LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /** New dates for a session. Returns the rows actually created. */
+  async insertDates(scope: OrgScope, sessionId: number, dates: string[]) {
+    if (dates.length === 0) return [];
+    const values = sql.join(dates.map((d) => sql`(${scope.organizationId}::int, ${sessionId}::int, ${d}::text, ${d}::text)`), sql`, `);
+    return this.db.all<{ id: number; date: string }>(sql`
+      INSERT INTO session_dates (organization_id, session_id, date, original_date)
+      SELECT v.org, v.sid, v.d, v.o FROM (VALUES ${values}) AS v(org, sid, d, o)
+      WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id = ${sessionId} AND ${orgScope('s', scope)})
+      ON CONFLICT (session_id, date) DO NOTHING
+      RETURNING id, date
+    `);
+  }
+
+  /**
+   * Move one date, keeping its row so its batches, placements and attendance
+   * go with it. Its batches' own `date` follows. Two statements in one
+   * transaction so a batch can never disagree with its date.
+   */
+  async moveDate(scope: OrgScope, dateId: number, to: string, change: string | null): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        UPDATE session_dates sd
+           SET previous_date = sd.date, date = ${to}, change = ${change}, changed_at = now()
+         WHERE sd.id = ${dateId} AND ${orgScope('sd', scope)}
+      `);
+      await tx.execute(sql`
+        UPDATE session_batches b SET date = ${to}
+         WHERE b.session_date_id = ${dateId} AND ${orgScope('b', scope)}
+      `);
+    });
+  }
+
+  async deleteDate(scope: OrgScope, dateId: number): Promise<void> {
+    await this.db.execute(sql`
+      DELETE FROM session_dates sd WHERE sd.id = ${dateId} AND ${orgScope('sd', scope)}
+    `);
+  }
+
+  /** How many people have attendance marked on one date. */
+  async markedOnDate(scope: OrgScope, dateId: number): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM session_day_attendance d
+       WHERE d.session_date_id = ${dateId} AND d.status IS NOT NULL AND ${orgScope('d', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /** The session row's summary: first date, and last date when there are several. */
+  async syncSessionSummary(scope: OrgScope, sessionId: number): Promise<void> {
+    await this.db.execute(sql`
+      UPDATE sessions s
+         SET date = r.first_date,
+             end_date = CASE WHEN r.last_date = r.first_date THEN NULL ELSE r.last_date END
+        FROM (
+          SELECT MIN(sd.date) AS first_date, MAX(sd.date) AS last_date
+            FROM session_dates sd WHERE sd.session_id = ${sessionId}
+        ) r
+       WHERE s.id = ${sessionId} AND ${orgScope('s', scope)} AND r.first_date IS NOT NULL
+    `);
+  }
+
+  /**
+   * One batch per slot on each new date. A slot with no times or capacity
+   * follows the session's (NULL falls back in `buildSittings`). One statement.
+   */
+  async createBatchesForDates(
+    scope: OrgScope,
+    sessionId: number,
+    dates: { id: number; date: string }[],
+    slots: { label: string | null; start_time: string | null; end_time: string | null; capacity: number | null; trainer_user_id?: number | null }[],
+  ): Promise<void> {
+    if (dates.length === 0 || slots.length === 0) return;
+    const rows = dates.flatMap((d) =>
+      slots.map((slot, i) =>
+        sql`(${d.id}::int, ${d.date}::text, ${i + 1}::int, ${slot.label}::text, ${slot.start_time}::text, ${slot.end_time}::text, ${slot.capacity}::int, ${slot.trainer_user_id ?? null}::int)`,
+      ),
+    );
+    await this.db.execute(sql`
+      INSERT INTO session_batches
+        (organization_id, session_id, session_date_id, date, batch_no, label,
+         start_time, end_time, capacity, trainer_user_id, status)
+      SELECT ${scope.organizationId}, ${sessionId}, v.did, v.d, v.no, v.label,
+             v.st, v.et, v.cap, v.tr, 'scheduled'
+        FROM (VALUES ${sql.join(rows, sql`, `)}) AS v(did, d, no, label, st, et, cap, tr)
+      ON CONFLICT (session_date_id, batch_no) DO NOTHING
+    `);
+  }
+
+  /** The batches on one date, as slots, to copy onto a new date. */
+  async slotsOfDate(scope: OrgScope, dateId: number) {
+    return this.db.all<{ label: string | null; start_time: string | null; end_time: string | null; capacity: number | null; trainer_user_id: number | null }>(sql`
+      SELECT b.label, b.start_time, b.end_time, b.capacity, b.trainer_user_id
+        FROM session_batches b
+       WHERE b.session_date_id = ${dateId} AND ${orgScope('b', scope)}
+       ORDER BY b.batch_no
+    `);
+  }
+
+  async batchCountOnDate(scope: OrgScope, dateId: number): Promise<number> {
+    const rows = await this.db.all<{ n: number }>(sql`
+      SELECT COUNT(*)::int AS n FROM session_batches b
+       WHERE b.session_date_id = ${dateId} AND ${orgScope('b', scope)}
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Place everyone on the roster on every date that has exactly one batch,
+   * where they are not placed yet. A date with a choice of batches is left
+   * for the admin or the learner to choose. One statement, idempotent, run
+   * after anything that changes the roster, the dates or the batches.
+   */
+  async autoPlace(scope: OrgScope, sessionId: number): Promise<void> {
+    await this.db.execute(sql`
+      INSERT INTO session_batch_members (organization_id, session_id, session_date_id, batch_id, user_id)
+      SELECT sr.organization_id, sr.session_id, b.session_date_id, b.id, sr.user_id
+        FROM session_roster sr
+        JOIN session_batches b ON b.session_id = sr.session_id AND b.session_date_id IS NOT NULL
+       WHERE sr.session_id = ${sessionId} AND ${orgScope('sr', scope)}
+         AND b.status <> 'cancelled'
+         AND (SELECT COUNT(*) FROM session_batches b2
+               WHERE b2.session_date_id = b.session_date_id AND b2.status <> 'cancelled') = 1
+      ON CONFLICT (session_date_id, user_id) DO NOTHING
+    `);
+  }
+
+  /** Put one learner in a batch on that batch's date, replacing any other batch that day. */
+  async placeMember(scope: OrgScope, sessionId: number, batchId: number, userId: number): Promise<number> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      INSERT INTO session_batch_members (organization_id, session_id, session_date_id, batch_id, user_id)
+      SELECT sr.organization_id, sr.session_id, b.session_date_id, b.id, sr.user_id
+        FROM session_roster sr
+        JOIN session_batches b ON b.id = ${batchId} AND b.session_id = sr.session_id
+       WHERE sr.session_id = ${sessionId} AND sr.user_id = ${userId}
+         AND b.session_date_id IS NOT NULL AND ${orgScope('sr', scope)}
+      ON CONFLICT (session_date_id, user_id) DO UPDATE SET batch_id = excluded.batch_id
+      RETURNING id
+    `);
+    return rows.length;
+  }
+
+  async unplaceMember(scope: OrgScope, sessionId: number, dateId: number, userId: number): Promise<number> {
+    const rows = await this.db.all<{ id: number }>(sql`
+      DELETE FROM session_batch_members m
+       WHERE m.session_id = ${sessionId} AND m.session_date_id = ${dateId}
+         AND m.user_id = ${userId} AND ${orgScope('m', scope)}
+      RETURNING m.id
+    `);
+    return rows.length;
+  }
+
+  /** Leaving the roster leaves every batch. */
+  async removeMembers(scope: OrgScope, sessionId: number, userId: number): Promise<void> {
+    await this.db.execute(sql`
+      DELETE FROM session_batch_members m
+       WHERE m.session_id = ${sessionId} AND m.user_id = ${userId} AND ${orgScope('m', scope)}
+    `);
+  }
+
+  /** Who is in which batch on which date, for a set of sessions. */
+  async membersFor(scope: OrgScope, sessionIds: number[], userId?: number) {
+    if (sessionIds.length === 0) return [];
+    return this.db.all<{ session_id: number; session_date_id: number; batch_id: number; user_id: number }>(sql`
+      SELECT m.session_id, m.session_date_id, m.batch_id, m.user_id
+        FROM session_batch_members m
+       WHERE m.session_id IN ${idList(sessionIds)} AND ${orgScope('m', scope)}
+         ${userId === undefined ? sql`` : sql`AND m.user_id = ${userId}`}
+    `);
+  }
+
+  /** Per-date attendance rows for one session. */
+  async dayAttendance(scope: OrgScope, sessionId: number) {
+    return this.db.all<{ user_id: number; session_date_id: number; status: string | null; join_time: string | null; notes: string | null; is_locked: number }>(sql`
+      SELECT d.user_id, d.session_date_id, d.status, d.join_time, d.notes, d.is_locked
+        FROM session_day_attendance d
+       WHERE d.session_id = ${sessionId} AND ${orgScope('d', scope)}
+    `);
+  }
+
+  /**
+   * Mark attendance on one or more dates in one statement. Each row takes the
+   * LEARNER's own org from `users`, scoped, the same way `upsertAttendance`
+   * does, so a stranger produces no row.
+   */
+  async upsertDayAttendance(
+    scope: OrgScope,
+    sessionId: number,
+    dateIds: number[],
+    markedBy: number,
+    isLocked: number,
+    records: { user_id: number; status?: string | null; join_time?: string | null; notes?: string | null }[],
+  ): Promise<void> {
+    if (records.length === 0 || dateIds.length === 0) return;
+    const values = sql.join(
+      records.map((r) => sql`(${r.user_id}::int, ${r.status ?? null}::text, ${r.join_time ?? null}::text, ${r.notes ?? null}::text)`),
+      sql`, `,
+    );
+    await this.db.execute(sql`
+      INSERT INTO session_day_attendance
+        (organization_id, session_id, session_date_id, user_id, status, join_time,
+         notes, marked_by, is_locked, marked_at)
+      SELECT u.organization_id, ${sessionId}, sd.id, v.user_id, v.status, v.join_time,
+             v.notes, ${markedBy}, ${isLocked}, now()
+        FROM (VALUES ${values}) AS v(user_id, status, join_time, notes)
+        JOIN users u ON u.id = v.user_id AND ${orgScope('u', scope)}
+        JOIN session_dates sd ON sd.session_id = ${sessionId} AND sd.id IN ${idList(dateIds)}
+      ON CONFLICT (session_date_id, user_id) DO UPDATE SET
+        status = excluded.status, join_time = excluded.join_time, notes = excluded.notes,
+        marked_by = excluded.marked_by, is_locked = excluded.is_locked, marked_at = excluded.marked_at
+    `);
+  }
+
+  /**
+   * Roll each learner's per-date attendance up into `session_attendance`:
+   *   no date marked           -> unmarked (NULL)
+   *   every marked date excused -> excused
+   *   no date attended          -> absent
+   *   present on every date     -> present
+   *   present or late on every  -> late
+   *   otherwise                 -> partial (attended some, not all)
+   * A one-date session therefore keeps exactly the status marked that day.
+   */
+  async rollUpAttendance(scope: OrgScope, sessionId: number): Promise<void> {
+    await this.db.execute(sql`
+      INSERT INTO session_attendance
+        (organization_id, session_id, user_id, status, join_time, notes, marked_by, is_locked, marked_at)
+      SELECT d.organization_id, d.session_id, d.user_id,
+             CASE
+               WHEN COUNT(*) FILTER (WHERE d.status IS NOT NULL) = 0 THEN NULL
+               WHEN COUNT(*) FILTER (WHERE d.status IS NOT NULL) = COUNT(*) FILTER (WHERE d.status = 'excused') THEN 'excused'
+               WHEN COUNT(*) FILTER (WHERE d.status IN ('present', 'late', 'partial')) = 0 THEN 'absent'
+               WHEN COUNT(*) FILTER (WHERE d.status = 'present') >= n.total THEN 'present'
+               WHEN COUNT(*) FILTER (WHERE d.status IN ('present', 'late')) >= n.total THEN 'late'
+               ELSE 'partial'
+             END,
+             (array_agg(d.join_time ORDER BY sd.date) FILTER (WHERE COALESCE(d.join_time, '') <> ''))[1],
+             string_agg(NULLIF(d.notes, ''), ' | ' ORDER BY sd.date),
+             (array_agg(d.marked_by ORDER BY d.marked_at DESC))[1],
+             MAX(d.is_locked), MAX(d.marked_at)
+        FROM session_day_attendance d
+        JOIN session_dates sd ON sd.id = d.session_date_id
+        CROSS JOIN (SELECT COUNT(*)::int AS total FROM session_dates WHERE session_id = ${sessionId}) n
+       WHERE d.session_id = ${sessionId} AND ${orgScope('d', scope)}
+       GROUP BY d.organization_id, d.session_id, d.user_id, n.total
+      ON CONFLICT (session_id, user_id) DO UPDATE SET
+        status = excluded.status, join_time = excluded.join_time, notes = excluded.notes,
+        marked_by = excluded.marked_by, is_locked = excluded.is_locked, marked_at = excluded.marked_at
+    `);
+  }
+
+  /** The session lesson's length, after its dates change. */
+  async setTrainingDuration(scope: OrgScope, sessionId: number, minutes: number): Promise<void> {
+    await this.db.execute(sql`
+      UPDATE lessons SET duration_minutes = ${minutes}
+       WHERE content_type = 'session'
+         AND module_id IN (
+           SELECT cm.id FROM course_modules cm
+             JOIN courses c ON c.id = cm.course_id
+            WHERE c.session_id = ${sessionId} AND ${orgScope('c', scope)}
+         )
+    `);
+  }
+
+  /** Everyone told about a schedule change: the roster and every trainer on it. */
+  async scheduleAudience(scope: OrgScope, sessionId: number) {
+    const rows = await this.db.all<{ user_id: number; kind: string }>(sql`
+      SELECT sr.user_id, 'learner' AS kind FROM session_roster sr
+       WHERE sr.session_id = ${sessionId} AND ${orgScope('sr', scope)}
+      UNION
+      SELECT s.trainer_user_id, 'trainer' FROM sessions s
+       WHERE s.id = ${sessionId} AND s.trainer_user_id IS NOT NULL AND ${orgScope('s', scope)}
+      UNION
+      SELECT b.trainer_user_id, 'trainer' FROM session_batches b
+       WHERE b.session_id = ${sessionId} AND b.trainer_user_id IS NOT NULL AND ${orgScope('b', scope)}
+    `);
+    return {
+      learners: rows.filter((r) => r.kind === 'learner').map((r) => Number(r.user_id)),
+      trainers: [...new Set(rows.filter((r) => r.kind === 'trainer').map((r) => Number(r.user_id)))],
+    };
+  }
+}
+
+export interface SessionDateRow {
+  id: number;
+  session_id: number;
+  date: string;
+  original_date: string;
+  previous_date: string | null;
+  change: string | null;
+  changed_at: string | null;
 }

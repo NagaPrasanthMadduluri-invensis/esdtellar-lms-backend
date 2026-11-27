@@ -1,4 +1,7 @@
-import { batchName, buildSittings, dailyMinutes, datesBetween, MAX_SITTING_DAYS } from './session-schedule';
+import {
+  batchName, buildSittings, dailyMinutes, dateChange, datesBetween, formatSessionDates, MAX_SITTING_DAYS,
+  normaliseDates, planSchedule, seatsAcrossDates,
+} from './session-schedule';
 
 const SESSION = {
   title: 'Negotiation Lab', date: '2026-12-01', end_date: null, start_time: '09:00', end_time: '12:30',
@@ -57,5 +60,50 @@ describe('buildSittings', () => {
   it('names a batch with or without a label', () => {
     expect(batchName(4, '  Evening ')).toBe('Batch 4 · Evening');
     expect(batchName(4, '')).toBe('Batch 4');
+  });
+});
+
+describe('session dates (0076)', () => {
+  it('writes dates as a person does, grouped by month, the year once', () => {
+    expect(formatSessionDates(['2026-11-05', '2026-11-06', '2026-12-02'])).toBe('5th, 6th November and 2nd December 2026');
+    expect(formatSessionDates(['2026-11-21', '2026-11-22', '2026-11-23', '2026-11-11', '2026-11-12', '2026-11-13'])).toBe('11th, 12th, 13th, 21st, 22nd, 23rd November 2026');
+    expect(formatSessionDates(['2026-12-31', '2027-01-02'])).toBe('31st December 2026 and 2nd January 2027');
+    expect(formatSessionDates(['2026-03-01', '2026-04-02', '2026-05-03'])).toBe('1st March, 2nd April and 3rd May 2026');
+    expect(formatSessionDates(['2026-11-05'])).toBe('5th November 2026');
+    expect(formatSessionDates([])).toBe('');
+  });
+
+  it('a later date is postponed, an earlier one preponed', () => {
+    expect(dateChange('2026-11-05', '2026-11-12')).toBe('postponed');
+    expect(dateChange('2026-11-05', '2026-11-01')).toBe('preponed');
+    expect(dateChange('2026-11-05', '2026-11-05')).toBeNull();
+  });
+
+  it('pairs a removed date with an added one, in order, as a move; the rest is added or removed', () => {
+    expect(planSchedule(['2026-11-05', '2026-11-06'], ['2026-11-05', '2026-11-13'])).toEqual({
+      moves: [{ from: '2026-11-06', to: '2026-11-13', change: 'postponed' }], added: [], removed: [],
+    });
+    expect(planSchedule(['2026-11-05', '2026-11-06'], ['2026-11-01', '2026-11-02', '2026-11-20'])).toEqual({
+      moves: [
+        { from: '2026-11-05', to: '2026-11-01', change: 'preponed' },
+        { from: '2026-11-06', to: '2026-11-02', change: 'preponed' },
+      ],
+      added: ['2026-11-20'],
+      removed: [],
+    });
+    expect(planSchedule(['2026-11-05', '2026-11-06'], ['2026-11-05'])).toEqual({ moves: [], added: [], removed: ['2026-11-06'] });
+    expect(planSchedule(['2026-11-05'], ['2026-11-05'])).toEqual({ moves: [], added: [], removed: [] });
+  });
+
+  it('drops invalid and repeated dates and sorts', () => {
+    expect(normaliseDates(['2026-11-06', 'x', '2026-11-05', '2026-11-06', '2026-02-31'])).toEqual(['2026-11-05', '2026-11-06']);
+  });
+
+  it('places for the whole training are the tightest date; length is the longest batch per date', () => {
+    const sit = (date: string, dateId: number, capacity: number, available: number, minutes: number) =>
+      ({ session_date_id: dateId, start_date: date, capacity, available, total_minutes: minutes, status: 'scheduled' }) as never;
+    expect(seatsAcrossDates([sit('a', 1, 5, 2, 180), sit('a', 1, 5, 5, 120), sit('b', 2, 4, 1, 180)]))
+      .toEqual({ capacity: 4, available: 1, minutes: 360 });
+    expect(seatsAcrossDates([])).toEqual({ capacity: 0, available: 0, minutes: 0 });
   });
 });

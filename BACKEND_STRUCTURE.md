@@ -1953,8 +1953,8 @@ up, a signature is presentation.
 foot. It is the only thing `GET /api/certificates/verify/:code` takes. The
 final score stays off all three, on the owner's earlier instruction.
 
-A session certificate is still issued only by hand (`issueManually`),
-because auto-issue refuses session trainings (§10.7).
+A session certificate is issued when the session is completed
+(`issueForSession`, §10.66); `issueManually` remains for the cases it cannot see.
 
 The printable document (`client/components/learner/certificate-print-view.jsx`)
 was rebuilt to the owner's reference `openCert` HTML on 2026-10-16 — its gold
@@ -3819,11 +3819,12 @@ Three rules are load-bearing:
 - **The learner cannot complete a session lesson.** `LearnerService.completeLesson`
   throws 403 for `content_type = 'session'`; otherwise any learner could POST
   their own attendance credit and hours.
-- **Session trainings never auto-issue a certificate.**
+- **Session trainings never auto-issue a certificate FROM A LESSON.**
   `CertificatesService.autoIssue` returns null when the completion snapshot
   carries a `sessionId`. A session's single lesson is completed *for* the
-  learner, so auto-issue would mint a certificate for turning up. Admins issue
-  them by hand through `issueManually()`.
+  learner, so lesson-driven auto-issue would mint a certificate for turning up.
+  **Superseded in part (2026-11-25, §10.66):** completing the SESSION now
+  issues them, through `issueForSession`, at the owner's request.
 
 `in_progress` is **derived, not stored**. `sessions.status` records only what a
 human decided (created upcoming, cancelled, marked completed); the API adds
@@ -5706,6 +5707,10 @@ Pinned by `competencies.service.spec.ts`, `test/competencies.e2e-spec.ts` and
 
 ### 10.63 Batch scheduling: one derived sitting shape, per-batch seats, session report (0074, 2026-11-24)
 
+> **Superseded in part (§10.67):** a batch no longer spans days. It runs on one
+> session date, a learner has one batch per date, and attendance is per date.
+> The derivation, seat lock and reports below still hold.
+
 **Model.** `session_batches.end_date` and `sessions.end_date` (NULL = one day)
 let a batch, or a batch-less session, span days; times stay daily.
 `session_waitlist.batch_id` gives each batch its own queue (ON DELETE SET
@@ -5822,6 +5827,47 @@ admin-portal accounts, so a Manager given admin extras is not forced into MFA;
 and Role `scope` still narrows nothing (CONTEXT §3 Scope), so an extra
 `view_reports` shows organization-wide figures.
 
+### 10.66 Completing a session issues its certificates (2026-11-25)
+
+**Reverses** §10.7's "admins issue session certificates by hand", at the
+owner's request. The old reason (a certificate for merely turning up) is
+answered by the attendance record itself: only learners an admin or trainer
+marked present, late or partial are credited, and the admin's completion is
+the deliberate act.
+
+- **Who:** present, late, partial, exactly the set `syncCompletions` credits
+  with the training and its hours (owner's choice), so the certificate and the
+  hours always agree.
+- **One code path.** `SessionsService.creditCompleted` = `syncCompletions` +
+  `CertificatesService.issueForSession`, called from all five places that
+  credit a completed session: `complete`, `update` to completed, adding to the
+  roster of a completed session, and attendance saves by admin or trainer.
+- **Once per learner.** `sessionCertificateCandidates` excludes anyone with
+  ANY certificate row for the training (revoked included, so a revocation is
+  never overturned), and `insertMany` is `ON CONFLICT (user_id, course_id) DO
+  NOTHING`, so a re-completion, an attendance re-sync or two admins at once
+  never duplicate. Only rows the insert returned are notified.
+- **No N+1.** Candidates are one query, codes are drawn in a batch and checked
+  in one `IN` query per round (`generateUniqueCodes`), and the insert is one
+  statement. Notifications are one per learner because each carries that
+  learner's certificate code.
+- **Told once:** one `certificate_issued` notification per learner, titled
+  "Session completed: <title>", with Session, Date and Certificate ID facts and
+  a link to `/certifications`. That notification type is transactional, so it
+  also writes the email (facts frozen on the outbox row). No separate "session
+  completed" notification, which would be a second email for one event.
+- **Logs:** one `activity_log` entry per run that issued anything (subject
+  `session`), and `GET /api/admin/sessions/:sessionId/certificates`, the
+  per-learner log (attendance, certificate, notified at, latest email status
+  from `email_outbox` via `notification_id`). `@CrossPortal(SESSION_READERS,
+  view_certificates, manage_certificates)`, a read like roster and attendance.
+- **Taking credit back keeps the certificate** (owner's choice): reopening,
+  cancelling or correcting to absent removes the training credit and hours as
+  before, but an issued certificate stays until an admin revokes it.
+- **Best-effort (§8.4):** `issueForSession` never throws into the completion.
+- **Email carries a link, not a PDF** (owner's choice): the certificate is
+  still drawn in the browser; the email states the code and links to it.
+
 ## 11. Adding a new module — checklist
 
 Answer these before writing code:
@@ -5841,3 +5887,69 @@ Answer these before writing code:
 - [ ] Does any response contain PII the caller should not see?
 - [ ] Are secrets read only through `ConfigService` (§9)?
 - [ ] Is the migration ledger updated (§10)?
+
+### 10.67 Session dates and day batches (0076, 2026-11-27)
+
+**Owner's request and answers.** A session runs on any set of dates (not a
+range), each date has its own batches, an edited date is labelled postponed or
+preponed, certificates print every date, and all three portals see it. The
+owner chose: a learner attends EVERY date and is placed in ONE batch per date;
+the certificate lists all the session's dates; a moved date tells the roster
+and trainer by bell and email.
+
+**Model (0076).** `session_dates` (date, original_date, previous_date, change,
+changed_at; UNIQUE session+date). `session_batches` is reused as the day-batch
+table: each row has `session_date_id` and runs on that one day (end_date NULL,
+numbered per date, `idx_session_batches_date_no`). `session_batch_members`
+(UNIQUE date+user) says who is in which batch on each date.
+`session_day_attendance` (UNIQUE date+user) holds the marks. `sessions.date`
+and `end_date` are kept as a summary (first, last) by `syncSessionSummary`.
+
+**Attendance rolls up, so nothing downstream changed.** `rollUpAttendance`
+writes `session_attendance` from the day marks (present on all = present;
+present/late on all = late; some = partial; none = absent; all excused =
+excused). Crediting, certificates (§10.66), feedback eligibility, reports and
+the completion check all still read `session_attendance`. A save with no
+`session_date_id` marks every date, which is what a one-date session and an
+older client send.
+
+**Moving keeps the row.** A move updates `session_dates.date` (and its
+batches' `date`) in one transaction, so placements and attendance follow.
+`planSchedule` (common/session-schedule.ts, mirrored in client lib/sittings.js
+for the preview) pairs a removed and an added date in order as a move; the rest
+are adds (copying the nearest date's batches) and removes (409 when attendance
+is marked on it). A completed or cancelled session's dates are refused (422).
+Every schedule save notifies `session_rescheduled` once per audience
+(transactional email, facts per change) and records `session_rescheduled` in
+the activity log.
+
+**Booking.** A date with one open batch places everyone automatically
+(`autoPlace`, run after any roster, date or batch change). Self-enrol takes
+`batch_ids`, one per date that offers a choice (422 naming missing dates). A
+session whose dates each have one batch books, queues and answers exactly like
+the old single sitting (`batch_id: null`, session queue). Catalogue and report
+seats are the TIGHTEST date's (`seatsAcrossDates`).
+
+**Routes.** `GET/PUT admin/sessions/:id/schedule`, `POST :id/dates`,
+`PUT/DELETE dates/:dateId` (manage_sessions; the read is SESSION_READERS).
+Session create takes `dates` and `slots`; update takes `dates` (or, from an
+older form, a changed start/end range).
+
+**Migration.** 0076 converts existing data once (guarded by
+`migration_backfills`, because the runner re-runs every file each boot):
+ranges become dates, a multi-day batch becomes one batch per day with its
+people placed on each, an undated batch goes on the first date, a date with no
+batch gets Batch 1 (NULL times and capacity follow the session), roster rows
+are placed on single-batch dates, and existing attendance is copied onto every
+date (it rolls back up to the same status). 0025's per-session batch-number
+index is now created only before 0076 has run, or the next boot would fail on
+per-date numbers.
+
+**Known limits.** `display_status` reads in progress from the first date's
+start, so a session with a gap between dates stays in progress across it.
+Taking credit back keeps certificates (§10.66).
+
+Pinned by `session-schedule.spec.ts`, the schedule block of
+`sessions.service.spec.ts`, the 0076 tests in `test/sessions.e2e-spec.ts`, and
+`client/e2e/session-batches.spec.mjs`.
+

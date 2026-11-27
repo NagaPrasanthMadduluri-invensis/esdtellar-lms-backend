@@ -41,6 +41,8 @@ export interface BatchForSittings {
   roster_count: number;
   waitlist_count?: number;
   trainer_name?: string | null;
+  /** The session date this batch runs on (0076). */
+  session_date_id?: number | null;
 }
 
 export interface Sitting {
@@ -65,6 +67,8 @@ export interface Sitting {
   trainer_name: string | null;
   /** Minutes per day times days. Null when the times are not set. */
   total_minutes: number | null;
+  /** The session date this sitting runs on, for a day batch (0076). */
+  session_date_id: number | null;
 }
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -119,6 +123,7 @@ function sitting(input: {
   waitlist: number;
   status: BatchDisplayStatus;
   trainer_name: string | null;
+  session_date_id?: number | null;
 }): Sitting {
   const dates = datesBetween(input.date, input.end_date);
   const perDay = dailyMinutes(input.start_time, input.end_time);
@@ -141,6 +146,7 @@ function sitting(input: {
     status: input.status,
     trainer_name: input.trainer_name,
     total_minutes: perDay === null || dates.length === 0 ? null : perDay * dates.length,
+    session_date_id: input.session_date_id ?? null,
   };
 }
 
@@ -176,8 +182,16 @@ export function buildSittings(session: SessionForSittings, batches: BatchForSitt
       }),
     ];
   }
+  // A finished or cancelled session finishes or cancels every batch in it.
+  const sessionFinal =
+    session.status === 'cancelled' || session.status === 'completed'
+      ? (session.status as BatchDisplayStatus)
+      : null;
   return [...batches]
-    .sort((a, b) => a.batch_no - b.batch_no)
+    .sort((a, b) =>
+      String(a.date ?? '9999').localeCompare(String(b.date ?? '9999')) ||
+      String(a.start_time ?? session.start_time).localeCompare(String(b.start_time ?? session.start_time)) ||
+      a.batch_no - b.batch_no)
     .map((b) =>
       sitting({
         batch_id: Number(b.id),
@@ -192,10 +206,127 @@ export function buildSittings(session: SessionForSittings, batches: BatchForSitt
         capacity: b.capacity ?? Number(session.capacity ?? 0),
         registered: Number(b.roster_count ?? 0),
         waitlist: Number(b.waitlist_count ?? 0),
-        status: batchDisplayStatus({ status: b.status, date: b.date }),
+        status: sessionFinal ?? batchDisplayStatus({ status: b.status, date: b.date }),
         trainer_name: b.trainer_name ?? session.trainer ?? null,
+        session_date_id: b.session_date_id ?? null,
       }),
     );
+}
+
+/**
+ * Places for the whole training, when a learner attends every date (0076):
+ * per date, the sum over its open batches, then the TIGHTEST date. Also the
+ * training's length: per date the longest batch, summed.
+ */
+export function seatsAcrossDates(sittings: readonly Sitting[]): { capacity: number; available: number; minutes: number } {
+  const perDate = new Map<string, { capacity: number; available: number; minutes: number }>();
+  for (const x of sittings) {
+    if (x.status === 'cancelled') continue;
+    const key = String(x.session_date_id ?? x.start_date ?? x.batch_id);
+    const t = perDate.get(key) ?? { capacity: 0, available: 0, minutes: 0 };
+    t.capacity += x.capacity;
+    t.available += x.available;
+    t.minutes = Math.max(t.minutes, x.total_minutes ?? 0);
+    perDate.set(key, t);
+  }
+  const days = [...perDate.values()];
+  if (days.length === 0) return { capacity: 0, available: 0, minutes: 0 };
+  return {
+    capacity: Math.min(...days.map((d) => d.capacity)),
+    available: Math.min(...days.map((d) => d.available)),
+    minutes: days.reduce((n, d) => n + d.minutes, 0),
+  };
+}
+
+/* ── Session dates (0076) ──────────────────────────────────────────────── */
+
+/** The most dates one session may have. */
+export const MAX_SESSION_DATES = 62;
+
+export type DateChange = 'postponed' | 'preponed';
+
+/** Moving a date later postpones it, earlier prepones it, same is no change. */
+export function dateChange(from: string, to: string): DateChange | null {
+  if (from === to) return null;
+  return to > from ? 'postponed' : 'preponed';
+}
+
+/** Valid YYYY-MM-DD dates, de-duplicated and in order. */
+export function normaliseDates(dates: readonly string[]): string[] {
+  const real = (d: string) => {
+    const t = Date.parse(`${d}T00:00:00Z`);
+    // A round trip refuses a day that does not exist (31 February).
+    return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === d;
+  };
+  return [...new Set(dates.filter((d) => ISO.test(d) && real(d)))].sort();
+}
+
+/**
+ * The difference between the dates a session has and the dates the admin
+ * wants. A date taken away and a date put in are PAIRED, in order, as one
+ * move, so its batches, placements and attendance go with it and the move is
+ * labelled postponed or preponed. Only the unmatched remainder is a real add
+ * or delete.
+ */
+export function planSchedule(
+  current: readonly string[],
+  desired: readonly string[],
+): { moves: { from: string; to: string; change: DateChange }[]; added: string[]; removed: string[] } {
+  const want = new Set(desired);
+  const have = new Set(current);
+  const removed = [...have].filter((d) => !want.has(d)).sort();
+  const added = [...want].filter((d) => !have.has(d)).sort();
+  const pairs = Math.min(removed.length, added.length);
+  const moves = removed.slice(0, pairs).map((from, i) => ({
+    from,
+    to: added[i],
+    change: dateChange(from, added[i]) as DateChange,
+  }));
+  return { moves, added: added.slice(pairs), removed: removed.slice(pairs) };
+}
+
+function ordinal(n: number): string {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  return `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] ?? 'th'}`;
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+  'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * A session's dates as a person writes them: "5th, 6th November and 2nd
+ * December 2026". Days are grouped by month in order, and the year is said
+ * once at the end, or after each month's group when the dates cross a year.
+ * Used on certificates and in the reschedule email.
+ */
+export function formatSessionDates(dates: readonly string[]): string {
+  const list = normaliseDates(dates);
+  if (list.length === 0) return '';
+  const groups: { year: number; month: number; days: number[] }[] = [];
+  for (const d of list) {
+    const year = Number(d.slice(0, 4));
+    const month = Number(d.slice(5, 7)) - 1;
+    const day = Number(d.slice(8, 10));
+    const last = groups.at(-1);
+    if (last && last.year === year && last.month === month) last.days.push(day);
+    else groups.push({ year, month, days: [day] });
+  }
+  const crossesYears = groups.some((g) => g.year !== groups[0].year);
+  const parts = groups.map((g) => {
+    const text = `${g.days.map(ordinal).join(', ')} ${MONTHS[g.month]}`;
+    return crossesYears ? `${text} ${g.year}` : text;
+  });
+  const joined = parts.length === 1
+    ? parts[0]
+    : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+  return crossesYears ? joined : `${joined} ${groups[0].year}`;
+}
+
+/** "5 Nov 2026", for one date in a list or a notification fact. */
+export function shortDate(value: string): string {
+  if (!ISO.test(value)) return value;
+  return `${Number(value.slice(8, 10))} ${MONTHS[Number(value.slice(5, 7)) - 1].slice(0, 3)} ${value.slice(0, 4)}`;
 }
 
 /**

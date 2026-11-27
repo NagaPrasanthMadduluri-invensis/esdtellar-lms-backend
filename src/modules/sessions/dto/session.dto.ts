@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import { BATCH_STATUSES, ENROLL_MODES } from '@/common/session-enrolment';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsBoolean,
@@ -38,6 +39,17 @@ const keepUndefined = ({ value }: { value: unknown }) => {
   if (value === undefined) return undefined;
   return nullable({ value });
 };
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** One time slot on the create form; becomes one batch on every date (0076). */
+export class SessionSlotDto {
+  @IsOptional() @MaxLength(80) @Transform(nullable) label?: string | null;
+  @IsOptional() @Transform(nullable) @Matches(/^\d{1,2}:\d{2}$/, { message: 'start_time must be HH:MM' }) start_time?: string | null;
+  @IsOptional() @Transform(nullable) @Matches(/^\d{1,2}:\d{2}$/, { message: 'end_time must be HH:MM' }) end_time?: string | null;
+  @IsOptional() @IsInt() @Min(1) capacity?: number | null;
+  @IsOptional() @IsInt() trainer_user_id?: number | null;
+}
 
 export class SessionDto {
   @IsString()
@@ -127,6 +139,40 @@ export class SessionDto {
   @IsOptional()
   @IsIn(['upcoming', 'completed', 'cancelled'])
   status?: 'upcoming' | 'completed' | 'cancelled';
+
+  /**
+   * Every date the session runs on (0076). Overrides `date` to `end_date`
+   * when given. On an edit, a date taken away and one put in are paired as a
+   * move (postponed or preponed), keeping its batches.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(62, { message: 'A session can have at most 62 dates' })
+  @Matches(ISO_DATE, { each: true, message: 'dates must be YYYY-MM-DD' })
+  dates?: string[];
+
+  /** Create only: time slots, each becoming a batch on every date (0076). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(12, { message: 'At most 12 time slots' })
+  @ValidateNested({ each: true })
+  @Type(() => SessionSlotDto)
+  slots?: SessionSlotDto[];
+}
+
+/** PUT :sessionId/schedule — the full set of dates wanted (0076). */
+export class ScheduleDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'A session needs at least one date' })
+  @ArrayMaxSize(62, { message: 'A session can have at most 62 dates' })
+  @Matches(ISO_DATE, { each: true, message: 'dates must be YYYY-MM-DD' })
+  dates!: string[];
+}
+
+/** POST :sessionId/dates and PUT dates/:dateId (0076). */
+export class SessionDateDto {
+  @Matches(ISO_DATE, { message: 'date must be YYYY-MM-DD' })
+  date!: string;
 }
 
 /** Either a single `user_id`, or `enroll_all` + `department` for a bulk add. */
@@ -161,6 +207,9 @@ export class SaveAttendanceDto {
 
   /** `true` finalises the record — the UI refuses further edits afterwards. */
   @IsOptional() @IsBoolean() lock?: boolean;
+
+  /** The date being marked (0076). Omitted = every date of the session. */
+  @IsOptional() @IsInt() session_date_id?: number;
 }
 
 /** Bulk action over a selection of sessions, from the list's action bar. */
@@ -185,6 +234,8 @@ export class BulkSessionsDto {
  * reason (`common/session-enrolment.ts`).
  */
 export class SessionBatchDto {
+  /** The date the new batch runs on (0076). Or give `date`. */
+  @IsOptional() @IsInt() session_date_id?: number;
   @IsOptional() @MaxLength(80) @Transform(nullable) label?: string | null;
   @IsOptional() @Transform(nullable) date?: string | null;
   /** Last day of a multi-day batch, inclusive (0074). Null = one day. */
@@ -212,9 +263,17 @@ export class MoveToBatchDto {
   user_id!: number;
 
   @IsOptional() @IsInt() batch_id?: number | null;
+
+  /** With `batch_id: null`, the date to take them off (0076). */
+  @IsOptional() @IsInt() session_date_id?: number;
 }
 
-/** A learner booking a place: which batch, when the session has batches. */
+/** A learner booking a place: one batch per date that offers a choice (0076). */
 export class SelfEnrolDto {
   @IsOptional() @IsInt({ message: 'batch_id must be an integer' }) batch_id?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true, message: 'batch_ids must be integers' })
+  batch_ids?: number[];
 }

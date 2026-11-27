@@ -145,17 +145,22 @@ describe('certificates', () => {
     expect(r.body.certificate).toEqual(expect.objectContaining({ hadCompleted: true, reinstated: true }));
   });
 
-  it('a session never auto-issues; an admin issues a session certificate by hand, printed "Online" for a virtual one', async () => {
+  it('completing a session issues its certificate (§10.66), printed "Online" for a virtual one; by hand it is a 409, or a reinstate once revoked', async () => {
     const s = await makeSession(adminA, fx.A, { session_type: 'Virtual', venue_url: 'https://meet.example.test/cert' });
     const p = await person();
     await adminA.post(`/api/admin/sessions/${s.id}/roster`).send({ user_id: p.id }).expect(200);
     await adminA.put(`/api/admin/sessions/${s.id}/attendance`).send({ records: [{ user_id: p.id, status: 'present' }] }).expect(200);
     await adminA.post(`/api/admin/sessions/${s.id}/complete`).expect(200);
-    expect(await dbQuery('SELECT 1 FROM certificates WHERE user_id = $1 AND course_id = $2', [p.id, s.trainingCourseId])).toHaveLength(0);
+    const issued = await dbQuery('SELECT id, public_id, certificate_code FROM certificates WHERE user_id = $1 AND course_id = $2', [p.id, s.trainingCourseId]);
+    expect(issued).toHaveLength(1);
 
+    // Already held: issuing by hand refuses; once revoked, by hand reinstates the same row.
+    await adminA.post('/api/admin/certificates').send({ userId: p.id, courseId: s.trainingCourseId }).expect(409);
+    await adminA.delete(`/api/admin/certificates/${issued[0].id}`).expect(200);
     const r = await adminA.post('/api/admin/certificates').send({ userId: p.id, courseId: s.trainingCourseId }).expect(201);
-    expect(r.body.certificate.hadCompleted).toBe(true);
-    const [cert] = await dbQuery('SELECT public_id, certificate_code FROM certificates WHERE id = $1', [r.body.certificate.id]);
+    expect(r.body.certificate).toEqual(expect.objectContaining({ reinstated: true, hadCompleted: true }));
+    // Reinstating re-issues under a fresh code, so read the row again.
+    const [cert] = await dbQuery('SELECT public_id, certificate_code FROM certificates WHERE id = $1', [issued[0].id]);
     const doc = await (await signIn(app, p)).get(`/api/learner/certificates/${cert.public_id}`).expect(200);
     expect(doc.body.certificate.kind).toBe('session');
     expect(doc.body.certificate.session).toEqual(expect.objectContaining({ format: 'Virtual', venue: 'Online' }));
@@ -170,8 +175,7 @@ describe('certificates', () => {
     await adminA.post(`/api/admin/sessions/${s.id}/roster`).send({ user_id: p.id }).expect(200);
     await adminA.put(`/api/admin/sessions/${s.id}/attendance`).send({ records: [{ user_id: p.id, status: 'present' }] }).expect(200);
     await adminA.post(`/api/admin/sessions/${s.id}/complete`).expect(200);
-    const r = await adminA.post('/api/admin/certificates').send({ userId: p.id, courseId: s.trainingCourseId }).expect(201);
-    const [cert] = await dbQuery('SELECT public_id, certificate_code FROM certificates WHERE id = $1', [r.body.certificate.id]);
+    const [cert] = await dbQuery('SELECT public_id, certificate_code FROM certificates WHERE user_id = $1 AND course_id = $2', [p.id, s.trainingCourseId]);
     const doc = await (await signIn(app, p)).get(`/api/learner/certificates/${cert.public_id}`).expect(200);
     expect(doc.body.certificate.session.venue).toBe('Online');
     expect(doc.body.certificate.session.format).toBe('Virtual');

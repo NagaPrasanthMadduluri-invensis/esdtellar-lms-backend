@@ -149,6 +149,8 @@ export const sessionBatches = pgTable(
     /** NULL falls back to the session's own capacity. */
     capacity: integer('capacity'),
     trainerUserId: integer('trainer_user_id'),
+    /** The session date this batch runs on (0076). Every batch has one after the backfill. */
+    sessionDateId: integer('session_date_id'),
     /** One of `BATCH_STATUSES`. `pending` is derived, never stored. */
     status: text('status').notNull().default('scheduled'),
     createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
@@ -158,11 +160,94 @@ export const sessionBatches = pgTable(
   (table) => [
     index('idx_session_batches_session').on(table.sessionId, table.batchNo),
     index('idx_session_batches_org').on(table.organizationId, table.sessionId),
-    uniqueIndex('idx_session_batches_session_no').on(table.sessionId, table.batchNo),
+    // Numbered per date since 0076 ("5 Nov · Batch 2").
+    uniqueIndex('idx_session_batches_date_no').on(table.sessionDateId, table.batchNo),
   ],
 );
 
 export type SessionBatchRow = typeof sessionBatches.$inferSelect;
+
+/**
+ * The days a session runs on (0076, BACKEND_STRUCTURE 10.67). Any set of days,
+ * not a range. Moving a date updates this row, so its batches, placements and
+ * attendance move with it, and `change` records postponed or preponed.
+ */
+export const sessionDates = pgTable(
+  'session_dates',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id').notNull(),
+    sessionId: integer('session_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    date: text('date').notNull(),
+    /** The day it was first scheduled for. */
+    originalDate: text('original_date').notNull(),
+    /** The day it was on before the last move. */
+    previousDate: text('previous_date'),
+    /** 'postponed' or 'preponed', set by the last move. NULL = never moved. */
+    change: text('change'),
+    changedAt: timestamp('changed_at', { mode: 'string', withTimezone: true }),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique('session_dates_session_date_unique').on(table.sessionId, table.date),
+    index('idx_session_dates_org').on(table.organizationId, table.sessionId),
+  ],
+);
+
+/** Which batch a rostered learner is in on each date (0076). One per date. */
+export const sessionBatchMembers = pgTable(
+  'session_batch_members',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id').notNull(),
+    sessionId: integer('session_id').notNull(),
+    sessionDateId: integer('session_date_id').notNull(),
+    batchId: integer('batch_id').notNull(),
+    userId: integer('user_id').notNull(),
+    createdAt: timestamp('created_at', { mode: 'string', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique('session_batch_members_date_user_unique').on(table.sessionDateId, table.userId),
+    index('idx_session_batch_members_batch').on(table.batchId),
+    index('idx_session_batch_members_session_user').on(table.sessionId, table.userId),
+    index('idx_session_batch_members_org').on(table.organizationId, table.sessionId),
+  ],
+);
+
+/**
+ * Attendance for one learner on one date (0076). Rolled up into
+ * `session_attendance` by `SessionsRepository.rollUpAttendance`, which is
+ * what crediting, certificates and reports read.
+ */
+export const sessionDayAttendance = pgTable(
+  'session_day_attendance',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id').notNull(),
+    sessionId: integer('session_id').notNull(),
+    sessionDateId: integer('session_date_id').notNull(),
+    userId: integer('user_id').notNull(),
+    status: text('status'),
+    joinTime: text('join_time'),
+    notes: text('notes'),
+    markedBy: integer('marked_by'),
+    isLocked: integer('is_locked').notNull().default(0),
+    markedAt: timestamp('marked_at', { mode: 'string', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique('session_day_attendance_date_user_unique').on(table.sessionDateId, table.userId),
+    index('idx_session_day_attendance_session_user').on(table.sessionId, table.userId),
+    index('idx_session_day_attendance_org').on(table.organizationId, table.sessionId),
+  ],
+);
 
 /**
  * People queuing for a full SELF-ENROL session.

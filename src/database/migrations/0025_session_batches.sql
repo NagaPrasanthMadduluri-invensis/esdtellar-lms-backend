@@ -100,8 +100,17 @@ CREATE INDEX IF NOT EXISTS idx_session_batches_org
   ON session_batches (organization_id, session_id);
 
 -- Two batches of one session cannot share a number.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_session_batches_session_no
-  ON session_batches (session_id, batch_no);
+-- Superseded by 0076 (BACKEND_STRUCTURE 10.67): batches are numbered per DATE,
+-- so this index is dropped there and must not be recreated on the next boot
+-- (every migration re-runs on boot). Created only before 0076 has run.
+DO $$
+BEGIN
+  IF to_regclass('public.session_dates') IS NULL THEN
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_batches_session_no
+      ON session_batches (session_id, batch_no);
+  END IF;
+END
+$$;
 
 -- Which sitting a rostered learner is in. NULL = the session's own sitting,
 -- which is every existing row. ON DELETE SET NULL: deleting a batch must not
